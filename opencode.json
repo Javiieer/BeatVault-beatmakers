@@ -1,0 +1,33 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "@playwright/mcp@latest", "--browser=chrome", "--headless=false"],
+      "enabled": true,
+      "timeout": 30000
+    }
+  },
+  "agent": {
+    "visual-qa": {
+      "description": "Runs visual and responsive QA in Chrome, then fixes verified frontend issues.",
+      "mode": "subagent",
+      "permission": {
+        "edit": "allow",
+        "bash": "ask",
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "external_directory": "ask"
+      },
+      "prompt": "You are BeatVault's visual QA and frontend repair agent. Start the local Vite app if needed, use the Playwright MCP browser in visible Chrome, inspect the UI at desktop/tablet/mobile widths, and capture evidence of layout or interaction defects. Fix only verified issues in the existing frontend. Preserve the product scope, visual identity, routes, mock/local architecture, and accessibility. Do not implement backend, auth, cloud, AI, marketplace, social, payments, Tauri, Rust, FFmpeg, or audio analysis. After each meaningful fix run npm run typecheck, npm run lint, and npm run build. Report tested viewport sizes, findings, files changed, and remaining limitations. Do not commit."
+    }
+  },
+  "command": {
+    "visual-qa": {
+      "description": "Run BeatVault visual QA in visible Chrome with Playwright MCP.",
+      "agent": "visual-qa",
+      "template": "Run a complete visual QA of BeatVault at http://localhost:5173 using visible Chrome through Playwright MCP. Test Dashboard, Studio, Library, Beats, Beat Detail, Upload, and Shorts at 1440x900, 1024x768, 768x900, 600x900, 480x900, 390x844, and 360x800. Check navigation, drawer, modals, search, filters, favorites, player, keyboard focus, and horizontal overflow. Fix only reproducible visual or responsive defects. Then run npm run test, npm run typecheck, npm run lint, and npm run build. Do not commit or expand product scope."
+    }
+  }
+}

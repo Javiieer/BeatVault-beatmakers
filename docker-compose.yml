@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: beatvault-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: beatvault
+      POSTGRES_USER: beatvault
+      POSTGRES_PASSWORD: beatvault_local_only
+    ports:
+      - "5432:5432"
+    volumes:
+      - beatvault_postgres_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beatvault -d beatvault"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  beatvault_postgres_data:

@@ -1,0 +1,21 @@
+export { decideDownloadAccess, decidePreviewAccess } from './decisions'
+export type {
+  DownloadAccess,
+  EntitlementContext,
+  EntitlementDecision,
+  EntitlementDecisionReason,
+  EntitlementSource,
+  FeatureEntitlement,
+  LicenseKind,
+  LicenseRecord,
+  ProductAccessDeclaration,
+  ProductEntitlement,
+  ProductOwnership,
+  ProductOwnershipKind,
+  PreviewAccess,
+  Quota,
+  SubscriptionPlanId,
+  SubscriptionState,
+  SubscriptionStatus,
+  Usage,
+} from './types'
