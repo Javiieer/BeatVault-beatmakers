@@ -11,10 +11,12 @@ metadata, or the requesting owner's private profile. Missing/private targets ret
 The DTO never includes email or authorization data. Public profile project views filter
 to published content; existing catalog authorization remains the server boundary.
 
-JSON profiles live separately in profiles.json with serialized writes within a single
-repository instance. PostgreSQL uses creator_profiles from migration 005 (apply after
-001-004). SQL adapter tests are mocked, not live database integration. Profile cover
-presets are bundled images; avatar choices are presets or initials, not user uploads.
+JSON records use per-file serialized read-modify-write operations within the server
+process and atomic file replacement. This prevents lost updates between concurrent
+requests in one process, but is not a multi-process or production database guarantee.
+PostgreSQL uses creator_profiles from migration 005 (apply after 001-004). SQL adapter
+tests are mocked, not live database integration. Profile cover presets are bundled
+images; avatar choices are presets or initials, not user uploads.
 
 ### Home posts and friends (2026-10-09)
 
