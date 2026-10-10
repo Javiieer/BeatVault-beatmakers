@@ -1,0 +1,23 @@
+{$BEATVAULT_DOMAIN} {
+	encode zstd gzip
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy api:4174
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header {
+			X-Content-Type-Options nosniff
+			X-Frame-Options DENY
+			Referrer-Policy no-referrer
+			Permissions-Policy "camera=(), microphone=(), geolocation=()"
+			Strict-Transport-Security "max-age=31536000"
+		}
+		file_server
+	}
+}

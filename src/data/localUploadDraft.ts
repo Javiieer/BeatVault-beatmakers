@@ -1,3 +1,6 @@
+import { uploadCovers } from './creatorUploads';
+import { scopedKey } from './storageScope';
+
 export type FileMetadata = {
   name: string;
   size: string;
@@ -12,12 +15,14 @@ export type UploadDraft = {
   file: string;
   fileMetadata?: FileMetadata;
   tags: string[];
+  cover?: string;
 };
 
 export const maxUploadFileSize = 500 * 1024 * 1024;
 export const supportedAudioMimeTypes = [
-  "audio/aac", "audio/flac", "audio/mpeg", "audio/mp4", "audio/ogg",
-  "audio/wav", "audio/webm", "audio/x-m4a", "audio/x-wav",
+  "application/octet-stream", "application/ogg", "audio/aac", "audio/flac", "audio/m4a",
+  "audio/mp3", "audio/mpeg", "audio/mp4", "audio/ogg", "audio/vnd.wave", "audio/wav",
+  "audio/wave", "audio/webm", "audio/x-aac", "audio/x-flac", "audio/x-m4a", "audio/x-wav",
 ] as const;
 const supportedAudioExtensions = ["aac", "flac", "mp3", "m4a", "ogg", "wav", "webm"];
 
@@ -44,7 +49,7 @@ export function validateUploadFile(file: Pick<File, "name" | "size" | "type">): 
   const extension = file.name.toLowerCase().split(".").pop() ?? "";
   const supportedMime = !file.type || (supportedAudioMimeTypes as readonly string[]).includes(file.type);
   const supportedExtension = supportedAudioExtensions.includes(extension);
-  if (!supportedMime && !supportedExtension) return "unsupported-audio";
+  if (!supportedMime || !supportedExtension) return "unsupported-audio";
   return null;
 }
 
@@ -71,11 +76,11 @@ function isFileMetadata(value: unknown): value is FileMetadata {
   );
 }
 
-export function readUploadDraft(): UploadDraft {
+export function readUploadDraft(scope?: string): UploadDraft {
   try {
     if (typeof localStorage === "undefined") return emptyUploadDraft;
     const value = JSON.parse(
-      localStorage.getItem(draftKey) ?? "null",
+      localStorage.getItem(scopedKey(draftKey, scope)) ?? "null",
     ) as Partial<UploadDraft> | null;
     if (!value || typeof value !== "object") return emptyUploadDraft;
     const file = typeof value.file === "string" ? value.file : "";
@@ -87,6 +92,7 @@ export function readUploadDraft(): UploadDraft {
       type: typeof value.type === "string" ? value.type : "",
       file,
       fileMetadata,
+      cover: uploadCovers.find(cover => cover.url === value.cover)?.url,
       tags: Array.isArray(value.tags)
         ? value.tags.filter((tag): tag is string => typeof tag === "string")
         : [],
@@ -96,10 +102,10 @@ export function readUploadDraft(): UploadDraft {
   }
 }
 
-export function writeUploadDraft(draft: UploadDraft) {
+export function writeUploadDraft(draft: UploadDraft, scope?: string) {
   try {
     if (typeof localStorage === "undefined") return false;
-    localStorage.setItem(draftKey, JSON.stringify(draft));
+    localStorage.setItem(scopedKey(draftKey, scope), JSON.stringify(draft));
     return true;
   } catch {
     return false;

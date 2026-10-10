@@ -1,19 +1,47 @@
-import { timingSafeEqual } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import type { ServerConfig } from './config'
 export type Role = 'admin' | 'creator'
-export type AuditEvent = 'login_success' | 'login_failure' | 'logout' | 'create' | 'update' | 'delete'
-export type AuditEntry = { event: AuditEvent; actorId?: string; requestId: string; at: string }
+export type AuditAction = 'login_success' | 'login_failure' | 'logout' | 'create' | 'update' | 'delete' | 'admin_bootstrap' | 'admin_read'
+export type SafeMetadata = Readonly<Record<string, string | number | boolean | null>>
+export type AuditEvent = { id: string; timestamp: string; action: AuditAction; requestId: string; actorId?: string; targetId?: string; success: boolean; metadata: SafeMetadata }
 export class RateLimiter {
   private readonly hits = new Map<string, number[]>()
+  private nextPruneAt = 0
   constructor(private readonly limitOrConfig: number | ServerConfig = 5, private readonly configuredWindowMs = 60000) {}
   private get limit(): number { return typeof this.limitOrConfig === 'number' ? this.limitOrConfig : this.limitOrConfig.rateLimit.limit }
   private get windowMs(): number { return typeof this.limitOrConfig === 'number' ? this.configuredWindowMs : this.limitOrConfig.rateLimit.windowMs }
-  allow(key: string): boolean { const now = Date.now(); const valid = (this.hits.get(key) || []).filter(time => now - time < this.windowMs); if (valid.length >= this.limit) { this.hits.set(key, valid); return false }; valid.push(now); this.hits.set(key, valid); return true }
-  clear(): void { this.hits.clear() }
+  allow(key: string): boolean {
+    const now = Date.now()
+    if (now >= this.nextPruneAt) {
+      for (const [trackedKey, times] of this.hits) {
+        const active = times.filter(time => now - time < this.windowMs)
+        if (active.length) this.hits.set(trackedKey, active)
+        else this.hits.delete(trackedKey)
+      }
+      this.nextPruneAt = now + Math.max(1000, Math.min(this.windowMs, 60000))
+    }
+    const valid = (this.hits.get(key) || []).filter(time => now - time < this.windowMs)
+    if (valid.length >= this.limit) { this.hits.set(key, valid); return false }
+    valid.push(now)
+    this.hits.set(key, valid)
+    return true
+  }
+  clear(): void { this.hits.clear(); this.nextPruneAt = 0 }
 }
 export const csrfMatches = (expected: string | undefined, supplied: string | undefined): boolean => { if (!expected || !supplied) return false; const a = Buffer.from(expected); const b = Buffer.from(supplied); return a.length === b.length && timingSafeEqual(a, b) }
 export class AuditLog {
-  readonly entries: AuditEntry[] = []
-  record(event: AuditEvent, requestId: string, actorId?: string): void { this.entries.push({ event, requestId, ...(actorId ? { actorId } : {}), at: new Date().toISOString() }); if (this.entries.length > 500) this.entries.shift() }
-  clear(): void { this.entries.length = 0 }
+  private entriesValue: AuditEvent[] = []
+  private queue: Promise<void> = Promise.resolve()
+  constructor(private readonly store?: AuditStore) {}
+  get entries(): readonly AuditEvent[] { return this.entriesValue }
+  async initialize(): Promise<void> { this.entriesValue = this.store ? await this.store.list() : [] }
+  record(action: AuditAction, requestId: string, actorId?: string, targetId?: string, success = true, metadata: SafeMetadata = {}): void {
+    const event: AuditEvent = { id: randomUUID(), timestamp: new Date().toISOString(), action, requestId, success, metadata: redactMetadata(metadata), ...(actorId ? { actorId } : {}), ...(targetId ? { targetId } : {}) }
+    this.entriesValue.push(event)
+    this.queue = this.queue.then(async () => { await this.store?.append(event); this.entriesValue = this.store ? await this.store.list() : this.entriesValue.slice(-500) }).catch(() => undefined)
+  }
+  clear(): void { this.entriesValue.length = 0 }
 }
+export interface AuditStore { list(): Promise<AuditEvent[]>; append(event: AuditEvent): Promise<void> }
+const forbidden = /password|passphrase|token|secret|cookie|csrf|authorization|body|provider/i
+export const redactMetadata = (metadata: SafeMetadata): SafeMetadata => Object.fromEntries(Object.entries(metadata).filter(([key, value]) => !forbidden.test(key) && (typeof value !== 'string' || value.length <= 160)))

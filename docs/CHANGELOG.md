@@ -1,5 +1,118 @@
 # Changelog
 
+## 2026-10-09 - Moderación y catálogo publicado
+
+- El panel Admin revisa pendientes con permisos server-side, CSRF y auditoría; el rechazo requiere un motivo visible solo para el creador.
+- Beats lista únicamente beats publicados, no proyectos privados/demo. Los archivos originales siguen siendo privados; el preview entre cuentas queda pendiente.
+- Añadida migración PostgreSQL 007 para notas de revisión; documentada la secuencia 001-007.
+- Pasaron 78 pruebas de navegador y todas las fases de `diagnose:full`; `npm audit` reportó cero advisories.
+
+## 2026-10-09 - Consolidación visual y límites sociales
+
+- Alineada la navegación con Home, Amigos y el flujo principal de audio; se aclaró en la documentación que el marketplace, chat y social amplio siguen diferidos.
+- Amigos muestra un estado de API desconectada con reintento, sin confundirlo con un directorio vacío.
+- Añadida prueba API entre dos cuentas para el ciclo de solicitudes, privacidad de perfiles, CSRF/identidad y eliminación de conexión.
+- Corregidas expectativas E2E obsoletas para Home, publicaciones de perfil, rutas de recuperación y cierre del menú de perfil.
+- La pasada inicial encontró expectativas E2E antiguas; se actualizaron y la ejecución completa final pasó las 78 pruebas de navegador. Typecheck, lint, pruebas unitarias, seguridad y build también pasaron; `npm audit` reportó 0 advisories.
+
+## 2026-10-09 - Limpieza focalizada y endurecimiento local
+
+- Eliminados estilos huérfanos del antiguo puente de Shorts dentro de Library; se conservaron módulos de dominio que la arquitectura reserva para licencias y marketplace.
+- Protegida la resolución de archivos para rechazar claves que escapen del directorio privado de subidas.
+- Limitadas las altas por dirección de socket y añadida poda de entradas vencidas del rate limiter.
+- La configuración de producción ahora falla de forma segura sin cookies Secure, CORS HTTPS explícito, PostgreSQL/DATABASE_URL o con modo demo activo.
+- Typecheck, lint, build, comprobación manual de guardas y `npm audit` completo pasaron (0 advisories conocidos). Suites automatizadas no ejecutadas.
+
+## 2026-10-09 - Biblioteca reorganizada
+
+- Rehecha Library con resumen de colección, secciones, búsqueda, filtros, orden y vistas agrupadas en una jerarquía consistente.
+- Alineadas las filas de audio y las tarjetas de cuadrícula; controles adaptados a móvil, con verificación visual sin desbordamiento.
+- Biblioteca abre en Sonidos para mostrar los recursos locales disponibles; Packs y Beats quedan como colecciones independientes. El borrador de Shorts ya no interrumpe esta vista.
+- Validaciones: typecheck, lint, build y navegación manual por colecciones y filtros.
+
+## 2026-10-09 - Composer local del feed y auditoría de temas
+
+- Añadido un cajón de publicación en Home para estados, fotos y videos, con vista previa, límites de archivo y persistencia en IndexedDB aislada por cuenta/navegador.
+- Las publicaciones creadas se muestran al inicio del feed y sobreviven a recargas; se indica que no se comparten con otros usuarios porque todavía no hay backend social.
+- Revisados Classic, Ember, Ivory Studio y Verdant. Corregida la herencia de texto del shell para que Ivory conserve contraste sobre sus superficies claras; las otras tres paletas se mantienen.
+- Verificados typecheck, lint y build; no se ejecutaron suites de pruebas automatizadas.
+
+## 2026-10-09 - Home feed replaces dashboard
+
+- Replaced the promotional dashboard with a responsive mixed feed for statuses, photos, Beats and Shorts, plus a story row and discovery rail.
+- Added local feed filters, likes, saves, follows, share links and story dialogs; these actions persist by account in browser storage.
+- Marked seeded creator content as demo. Only the signed-in creator's published audio can appear from their uploads; private drafts stay out of Home.
+- Kept `/dashboard` as a backward-compatible alias and moved primary navigation to `/home`.
+- Removed the unused dashboard component and its announcement-slider styling. Typecheck, lint, build and desktop/mobile visual checks passed; automated test suites were not run.
+
+## 2026-10-09 - Oracle VPS deployment scaffold
+
+- Added a multi-stage Docker build, isolated production Compose profile, Caddy HTTPS/static frontend proxy, and persistent Postgres/audio volumes.
+- Published only HTTP/HTTPS; API and database remain inside private Docker networks. Production cookies are Secure; demos and development reset tokens are off.
+- Added guarded first-deploy and local backup scripts plus Oracle-specific setup and go-live blocker documentation.
+- Restricted the existing development Postgres port to loopback and labeled that Compose file as local-only.
+- This scaffold does not transfer local JSON users/audio or make the app launch-ready. Email, admin provisioning, real database restore checks, media hardening and review remain open.
+
+## 2026-10-09 - Password recovery screens
+
+- Added request and reset screens linked from sign-in, with matching-password and 12-128 character checks.
+- Uses existing server-side one-time, expiring hashed reset tokens and invalidates sessions after a successful reset.
+- Development can show a reset link only when BEATVAULT_DEV_AUTH_TOKENS is explicitly enabled; production returns no token.
+- Generic request responses avoid revealing whether an email exists. Transactional email delivery still needs provider configuration.
+
+## 2026-10-09 - Creator profiles and metadata editor
+
+- Added creator profiles with panoramic cover presets, avatars, bio, genres, location and links.
+- Added editable metadata at /settings, project grid/list, project details and optional public profile links at /profile?id=account-id.
+- Public views show published projects only; account email, permissions and original audio remain private. Profiles default to private.
+- Added authenticated profile reads/writes with strict field validation, CSRF, owner identity from the session, JSON persistence and PostgreSQL migration 005.
+- Added API privacy/permission tests, a parameterized SQL adapter test and desktop/mobile browser coverage for persistence, failed-save recovery and visibility revocation.
+- Custom photo uploads, public audio previews and production PostgreSQL integration remain pending.
+- Validation: 120 unit/integration tests, 13 security probes, typecheck, lint, build and dependency audit passed (zero advisories). Full browser run passed 66/68; the two profile journeys hit timing limits. After increasing the profile journey budget and awaiting image decoding, both passed in an isolated one-worker rerun (31.1s). Desktop/mobile screenshots were inspected. The full diagnostic report remains failed from the original run; it was not rewritten as a clean full run.
+
+## 2026-10-08 - Profile menu and local administrator
+
+- Added a responsive profile dropdown with account identity, creator/admin role, upload links, admin-only panel access and explicit logout.
+- Added keyboard navigation, Escape/focus return, outside-click dismissal and visible logout errors. Failed logout no longer pretends the session ended.
+- Promoted the user-authorized existing local account through the server repository and recorded a durable audit event. Password hash and email-verification state were preserved; no public role-assignment endpoint was added.
+- Focused checks: five profile component tests, thirteen HTTP security probes, lint and production build passed. Profile and persistent upload browser coverage includes desktop/mobile.
+
+## 2026-10-08 - Persistent creator audio
+
+- Persisted owned audio references and stable cover IDs in JSON/Postgres adapters; added migration 004.
+- Restored preview/download and file metadata after reload without browser cache.
+- Reused owned file/catalog records after lost responses and page reload; file reselection is still required for retry.
+- Isolated catalog/project caches and upload drafts by account/demo scope; authenticated errors never simulate local success.
+- Fixed the browser fetch receiver and added a same-origin development proxy for cookies/CSRF.
+- Added owner-reference security checks and real desktop/mobile tests with two disposable accounts and a valid WAV.
+- Postgres integration, concurrent JSON writes and stronger media validation remain pending.
+- Validation: full diagnostic passed (2026-10-09T04:01:59.848Z UTC): 109 unit/integration tests, 13 security probes and 61 browser tests; types, lint, build and dependency audit passed with zero known advisories. Desktop/mobile authenticated screenshots and the live preview login were verified. No commit or push was made.
+
+## 2026-10-08 - Creator uploads replace project management
+
+- Replaced Studio with Mis subidas at the existing /studio route, with a /my-uploads alias.
+- New uploads accept only Beats and One-shots; the API maps One-shot to sample and rejects new loops/packs. Existing records remain editable and are not deleted or relabeled.
+- Added creator-owned upload cards, search/type/status filters, metadata editing, archive/restore and in-session audio previews.
+- Simplified Upload to audio, name, two content types, tags and bundled cover choices. Drafts remain recoverable locally.
+- Replaced Dashboard project actions and fake counters with upload actions and actual creator content counts.
+- Awaited catalog confirmation, protected against double submission, uploaded all accepted files and retained partial retry progress within a session.
+- Preserved cover/display metadata in the local catalog cache; stripped temporary blob URLs from persistent storage.
+- Added unit and desktop/mobile browser tests for the creator workflow. Permanent audio references across reloads remain the next milestone.
+- Validation: full diagnostic passed (103 unit/integration tests, 12 security probes and 59 browser tests), typecheck, ESLint, build and dependency audit. Verified cover loading and mobile controls with screenshots.
+
+## 2026-10-08 - Diagnostics and focused first release
+
+- Added a shared module inventory and reduced primary navigation to creator audio workflows.
+- Preserved deferred prototypes; Admin navigation is restricted to authenticated admins.
+- Added repeatable diagnostics with timestamped logs, JSON/Markdown results, dependency advisories and full browser route coverage.
+- Added an on-push/PR GitHub workflow definition; no remote execution is implied until pushed.
+- Added local HTTP security regression probes for access controls, input limits, catalog privacy, media responses and sessions.
+- Fixed unbounded JSON bodies, private catalog exposure, publication-state bypass, rejected-origin CORS reflection, media range handling and Windows API entry detection.
+- Updated vulnerable transitive dependencies: brace-expansion 5.0.12, source-map-js 1.2.2 and undici 8.11.2; npm audit then reported zero known advisories.
+- Reconciled current handoff, roadmap, known issues and per-section release decisions.
+- Next: authenticated upload/catalog/reload/playback lifecycle with account-scoped caches.
+- Validation: full diagnostic passed with 95 existing tests, 12 HTTP security probes, 57 browser tests across 16 routes and three viewports, typecheck, ESLint and production build. Dependency audit: zero known advisories. Confirmed release blockers remain documented.
+
 ## 2026-08-29 - Phase 10 Backend readiness contracts
 
 ### Changes

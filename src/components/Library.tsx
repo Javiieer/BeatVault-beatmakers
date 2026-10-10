@@ -1,39 +1,38 @@
 import { useEffect, useState } from "react";
 import { assets } from "../data/mock";
 import { AssetRow, PageHeader } from "../components/ui";
-import { AudioLines, Grid2X2, Heart, List, Music2, PackageOpen, Plus, Search, X } from "lucide-react";
+import { AudioLines, Grid2X2, Heart, List, Music2, PackageOpen, Plus, RotateCcw, Search, X } from "lucide-react";
 import { readFavoriteIds, writeFavoriteIds } from "../data/localFavorites";
-import {
-  hasShortDraft,
-  canSendShortDraft,
-  parseShortTags,
-  readShortDraft,
-  saveShortDraft,
-  shortDraftChangedEvent,
-  shortStatusLabel,
-  updateShortDraftStatus,
-  type ShortDraft,
-  type ShortDraftStatus,
-} from "../domains/shorts/localDraft";
 import { type CatalogAsset, type CatalogStatus } from "../data/localCatalog";
 import { filterAndSortLibrary } from "../data/libraryFilters";
 import { getQuery } from "../app/routing";
 import type { LibrarySection } from "../data/libraryFilters";
 import type { CatalogSource } from "../data/catalogRepository";
+import "../styles/library.css";
 
 const publicationStatusLabels: Record<"all" | CatalogStatus, string> = {
-  all: "All states",
-  draft: "Draft",
-  "pending-review": "Pending review",
-  published: "Published",
-  archived: "Archived",
+  all: "Todos",
+  draft: "Borrador",
+  "pending-review": "En revisión",
+  published: "Publicado",
+  rejected: "Rechazado",
+  archived: "Archivado",
+};
+
+const categoryLabels: Record<string, string> = {
+  "All assets": "Todo",
+  Loops: "Loops",
+  "One-shots": "One-shots",
+  Vocals: "Voces",
+  Presets: "Presets",
+  "FL Studio Demo Pack": "FL Studio Demo Pack",
 };
 
 const librarySortLabels = {
-  curated: "Curated order",
-  name: "Name A-Z",
-  type: "Asset type",
-  favorites: "Favorites first",
+  curated: "Orden recomendado",
+  name: "Nombre A-Z",
+  type: "Tipo de sonido",
+  favorites: "Favoritos primero",
 } as const;
 
 function Library({
@@ -57,7 +56,7 @@ function Library({
   const [category, setCategory] = useState("All assets");
   const [section, setSection] = useState<LibrarySection>(() => {
     const value = getQuery(window.location.hash).get("section");
-    return value === "sound-packs" || value === "sounds" ? value : "beats";
+    return value === "beats" || value === "sound-packs" ? value : "sounds";
   });
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [view, setView] = useState<"list" | "grid">("list");
@@ -75,14 +74,11 @@ function Library({
   });
   const [favoriteStorageError, setFavoriteStorageError] = useState(false);
   const [favoriteMessage, setFavoriteMessage] = useState("");
-  const categories = [
-    "All assets",
-    "Loops",
-    "One-shots",
-    "Vocals",
-    "Presets",
-    "FL Studio Demo Pack",
-  ];
+  const categories = section === "sound-packs"
+    ? ["All assets", "FL Studio Demo Pack"]
+    : section === "beats"
+      ? ["All assets"]
+      : ["All assets", "Loops", "One-shots", "Vocals", "Presets"];
   const sortedAssets = filterAndSortLibrary(assets, catalogAssets, {
     query, category: category as Parameters<typeof filterAndSortLibrary>[2]["category"], section,
     favoritesOnly, status, sort, favoriteIds,
@@ -103,31 +99,6 @@ function Library({
       );
       return next;
     });
-  const [localShortDraft, setLocalShortDraft] = useState<ShortDraft>(() =>
-    readShortDraft(),
-  );
-  const [shortEditorOpen, setShortEditorOpen] = useState(false);
-  const [shortEditorDraft, setShortEditorDraft] = useState<ShortDraft>(() =>
-    readShortDraft(),
-  );
-  const [shortDraftError, setShortDraftError] = useState("");
-  useEffect(() => {
-    if (!shortEditorOpen) return;
-    const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setShortEditorOpen(false);
-    };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [shortEditorOpen]);
-  useEffect(() => {
-    const syncDraft = () => setLocalShortDraft(readShortDraft());
-    window.addEventListener(shortDraftChangedEvent, syncDraft);
-    window.addEventListener("storage", syncDraft);
-    return () => {
-      window.removeEventListener(shortDraftChangedEvent, syncDraft);
-      window.removeEventListener("storage", syncDraft);
-    };
-  }, []);
   useEffect(() => {
     const applyGlobalSearch = (event: Event) => {
       const queryEvent = event as CustomEvent<string>;
@@ -137,129 +108,79 @@ function Library({
     return () =>
       window.removeEventListener("beatvault:library-search", applyGlobalSearch);
   }, []);
-  const localShortTags = parseShortTags(localShortDraft.tags);
-  const hasLocalShortDraft = hasShortDraft(localShortDraft);
-  const updateLocalShortDraft = (status: ShortDraftStatus) => {
-    if (status === "pending") {
-      setShortDraftError(
-        canSendShortDraft(localShortDraft)
-          ? "Vuelve a seleccionar el video en Shorts antes de enviarlo a revisión."
-          : "Añade un video, caption y al menos un tag antes de revisión.",
-      );
-      setShortEditorDraft(localShortDraft);
-      setShortEditorOpen(true);
-      return;
-    }
-    const result = updateShortDraftStatus(localShortDraft, status);
-    if (!result.saved) {
-      setShortDraftError(
-        "No se pudo actualizar el estado en el almacenamiento local.",
-      );
-      return;
-    }
-    setLocalShortDraft(result.draft);
-    setShortDraftError("");
+  const sectionAssets = filterAndSortLibrary(assets, catalogAssets, {
+    query: "", category: "All assets", section, favoritesOnly: false,
+    status: "all", sort: "curated", favoriteIds,
+  });
+  const clearFilters = () => {
+    setQuery("");
+    setCategory("All assets");
+    setFavoritesOnly(false);
+    setStatus("all");
+    setSort("curated");
   };
   return (
-    <>
+    <main className="library-page">
       {editing && <div className="modal-backdrop" onClick={() => !saving && setEditing(undefined)}><section className="panel short-draft-editor" role="dialog" aria-modal="true" aria-labelledby="catalog-edit-title" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-heading"><h2 id="catalog-edit-title">Edit catalog metadata</h2><button type="button" className="modal-close" aria-label="Close editor" onClick={() => setEditing(undefined)}><X size={18} aria-hidden="true" /></button></div>
-        <label className="short-upload-field" htmlFor="catalog-name">Name<input id="catalog-name" value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
-        <label className="short-upload-field" htmlFor="catalog-type">Type<input id="catalog-type" value={editing.type} onChange={(event) => setEditing({ ...editing, type: event.target.value })} /></label>
+        <div className="modal-heading"><h2 id="catalog-edit-title">Editar sonido</h2><button type="button" className="modal-close" aria-label="Cerrar editor" onClick={() => setEditing(undefined)}><X size={18} aria-hidden="true" /></button></div>
+        <label className="short-upload-field" htmlFor="catalog-name">Nombre<input id="catalog-name" value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
+        <label className="short-upload-field" htmlFor="catalog-type">Tipo<input id="catalog-type" value={editing.type} onChange={(event) => setEditing({ ...editing, type: event.target.value })} /></label>
         <label className="short-upload-field" htmlFor="catalog-tags">Tags<input id="catalog-tags" value={editing.tags.map((tag) => tag.label).join(", ")} onChange={(event) => setEditing({ ...editing, tags: event.target.value.split(",").map((label) => ({ label: label.trim() })).filter((tag) => tag.label) })} /></label>
-        <label className="short-upload-field" htmlFor="catalog-status">Publication status<select id="catalog-status" value={editing.publicationStatus} onChange={(event) => setEditing({ ...editing, publicationStatus: event.target.value as CatalogStatus })}>{Object.keys(publicationStatusLabels).filter((value) => value !== "all").map((value) => <option key={value}>{value}</option>)}</select></label>
+        <label className="short-upload-field" htmlFor="catalog-status">Estado<select id="catalog-status" value={editing.publicationStatus} onChange={(event) => setEditing({ ...editing, publicationStatus: event.target.value as CatalogStatus })}>{Object.keys(publicationStatusLabels).filter((value) => value !== "all").map((value) => <option key={value} value={value}>{publicationStatusLabels[value as CatalogStatus]}</option>)}</select></label>
         {actionError && <small className="upload-error" role="alert">{actionError}</small>}
-        <div className="modal-actions"><button type="button" className="button ghost" disabled={saving} onClick={() => setEditing(undefined)}>Cancel</button><button type="button" className="button" disabled={saving} onClick={() => { setSaving(true); setActionError(""); void onUpdateCatalogAsset(editing).then((result) => { setSaving(false); if (result.error) setActionError(result.error); else setEditing(undefined); }); }}>{saving ? "Saving..." : "Save metadata"}</button></div>
+        <div className="modal-actions"><button type="button" className="button ghost" disabled={saving} onClick={() => setEditing(undefined)}>Cancelar</button><button type="button" className="button" disabled={saving} onClick={() => { setSaving(true); setActionError(""); void onUpdateCatalogAsset(editing).then((result) => { setSaving(false); if (result.error) setActionError(result.error); else setEditing(undefined); }); }}>{saving ? "Guardando…" : "Guardar cambios"}</button></div>
       </section></div>}
       <PageHeader
-        eyebrow="Asset library"
-        title="Your sound, organized"
-        description="1,248 assets ready to spark your next idea."
+        eyebrow="TU ESPACIO CREATIVO"
+        title="Biblioteca"
+        description="Encuentra, escucha y organiza tus sonidos."
         action={
           <a className="button" href="#/upload">
-             <Plus size={16} aria-hidden="true" /> Import assets
+             <Plus size={16} aria-hidden="true" /> Subir sonidos
           </a>
         }
       />
-       <nav className="library-section-nav" aria-label="Library sections">
-         {([['beats', 'Beats', Music2], ['sound-packs', 'Sound Packs', PackageOpen], ['sounds', 'Sounds', AudioLines]] as const).map(([value, label, Icon]) => (
-           <a className={section === value ? "active" : ""} aria-current={section === value ? "page" : undefined} href={`#/library?section=${value}`} onClick={() => setSection(value)} key={value}>
+       <nav className="library-section-nav" aria-label="Colecciones de biblioteca">
+         {([['beats', 'Beats', Music2], ['sound-packs', 'Packs', PackageOpen], ['sounds', 'Sonidos', AudioLines]] as const).map(([value, label, Icon]) => (
+             <a className={section === value ? "active" : ""} aria-current={section === value ? "page" : undefined} href={`#/library?section=${value}`} onClick={() => { setSection(value); setCategory("All assets"); setStatus("all"); setFavoritesOnly(false); }} key={value}>
              <Icon size={16} strokeWidth={1.8} aria-hidden="true" />
              <span>{label}</span>
            </a>
          ))}
        </nav>
-      <p className={`action-feedback${catalogError ? " error" : ""}`} role={catalogError ? "status" : undefined}>
-        {catalogSource === "api" ? "Source: local API catalog" : "Source: local fallback"}{catalogError ? " · API unavailable; using local catalog." : ""}
-      </p>
-      {hasLocalShortDraft && (
-        <section className="library-short-bridge" aria-label="Shorts local draft">
-          <div>
-            <p className="eyebrow">Shorts workspace</p>
-            <strong>{localShortDraft.caption || "Untitled Short"}</strong>
-            <small>
-              {localShortDraft.fileName || "No file selected"} ·{" "}
-              {localShortTags.length
-                ? localShortTags.map((tag) => `#${tag}`).join(" ")
-                : "No tags"}
-            </small>
-          </div>
-           <span className={`publication-pill ${localShortDraft.publicationStatus}`}>
-             {shortStatusLabel(localShortDraft.publicationStatus)}
-           </span>
-           {shortDraftError && <small className="upload-error" role="alert">{shortDraftError}</small>}
-            <button type="button" className="button ghost" onClick={() => { setShortEditorDraft(localShortDraft); setShortDraftError(""); setShortEditorOpen(true); }}>
-             Edit draft
-           </button>
-           <a className="button ghost" href="#/shorts">Open Shorts</a>
-          {localShortDraft.publicationStatus === "archived" ? (
-             <button type="button" className="text-button" onClick={() => updateLocalShortDraft("draft")}>
-              Restore
-            </button>
-          ) : (
-            <>
-              {localShortDraft.publicationStatus !== "pending" && (
-                <a className="text-button" href="#/shorts">
-                  Review in Shorts
-                </a>
-              )}
-               <button type="button" className="text-button" onClick={() => updateLocalShortDraft("archived")}>
-                Archive
-              </button>
-            </>
-          )}
-         </section>
-       )}
-       {shortEditorOpen && (
-         <div className="modal-backdrop" onClick={() => setShortEditorOpen(false)}>
-           <section className="panel short-draft-editor" role="dialog" aria-modal="true" aria-labelledby="short-draft-title" onClick={(event) => event.stopPropagation()}>
-             <div className="modal-heading">
-               <div><p className="eyebrow">Shorts workspace</p><h2 id="short-draft-title">Edit local draft</h2></div>
-                 <button type="button" className="modal-close" onClick={() => setShortEditorOpen(false)} aria-label="Close draft editor"><X size={18} aria-hidden="true" /></button>
-             </div>
-             <p className="short-draft-file">Video reference: {shortEditorDraft.fileName || "No video selected"}</p>
-              <label className="short-upload-field" htmlFor="library-short-caption">Caption<input id="library-short-caption" value={shortEditorDraft.caption} onChange={(event) => setShortEditorDraft({ ...shortEditorDraft, caption: event.target.value })} /></label>
-              <label className="short-upload-field" htmlFor="library-short-tags">Tags<input id="library-short-tags" value={shortEditorDraft.tags} onChange={(event) => setShortEditorDraft({ ...shortEditorDraft, tags: event.target.value })} placeholder="#trap #808 #beats" /></label>
-             {shortDraftError && <small className="upload-error" role="alert">{shortDraftError}</small>}
-             <div className="modal-actions">
-                <button type="button" className="button ghost" onClick={() => setShortEditorOpen(false)}>Cancel</button>
-                 <button type="button" className="button" onClick={() => { if (shortEditorDraft.publicationStatus === "pending" && !canSendShortDraft(shortEditorDraft)) { setShortDraftError("Añade un video, caption y al menos un tag antes de revisión."); return; } const result = saveShortDraft(shortEditorDraft); if (!result.saved) { setShortDraftError("No se pudo guardar el draft en el almacenamiento local. Los cambios no se han guardado."); return; } setLocalShortDraft(result.draft); setShortDraftError(""); setShortEditorOpen(false); }}>Save locally</button>
-             </div>
-           </section>
-         </div>
-       )}
-      <div className="library-toolbar">
+      <section className="library-overview" aria-label="Resumen de biblioteca">
+        <div><span>En esta colección</span><strong>{sectionAssets.length}</strong><small>sonidos y recursos</small></div>
+        <div><span>Con vista previa</span><strong>{sectionAssets.filter((asset) => sessionPreviews.has(asset.id) || Boolean(asset.previewUrl)).length}</strong><small>listos para escuchar</small></div>
+        <div><span>Favoritos</span><strong>{sectionAssets.filter((asset) => favoriteIds.has(asset.id)).length}</strong><small>guardados por ti</small></div>
+        <span className={`library-source${catalogError ? " has-error" : ""}`} role={catalogError ? "status" : undefined}>
+          {catalogSource === "api" ? "Catálogo local conectado" : "Catálogo local"}{catalogError ? " · Sin conexión API" : ""}
+        </span>
+      </section>
+      <section className="library-controls" aria-label="Buscar y filtrar sonidos">
+        <div className="library-toolbar">
          <label className="search" htmlFor="library-search">
            <Search size={17} aria-hidden="true" />
-          <span className="sr-only">Search by name, type, or tag</span>
+          <span className="sr-only">Buscar por nombre, tipo o tag</span>
           <input
              id="library-search"
              value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search by name, type, or tag..."
+            placeholder="Busca un sonido o tag…"
           />
         </label>
-         <div className="filter-chips" aria-label="Asset type and collection filters">
+        <label className="library-sort" htmlFor="library-sort">
+          <span>Ordenar</span>
+          <select id="library-sort" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}>
+            <option value="curated">Orden recomendado</option><option value="name">Nombre A-Z</option><option value="type">Tipo de sonido</option><option value="favorites">Favoritos primero</option>
+          </select>
+        </label>
+        <div className="view-toggle" role="group" aria-label="Diseño de resultados">
+          <button type="button" className={view === "list" ? "active" : ""} aria-label="Vista de lista" aria-pressed={view === "list"} onClick={() => setView("list")}><List size={17} aria-hidden="true" /></button>
+          <button type="button" className={view === "grid" ? "active" : ""} aria-label="Vista de cuadrícula" aria-pressed={view === "grid"} onClick={() => setView("grid")}><Grid2X2 size={16} aria-hidden="true" /></button>
+        </div>
+      </div>
+      <div className="library-filter-row">
+         <div className="filter-chips" role="group" aria-label="Filtrar por tipo">
           {categories.map((item) => (
              <button
                type="button"
@@ -268,7 +189,7 @@ function Library({
               onClick={() => setCategory(item)}
               key={item}
             >
-              {item}
+              {categoryLabels[item]}
             </button>
           ))}
            <button
@@ -279,45 +200,11 @@ function Library({
             aria-pressed={favoritesOnly}
             onClick={() => setFavoritesOnly((value) => !value)}
           >
-             <Heart size={16} fill={favoritesOnly ? "currentColor" : "none"} aria-hidden="true" /> Favorites
+            <Heart size={16} fill={favoritesOnly ? "currentColor" : "none"} aria-hidden="true" /> Favoritos
           </button>
          </div>
-         <label className="library-sort" htmlFor="library-sort">
-           <span>Sort</span>
-           <select id="library-sort" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}>
-             <option value="curated">Curated order</option>
-             <option value="name">Name A-Z</option>
-             <option value="type">Asset type</option>
-             <option value="favorites">Favorites first</option>
-           </select>
-         </label>
-         <div className="view-toggle" aria-label="Asset view">
-           <button
-             type="button"
-            className={view === "list" ? "active" : ""}
-            aria-label="List view"
-            aria-pressed={view === "list"}
-            onClick={() => setView("list")}
-          >
-             <List size={17} aria-hidden="true" />
-          </button>
-           <button
-             type="button"
-            className={view === "grid" ? "active" : ""}
-            aria-label="Grid view"
-            aria-pressed={view === "grid"}
-            onClick={() => setView("grid")}
-          >
-             <Grid2X2 size={17} aria-hidden="true" />
-          </button>
-        </div>
-       </div>
-       {favoriteMessage && (
-         <p className={`action-feedback${favoriteStorageError ? " error" : ""}`} role={favoriteStorageError ? "alert" : "status"}>
-           {favoriteMessage}
-         </p>
-       )}
-       <div className="status-filters" aria-label="Publication status">
+      </div>
+       <div className="status-filters" role="group" aria-label="Estado de publicación">
         {(
           ["all", "draft", "pending-review", "published", "archived"] as const
         ).map((item) => (
@@ -332,53 +219,45 @@ function Library({
           </button>
         ))}
       </div>
+      </section>
+      {favoriteMessage && (
+        <p className={`action-feedback library-feedback${favoriteStorageError ? " error" : ""}`} role={favoriteStorageError ? "alert" : "status"}>
+          <Heart size={14} aria-hidden="true" /> {favoriteMessage === "Added to favorites" ? "Añadido a favoritos" : favoriteMessage === "Removed from favorites" ? "Quitado de favoritos" : "Favorito actualizado solo durante esta sesión; el almacenamiento local no está disponible."}
+        </p>
+      )}
+      {actionError && <p className="action-feedback error" role="alert">{actionError}</p>}
       <section className="panel library-panel">
-        <div className="section-heading">
-          <h2>
-             {category} <small>{sortedAssets.length}</small>
-           </h2>
-           <span className="muted">
-             {librarySortLabels[sort]}
-             {status !== "all" ? ` · ${publicationStatusLabels[status]}` : ""}
-           </span>
-         </div>
+        <div className="library-results-heading"><div><p className="eyebrow">TU COLECCIÓN</p><h2>{sortedAssets.length} {sortedAssets.length === 1 ? "resultado" : "resultados"}</h2></div><span>{categoryLabels[category]} · {librarySortLabels[sort]}{status !== "all" ? ` · ${publicationStatusLabels[status]}` : ""}</span></div>
+        <p className="library-demo-note">Los sonidos de muestra están marcados como demos y no se sincronizan con otros dispositivos.</p>
          {sortedAssets.length === 0 ? (
           <div className="empty-state" role="status">
-             <Search size={24} aria-hidden="true" />
-            <h2>No assets found</h2>
-            <p>
-              Try another search or clear a filter to keep exploring your
-              library.
-            </p>
+            <Search size={24} aria-hidden="true" />
+            <h2>No encontramos sonidos</h2>
+            <p>Prueba otra búsqueda o limpia los filtros para volver a explorar.</p>
             <button
               type="button"
               className="button ghost"
-              onClick={() => {
-                setQuery("");
-                setCategory("All assets");
-                setFavoritesOnly(false);
-                setStatus("all");
-              }}
+              onClick={clearFilters}
             >
-              Clear filters
+              <RotateCcw size={15} aria-hidden="true" /> Limpiar filtros
             </button>
           </div>
         ) : (
           <div className={`asset-list ${view === "grid" ? "grid-view" : ""}`}>
              {sortedAssets.map((asset) => (
-               <AssetRow
-                 asset={{ ...asset, previewUrl: sessionPreviews.get(asset.id), localAvailability: sessionPreviews.has(asset.id) ? "session-preview" : asset.localAvailability === "session-preview" ? "missing" : asset.localAvailability }}
+              <AssetRow
+                asset={{ ...asset, previewUrl: sessionPreviews.get(asset.id) || asset.previewUrl, localAvailability: sessionPreviews.has(asset.id) ? "session-preview" : asset.localAvailability === "session-preview" ? "missing" : asset.localAvailability }}
                 favorite={favoriteIds.has(asset.id)}
                 onFavorite={() => toggleFavorite(asset.id)}
                  onEdit={catalogAssets.some((item) => item.id === asset.id) ? () => setEditing(catalogAssets.find((item) => item.id === asset.id)) : undefined}
-                 onDelete={catalogAssets.some((item) => item.id === asset.id) ? () => { if (!window.confirm(`Archive ${asset.name}?`)) return; setSaving(true); setActionError(""); void onDeleteCatalogAsset(asset as CatalogAsset).then((result) => { setSaving(false); if (result.error) setActionError(result.error); }); } : undefined}
+                onDelete={catalogAssets.some((item) => item.id === asset.id) ? () => { if (!window.confirm(`¿Archivar ${asset.name}?`)) return; setSaving(true); setActionError(""); void onDeleteCatalogAsset(asset as CatalogAsset).then((result) => { setSaving(false); if (result.error) setActionError(result.error); }); } : undefined}
                  key={asset.id}
               />
             ))}
           </div>
         )}
       </section>
-    </>
+    </main>
   );
 }
 

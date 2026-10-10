@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+dist
+artifacts
+coverage
+data
+runtime
+backups
+.env
+.env.*
+!.env.example
+*.log
+*.tmp

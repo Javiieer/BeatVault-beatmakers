@@ -1,4 +1,5 @@
 services:
+  # Local development only. Use compose.oracle.yml for the VPS.
   postgres:
     image: postgres:16
     container_name: beatvault-postgres
@@ -8,7 +9,7 @@ services:
       POSTGRES_USER: beatvault
       POSTGRES_PASSWORD: beatvault_local_only
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - beatvault_postgres_data:/var/lib/postgresql/data
       - ./db/migrations:/docker-entrypoint-initdb.d:ro

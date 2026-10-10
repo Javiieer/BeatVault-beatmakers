@@ -4,6 +4,13 @@ import { ApiClient, isProjectRecord } from "./client";
 const record = { id: "p1", ownerId: "o1", title: "Idea", status: "draft", updatedAt: "2026-01-01" };
 const response = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
 describe("ApiClient", () => {
+  it('does not bind browser fetch to the client instance', async () => {
+    const fetcher = function(this: unknown) {
+      expect(this).toBeUndefined();
+      return response({ ok: true, data: record });
+    };
+    expect((await new ApiClient('http://api', 100, fetcher).request('/x', {}, isProjectRecord)).ok).toBe(true);
+  });
   it("accepts a successful ApiResult", async () => expect((await new ApiClient("http://api", 100, vi.fn(() => response({ ok: true, data: record })) as typeof fetch).request("/x", {}, isProjectRecord)).ok).toBe(true));
   it("includes cookies for session requests", async () => {
     const fetcher = vi.fn((...args: Parameters<typeof fetch>) => { void args; return response({ ok: true, data: record }); });

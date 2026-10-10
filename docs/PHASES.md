@@ -16,6 +16,12 @@ Authenticated catalog metadata mutations (`POST`/`PUT`/`DELETE`) are now include
 
 Library exposes accessible edit and archive actions only for catalog assets. Metadata uses `CatalogRepository` API-first; localStorage is used only for network/timeout fallback, while authorization, conflict, validation, and other API errors remain visible. Session previews are revoked when their catalog asset is removed.
 
+## Phase Uploads: persistent local files
+
+**Status:** Implemented with explicit test limitations
+
+One-file multipart uploads use Busboy, session-derived ownership, CSRF, configurable limits, signature validation, streaming SHA-256 deduplication, JSON/Postgres metadata, protected Range preview/download, delete consistency, and startup reconciliation. The frontend keeps local drafts separate and never reports local publication when remote persistence fails. Real PostgreSQL integration remains conditional on Docker availability.
+
 ## Phase 0: Discovery and Blueprint
 
 **Status:** Complete
@@ -256,6 +262,19 @@ Replace selected browser-only orchestration with a small local Node.js/TypeScrip
 - A live API without a session shows Login; an unavailable API preserves demo local mode.
 - Project creation does not send a client-selected `ownerId`; Library remains local-only.
 
+## Phase 3.8: Local email/password registration
+
+**Status:** Complete as development-only prototype
+
+- Normalized email registration, scrypt hashing, duplicate handling, creator-only role assignment, and explicit verification state.
+- Login remains available while real email verification is pending; no email delivery is claimed.
+
+## Phase 3.9: Local account verification and recovery
+
+- One-time hashed expiring verification/reset tokens, public non-enumerating requests, CSRF-protected password change, and session invalidation after password replacement.
+- Development-only token exposure is explicit and disabled in production; email provider delivery remains a later phase.
+- Google, WhatsApp, and secure admin bootstrap remain deferred.
+
 ## Phase 4: VPS Platform Core
 
 **Status:** Planned
@@ -330,6 +349,14 @@ Introduce controlled monetization and internal operations.
 - Subscription control panel.
 - Billing provider integration.
 - Admin roles and permissions.
+
+### Phase 4.7 — Auditoría persistente local
+
+Complete. Audit events redactados se persisten en JSON por defecto o PostgreSQL, con cola segura, paginación admin y retención configurable. Ver `docs/PHASE_4_7_REPORT.md`.
+
+### Phase 4.5 — Bootstrap seguro del primer administrador
+
+Complete. `npm run admin:bootstrap` crea o promueve una cuenta admin únicamente en desarrollo, exige email, contraseña y token del entorno, usa scrypt, marca la cuenta como verificada, es idempotente y registra auditoría sin secretos. Soporta los repositorios JSON y PostgreSQL seleccionados por configuración. Ver `docs/PHASE_4_5_REPORT.md`.
 - Account review.
 - Moderation.
 - Promotion codes and discounts.
@@ -463,3 +490,9 @@ See `docs/PHASE_5_4_REPORT.md`.
 - No driver, connection, automatic frontend switch, destructive migration, or secret was added.
 
 See `docs/PHASE_4_4_REPORT.md`.
+
+## Phase 4.6: Admin Control Center API local
+
+**Status:** Complete as local read-only slice
+
+Added session and server-side admin-role protection for overview, accounts, audit, and catalog-review endpoints, redaction of account secrets, and API-first Admin UI fallback. No admin mutations, billing, moderation actions, or durable audit storage were added. See `docs/PHASE_4_6_REPORT.md`.

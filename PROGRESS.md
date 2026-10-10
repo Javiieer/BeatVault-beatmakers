@@ -1,10 +1,18 @@
 # BeatVault Progress Handoff
 
-**Last updated:** 2026-09-06
-**Current phase:** Phase 5.4 commercial discovery and Phase 4.4 persistence contract prepared
+> Historical snapshot, last updated 2026-09-08. For the current implementation,
+> product hierarchy, boundaries and next step, use `docs/README.md`,
+> `docs/RELEASE_SCOPE.md`, `docs/ROADMAP.md` and `docs/NEXT_STEP.md`.
+
+**Last updated:** 2026-09-08
+**Current phase:** Phase 4.5 secure local admin bootstrap complete; Phase 5.4 commercial discovery and Phase 4.4 persistence contract prepared
 **Project type:** Local React + TypeScript + Vite frontend
 
 The canonical phase execution map is `docs/PHASES.md`. Phase 4.1 is complete as a development-only security hardening pass; it is not production/VPS readiness.
+
+Phase 4.5 adds `npm run admin:bootstrap`, requiring explicit development environment variables and blocking production. It creates or promotes an admin with scrypt and verified state, remains idempotent, and audits without secrets. See `docs/PHASE_4_5_REPORT.md`.
+
+Phase 4.7 persists strictly redacted audit events in JSON by default or PostgreSQL, with configurable retention and paginated admin reads. See `docs/PHASE_4_7_REPORT.md`.
 
 ## New Architecture Direction
 
@@ -13,6 +21,8 @@ The current product is local-only for development, but production is expected to
 This is a documented architectural direction, not an implemented backend feature. Provider OAuth, tokens, sync, preview proxying, VPS deployment, and cloud storage remain deferred.
 
 ## Current State
+
+Persistent local uploads v1 is implemented with one-file multipart Busboy reception, SHA-256 deduplication, protected preview/download/delete, JSON/Postgres metadata, and startup reconciliation. Verification status and remaining test limitations are recorded in `docs/PHASE_UPLOADS_REPORT.md`.
 
 BeatVault has a working local frontend foundation with a dark, premium producer-focused UI. The application runs with Vite at:
 
@@ -88,6 +98,7 @@ Phase 4.2 centralizes validated server environment configuration, CORS allowlist
 - Added `docs/ADMIN_PANEL_DISCOVERY.md` for the future internal admin panel, including account review, promotions, plans, entitlements, moderation, provider operations, roles, and server-side authorization.
 - Prepared local PostgreSQL with `docker-compose.yml` and `db/migrations/001_init.sql`; Docker Desktop is installed and the PostgreSQL container was verified healthy. JSON repositories remain active.
 - Added `docs/PHASE_5_PRODUCT_CATALOG_PLAN.md` defining demo cleanup, FL Studio bundle representation, Library submenus, entitlement separation, and the staged sales/monetization roadmap.
+- Audited and hardened repository/storage boundaries: private upload, backup, log, and runtime directories are ignored; `.env.example`, README, and architecture docs describe local upload configuration and separate backup procedures.
 - Phase 5.1: removed example projects from the visible creator workspace, normalized typed catalog sections, represented FL Studio Demo Pack as one grouped Sound Pack fixture, and added honest access/archive metadata plus navigation tests. See `docs/PHASE_5_1_REPORT.md`.
 - Phase 5.2: added the typed, pure ownership and entitlement decision model with conservative preview/download rules, expiration, license, quota, cancellation, grace, and reason tests. See `docs/PHASE_5_2_REPORT.md`.
 - Phase 5.3: added the typed product/license catalog model, draft offer terms, version and bundle metadata, preview/download policy, and pure publication/availability decisions. No sales or download authorization was added. See `docs/PHASE_5_3_REPORT.md`.
@@ -95,6 +106,7 @@ Phase 4.2 centralizes validated server environment configuration, CORS allowlist
 - Phase 4.4: added a shared server repository contract, an injected SQL PostgreSQL adapter, and an explicit JSON/PostgreSQL backend flag. JSON remains active and no driver or automatic switch was added. See `docs/PHASE_4_4_REPORT.md`.
 
 - Phase 4.4 runtime wiring: added `pg` pool selection, PostgreSQL account/project/catalog metadata persistence, `/api/ready`, graceful pool shutdown, and reversible JSON rollback. See `docs/PHASE_4_4_REPORT.md`.
+- Phase 3.8: added local email/password registration, scrypt-only persistence, creator-only public role, explicit verification state, duplicate handling, and frontend registration mode. See `docs/PHASE_3_8_REPORT.md`.
 - Added `src/data/libraryFilters.ts` to isolate pure Library filtering/sorting logic.
 - Added local-only Plans & Subscription and Admin Control Center mock routes. See `docs/PHASE_4_3_REPORT.md`.
 - Added a real ESLint script and configuration; current lint run is clean.

@@ -4,5 +4,19 @@ artifacts
 .env
 .env.*
 !.env.example
+!.env.oracle.example
+.env.oracle
 *.local
 data/server-local/
+
+# Private user content and runtime storage. Keep interface fixtures under assets/demo/ versioned.
+uploads/
+storage/
+private-storage/
+data/uploads/
+user-content/
+backups/
+logs/
+tmp/
+*.log
+*.tmp

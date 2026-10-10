@@ -2,6 +2,10 @@
 
 Updated: 2026-09-02
 
+Phase 4.6 añadió el Admin Control Center local de solo lectura: endpoints protegidos por sesión y rol admin, redacción de cuentas y UI API-first con fallback mock visible. Phase 4.7 persiste la auditoría local redactada en JSON/PostgreSQL con retención configurable. Ver `docs/PHASE_4_7_REPORT.md`.
+
+Phase 4.5 añadió el bootstrap explícito y server-side del primer administrador local. El comando exige variables de entorno, está bloqueado en producción, usa hash scrypt, promueve de forma idempotente y registra `admin_bootstrap` sin secretos. Ver `docs/PHASE_4_5_REPORT.md`.
+
 ## Audit Record
 
 This document was reviewed after Phase 10 Backend readiness contracts. The confirmed local-only corrections below were implemented; no backend, API implementation, dependency, cloud, or payment functionality was added.
@@ -177,3 +181,4 @@ Validation passed with `npm run typecheck`, `npm run lint`, `npm run build`, and
 ## Documentation workflow
 
 The project handoff is maintained through `PROGRESS.md`, `CHANGELOG.md`, `ERRORS.md`, `IMPROVEMENTS.md`, `DECISIONS.md`, `ROADMAP.md`, and `NEXT_STEP.md`. OpenCode in Termux and GPT mobile should read these files before making significant changes.
+Phase 3.9 complete: local verification, password reset/change, hashed expiring one-time tokens, public non-enumeration, recovery rate limits, CSRF and session invalidation. See `docs/PHASE_3_9_REPORT.md`.

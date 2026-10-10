@@ -3,6 +3,11 @@ CREATE TABLE IF NOT EXISTS accounts (
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'creator' CHECK (role IN ('creator', 'admin')),
+  verification_state TEXT NOT NULL DEFAULT 'unverified' CHECK (verification_state IN ('unverified', 'pending', 'verified')),
+  verification_token_hash TEXT,
+  verification_token_expires_at TIMESTAMPTZ,
+  reset_token_hash TEXT,
+  reset_token_expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

@@ -9,7 +9,13 @@ export interface CatalogEntry {
   tagIds: EntityId[]
   previewIds: EntityId[]
   publicationStatus: ContentItem['publicationStatus']
+  assetId?: EntityId
+  coverId?: '808' | 'orchestra' | 'lo-fi'
+  reviewNote?: string
+  audio?: { originalName: string; mimeType: string; sizeBytes: number; state: 'available' | 'missing' | 'metadata-only' }
 }
+
+export type CatalogInput = Pick<CatalogEntry, 'title' | 'type' | 'tagIds' | 'publicationStatus' | 'assetId' | 'coverId'>
 
 export interface CatalogFilter {
   query?: string

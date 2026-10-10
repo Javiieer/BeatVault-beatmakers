@@ -1,4 +1,5 @@
 import type { Project, ProjectStatus } from "../types";
+import { scopedKey } from './storageScope';
 
 const projectsKey = "beatvault:local-projects";
 
@@ -33,11 +34,11 @@ export function isLocalProject(value: unknown): value is Project {
   );
 }
 
-export function readLocalProjects(): { projects: Project[]; error: boolean } {
+export function readLocalProjects(scope?: string): { projects: Project[]; error: boolean } {
   try {
     if (typeof localStorage === "undefined")
       return { projects: [], error: true };
-    const raw = localStorage.getItem(projectsKey);
+    const raw = localStorage.getItem(scopedKey(projectsKey, scope));
     if (!raw) return { projects: [], error: false };
     const value: unknown = JSON.parse(raw);
     return {
@@ -49,10 +50,10 @@ export function readLocalProjects(): { projects: Project[]; error: boolean } {
   }
 }
 
-export function writeLocalProjects(value: Project[]) {
+export function writeLocalProjects(value: Project[], scope?: string) {
   try {
     if (typeof localStorage === "undefined") return false;
-    localStorage.setItem(projectsKey, JSON.stringify(value));
+    localStorage.setItem(scopedKey(projectsKey, scope), JSON.stringify(value));
     return true;
   } catch {
     return false;

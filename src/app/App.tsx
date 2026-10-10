@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Bell, ChartNoAxesColumn, ChevronDown, Check, Disc3, Grid2X2, Home, Library as LibraryIcon, Menu, Music2, Search, Settings, Sparkles, Store, Upload as UploadIcon, Users, Video, CreditCard, ShieldCheck } from "lucide-react";
+import { Bell, ChartNoAxesColumn, ChevronDown, Check, Disc3, Grid2X2, Home as HomeIcon, Library as LibraryIcon, Menu, Music2, Search, Settings, Sparkles, Store, Upload as UploadIcon, Users, Video, CreditCard, ShieldCheck } from "lucide-react";
 import { assets } from "../data/mock";
 import {
   AudioPlayer,
-  Badge,
   Icon,
 } from "../components/ui";
-import { Dashboard } from "../components/Dashboard";
+import { Home } from "../components/Home";
 import { ShortsFeed } from "../components/ShortsFeed";
 import { Upload } from "../components/Upload";
 import {
@@ -15,13 +14,14 @@ import {
 } from "../data/localCatalog";
 import {
   readLocalProjects,
-  writeLocalProjects,
 } from "../data/localProjects";
 import type { AudioAsset, Project } from "../types";
 import { Placeholder } from "../components/Placeholder";
 import { nav, secondary } from "./navigation";
-import { ProjectModal as ProjectModalComponent } from "../components/ProjectModal";
+import { modules } from "./modules";
 import { Studio } from "../components/Studio";
+import { ownedUploads } from "../data/creatorUploads";
+import "../styles/creator-uploads.css";
 import { Beats, BeatDetail } from "../components/Beats";
 import { Library } from "../components/Library";
 import "../styles/app.css";
@@ -30,45 +30,43 @@ import "../styles/scrollbars.css";
 import { readStoredTheme, themeStorageKey, type Theme } from "./theme";
 import { clearSessionPreviews, removeSessionPreview, setSessionPreview } from "../data/sessionPreviewMap";
 import { getPathname, getQuery } from "./routing";
-import { ProjectRepository, type ProjectSource } from "../data/projectRepository";
-import { authClient, isAuthUser, isNull, type AuthUser } from "../api/client";
+import { ProjectRepository } from "../data/projectRepository";
+import { authClient, isAuthUser, isNull, uploadAsset, type AuthUser } from "../api/client";
 import { Login } from "../components/Login";
 import { CatalogRepository, mergeCatalogAssets, type CatalogSource } from "../data/catalogRepository";
 import { Plans } from "../components/Plans";
 import { Admin } from "../components/Admin";
+import { ProfileMenu } from "../components/ProfileMenu";
+import { CreatorProfilePage } from '../components/CreatorProfile';
+import { PasswordRecovery } from '../components/PasswordRecovery';
+import { Friends } from '../components/Friends';
 
-const projectRepository = new ProjectRepository();
-const catalogRepository = new CatalogRepository();
-
-const navIcons = { home: Home, disc: Disc3, library: LibraryIcon, music: Music2, video: Video, users: Users, store: Store, grid: Grid2X2, sparkles: Sparkles, upload: UploadIcon, chart: ChartNoAxesColumn, settings: Settings, plans: CreditCard, admin: ShieldCheck } as const;
+const navIcons = { home: HomeIcon, disc: Disc3, library: LibraryIcon, music: Music2, video: Video, users: Users, store: Store, grid: Grid2X2, sparkles: Sparkles, upload: UploadIcon, chart: ChartNoAxesColumn, settings: Settings, plans: CreditCard, admin: ShieldCheck } as const;
 const themes: ReadonlyArray<[Theme, string, string]> = [
   ["classic", "Classic", "Cyan / slate"],
   ["ember", "Ember Forge", "Flame / charcoal"],
   ["ivory", "Ivory Studio", "Warm white / premium"],
   ["verdant", "Verdant Signal", "Technical green / black"],
 ];
-function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => void }) {
+function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Promise<void> }) {
+  const scope = user?.id || 'demo';
+  const [projectRepository] = useState(() => new ProjectRepository(undefined, scope));
+  const [catalogRepository] = useState(() => new CatalogRepository(undefined, scope));
   const [theme, setTheme] = useState<Theme>(() => {
     return readStoredTheme(typeof localStorage === "undefined" ? undefined : localStorage);
   });
   const [activeAsset, setActiveAsset] = useState<AudioAsset>();
-  const [path, setPath] = useState(
-    getPathname(window.location.hash),
-  );
+  const [locationHash, setLocationHash] = useState(window.location.hash);
+  const path = getPathname(locationHash);
   const [menuOpen, setMenuOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const menuReturnFocus = useRef<HTMLElement | null>(null);
   const [globalQuery, setGlobalQuery] = useState("");
   const [localProjects, setLocalProjects] = useState<Project[]>(
-    () => readLocalProjects().projects,
+    () => user ? [] : readLocalProjects(scope).projects,
   );
-  const [projectStorageState, setProjectStorageState] = useState<"saved" | "error">(() => (readLocalProjects().error ? "error" : "saved"));
-  const [projectSource, setProjectSource] = useState<ProjectSource>("fallback");
-  const [projectModal, setProjectModal] = useState<{
-    project?: Project;
-  } | null>(null);
   const [catalogAssets, setCatalogAssets] = useState<CatalogAsset[]>(() =>
-    readCatalog(),
+    user ? [] : readCatalog(scope),
   );
   const [catalogSource, setCatalogSource] = useState<CatalogSource>("fallback");
   const [catalogError, setCatalogError] = useState<string>();
@@ -87,17 +85,16 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => voi
       setCatalogSource(result.source);
       setCatalogError(result.error);
     });
-  }, []);
+  }, [catalogRepository]);
   useEffect(() => {
     if (import.meta.env.MODE === "test") return;
     void projectRepository.list().then(result => {
       setLocalProjects(result.projects);
-      setProjectSource(result.source);
     });
-  }, []);
+  }, [projectRepository]);
   useEffect(() => {
     const fn = () => {
-        setPath(getPathname(window.location.hash));
+        setLocationHash(window.location.hash);
       setMenuOpen(false);
     };
     window.addEventListener("hashchange", fn);
@@ -158,26 +155,12 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => voi
           .includes(normalizedGlobalQuery),
       )
     : [];
-  const saveProjects = (next: Project[]) => {
-    setLocalProjects(next);
-    const saved = writeLocalProjects(next);
-    setProjectStorageState(saved ? "saved" : "error");
-    return saved;
-  };
-  const editProject = (project: Project) => setProjectModal({ project });
-  const deleteProject = (project: Project) => {
-    if (window.confirm(`Delete ${project.name}?`)) void projectRepository.delete(project).then(result => {
-      setProjectSource(result.source); if (result.deleted) saveProjects(localProjects.filter((item) => item.id !== project.id));
-      if (result.error) setProjectStorageState("error");
-    });
-  };
-  const publishAsset = (asset: CatalogAsset, previewUrl?: string) => {
-    void catalogRepository.create(asset).then((result) => {
-      if (!result.asset) { if (previewUrl) URL.revokeObjectURL(previewUrl); return; }
-      setCatalogAssets((current) => mergeCatalogAssets([result.asset!], current));
-      if (previewUrl) setSessionPreviews((previews) => setSessionPreview(previews, result.asset!.id, previewUrl, URL.revokeObjectURL));
-    });
-    window.location.hash = "#/library";
+  const publishAsset = async (asset: CatalogAsset, previewUrl?: string) => {
+    const result = await catalogRepository.create({ ...asset, ownerId: user?.id });
+    setCatalogSource(result.source);
+    if (!result.asset) { setCatalogError(result.error); return false; }
+    setCatalogAssets(current => mergeCatalogAssets([result.asset!], current));
+    if (previewUrl) setSessionPreviews(previews => setSessionPreview(previews, result.asset!.id, previewUrl, URL.revokeObjectURL));
     return true;
   };
   const updateCatalogAsset = async (asset: CatalogAsset): Promise<{ error?: string }> => {
@@ -197,11 +180,15 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => voi
     setCatalogError(result.error);
     return { error: result.error };
   };
+  const refreshCatalog = async () => {
+    const result = await catalogRepository.list();
+    setCatalogAssets(result.assets); setCatalogSource(result.source); setCatalogError(result.error);
+  };
   return (
     <div className="app-shell" data-theme={theme}>
       {menuOpen && <button type="button" className="drawer-scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
       <aside ref={sidebarRef} className={`sidebar ${menuOpen ? "open" : ""}`}>
-        <a className="brand" href="#/dashboard">
+        <a className="brand" href="#/home">
           <span className="brand-mark">BV</span>
           <span>
             BEAT<span>VAULT</span>
@@ -209,7 +196,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => voi
         </a>
         <p className="nav-label">Workspace</p>
         <nav id="primary-navigation" aria-label="Primary navigation">
-          {[...nav, ...secondary].map((item) => (
+          {[...nav, ...(user?.role === "admin" ? secondary : [])].map((item) => (
             <a
               className={path === item.path ? "active" : ""}
               href={`#${item.path}`}
@@ -219,24 +206,18 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => voi
             >
               <Icon>{(() => { const NavIcon = navIcons[item.icon]; return <NavIcon size={18} strokeWidth={1.8} />; })()}</Icon>
               {item.label}
-              {["/community", "/marketplace"].includes(item.path) && (
-                <Badge>Soon</Badge>
-              )}
             </a>
           ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="storage">
-            <span>Local library</span>
+            <span>Mis subidas</span>
             <strong>
-              68.4 GB <small>/ 128 GB</small>
+              {ownedUploads(catalogAssets, user?.id).length} <small>audios</small>
             </strong>
-            <div className="storage-bar">
-              <i />
-            </div>
           </div>
              <p className="status">
-              <i /> {projectSource === "api" ? "Projects from local API" : projectStorageState === "saved" ? "Projects saved locally" : "Project storage unavailable"}
+              <i /> {catalogSource === "api" ? "Catalogo conectado" : "Modo local"}
           </p>
         </div>
       </aside>
@@ -255,7 +236,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => voi
           >
              <Menu size={20} strokeWidth={1.8} />
           </button>
-          <a className="mobile-brand" href="#/dashboard">
+          <a className="mobile-brand" href="#/home">
             <span className="brand-mark">BV</span>
             <b>
               BEAT<span>VAULT</span>
@@ -319,54 +300,17 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => voi
               <button type="button" className="icon-button" aria-label="Notifications">
                <Bell size={18} strokeWidth={1.8} aria-hidden="true" />
             </button>
-             <button type="button" className="profile" onClick={user ? logout : undefined} aria-label={user ? "Log out" : "Local demo mode"}>
-               <span className="avatar">{user ? user.email.slice(0, 2).toUpperCase() : "DL"}</span>
-               <span>{user ? user.email : "Demo local"}</span>
-               </button>
+             <ProfileMenu user={user} onLogout={logout} />
           </div>
         </header>
         <div className="content">
-          {renderPage(
-            path,
-             setActiveAsset,
-            allProjects,
-            localProjects,
-            projectStorageState,
-            setProjectModal,
-            editProject,
-            deleteProject,
-           catalogAssets,
-           catalogSource,
-           catalogError,
-             publishAsset,
-              sessionPreviews,
-              updateCatalogAsset,
-              deleteCatalogAsset,
-          )}
+          {renderPage(path, setActiveAsset, allProjects, catalogAssets, catalogSource, catalogError,
+            publishAsset, sessionPreviews, updateCatalogAsset, deleteCatalogAsset, user, refreshCatalog)}
+
         </div>
       </main>
       <AudioPlayer asset={activeAsset} />
-      {projectModal && (
-        <ProjectModalComponent
-          project={projectModal.project}
-          onClose={() => setProjectModal(null)}
-            onSave={(project) => {
-              if (projectModal.project) {
-               void projectRepository.update(project).then(result => {
-                 setProjectSource(result.source); if (result.project) saveProjects(localProjects.map((item) => item.id === project.id ? result.project! : item));
-                 if (!result.error) setProjectModal(null); else setProjectStorageState("error");
-               });
-               return;
-             }
-            void projectRepository.create(project).then(result => {
-               saveProjects([result.project, ...localProjects.filter(item => item.id !== result.project.id)]);
-               setProjectSource(result.source);
-               if (result.error) setProjectStorageState("error");
-              setProjectModal(null);
-            });
-          }}
-        />
-      )}
+
     </div>
   );
 }
@@ -375,72 +319,61 @@ function renderPage(
   path: string,
   setActiveAsset: (asset: AudioAsset) => void,
   allProjects: Project[],
-  localProjects: Project[],
-  storageState: "saved" | "error",
-  setProjectModal: (value: { project?: Project } | null) => void,
-  onEdit: (project: Project) => void,
-  onDelete: (project: Project) => void,
   catalogAssets: CatalogAsset[],
   catalogSource: CatalogSource,
   catalogError: string | undefined,
-  publishAsset: (asset: CatalogAsset) => boolean,
+  publishAsset: (asset: CatalogAsset, previewUrl?: string) => Promise<boolean>,
   sessionPreviews: ReadonlyMap<string, string>,
   onUpdateCatalogAsset: (asset: CatalogAsset) => Promise<{ error?: string }>,
   onDeleteCatalogAsset: (asset: CatalogAsset) => Promise<{ error?: string }>,
+  user?: AuthUser,
+  onReviewed?: () => Promise<void>,
 ) {
-  const editable = (project: Project) =>
-    localProjects.some((item) => item.id === project.id);
-  if (path === "/dashboard" || path === "/")
-    return (
-      <Dashboard
-        projects={allProjects}
-        localProjects={localProjects}
-        storageState={storageState}
-        onNew={() => setProjectModal({})}
-        onEdit={onEdit}
-        onDelete={onDelete}
-        editable={editable}
-      />
-    );
-    if (path === "/beats")
-      return <Beats projects={allProjects} onPlay={setActiveAsset} />;
-   if (path === "/library")
-     return <Library catalogAssets={catalogAssets} sessionPreviews={sessionPreviews} catalogSource={catalogSource} catalogError={catalogError} onUpdateCatalogAsset={onUpdateCatalogAsset} onDeleteCatalogAsset={onDeleteCatalogAsset} />;
-  if (path === "/studio")
-    return (
-      <Studio
-        projects={allProjects}
-        localProjects={localProjects}
-        storageState={storageState}
-        onNew={() => setProjectModal({})}
-        onEdit={onEdit}
-        onDelete={onDelete}
-        editable={editable}
-      />
-    );
-   if (path === "/upload") return <Upload onPublish={publishAsset} />;
+  const uploads = ownedUploads(catalogAssets, user?.id).map(asset => ({
+    ...asset, previewUrl: sessionPreviews.get(asset.id) || asset.previewUrl,
+  }));
+  if (path === '/profile' || path === '/settings') return <CreatorProfilePage key={window.location.hash} user={user} uploads={catalogAssets.map(asset => ({ ...asset, previewUrl: sessionPreviews.get(asset.id) || asset.previewUrl }))} onPlay={setActiveAsset} editing={path === '/settings'} targetId={path === '/profile' ? getQuery(window.location.hash).get('id') || undefined : undefined} />;
+  if (path === '/friends') return <Friends key={user?.id || 'demo'} userId={user?.id} />;
+  if (path === "/home" || path === "/dashboard" || path === "/")
+    return <Home key={user?.id || "demo"} scope={user?.id || "demo"} uploads={uploads} onPlay={setActiveAsset} />;
+  if (path === "/beats") return <Beats catalogAssets={catalogAssets} onPlay={setActiveAsset} />;
+  if (path === "/library")
+    return <Library catalogAssets={catalogAssets} sessionPreviews={sessionPreviews} catalogSource={catalogSource} catalogError={catalogError} onUpdateCatalogAsset={onUpdateCatalogAsset} onDeleteCatalogAsset={onDeleteCatalogAsset} />;
+  if (path === "/studio" || path === "/my-uploads")
+    return <Studio scope={user?.id || 'demo'} loadError={user ? catalogError : undefined} uploads={uploads} onPlay={setActiveAsset} onUpdate={onUpdateCatalogAsset} />;
+  if (path === "/upload") return <Upload scope={user?.id || 'demo'} onPublish={publishAsset} onRemoteUpload={user ? uploadAsset : undefined} />;
   if (path === "/plans" || path === "/subscription") return <Plans />;
-  if (path === "/admin") return <Admin />;
+  if (path === "/admin") return <Admin onReviewed={onReviewed} />;
   if (path === "/shorts" || path.startsWith("/shorts?")) {
      const query = getQuery(window.location.hash);
     return <ShortsFeed sharedShortId={query.get("short")} />;
   }
    if (path.startsWith("/beat-detail")) return <BeatDetail projects={allProjects} onPlay={setActiveAsset} />;
   const name =
-    (nav.find((x) => x.path === path) || secondary.find((x) => x.path === path))
-      ?.label || "Dashboard";
+    modules.find((item) => item.path === path)?.label || "Page not found";
   return <Placeholder name={name} />;
 }
 function App() {
+  const [hash, setHash] = useState(window.location.hash);
+  useEffect(() => { const update = () => setHash(window.location.hash); window.addEventListener('hashchange', update); return () => window.removeEventListener('hashchange', update); }, []);
   const [authState, setAuthState] = useState<"checking" | "offline" | "required" | "authenticated">("checking");
   const [user, setUser] = useState<AuthUser>();
   const [authError, setAuthError] = useState<string>();
   const [authLoading, setAuthLoading] = useState(false);
   useEffect(() => { void authClient.request("/api/auth/me", { method: "GET" }, isAuthUser).then(result => { if (result.ok) { setUser(result.data); setAuthState("authenticated"); } else if (result.error.code === "UNAUTHORIZED") setAuthState("required"); else setAuthState("offline"); }); }, []);
   const login = async (email: string, password: string) => { setAuthLoading(true); setAuthError(undefined); const result = await authClient.request("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, isAuthUser); setAuthLoading(false); if (result.ok) { setUser(result.data); setAuthState("authenticated"); } else setAuthError(result.error.message); };
-  const logout = () => { void authClient.request("/api/auth/logout", { method: "POST" }, isNull).then(() => { setUser(undefined); setAuthState("required"); }); };
-  if (authState === "checking") return <Login loading onSubmit={login} />;
-  if (authState === "required") return <Login loading={authLoading} error={authError} onSubmit={login} />;
-  return <AuthenticatedApp user={user} logout={logout} />;
+  const register = async (email: string, password: string) => { setAuthLoading(true); setAuthError(undefined); const result = await authClient.request("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password }) }, isAuthUser); setAuthLoading(false); if (result.ok) { await login(email, password); } else setAuthError(result.error.message); };
+  const logout = async () => {
+    const result = await authClient.request("/api/auth/logout", { method: "POST" }, isNull);
+    if (!result.ok) throw new Error(result.error.message);
+    setUser(undefined); setAuthError(undefined); setAuthState("required");
+  };
+  const authPath = getPathname(hash);
+  if (authPath === '/forgot-password' || authPath === '/password-reset') return <PasswordRecovery mode={authPath === '/forgot-password' ? 'request' : 'reset'} token={getQuery(hash).get('token') || ''} />;
+  if (authState === "checking") return <Login loading onSubmit={login} onRegister={register} />;
+  const publicProfileId = getPathname(hash) === '/profile' ? getQuery(hash).get('id') : null;
+  if ((authState === 'required' || authState === 'offline') && publicProfileId) return <div className="app-shell"><main className="public-producer-view"><div className="public-producer-nav"><a href="#/dashboard">BeatVault</a><a href="#/dashboard">Iniciar sesion</a></div><CreatorProfilePage key={publicProfileId} targetId={publicProfileId} onPlay={() => undefined} /></main></div>;
+  if (authState === "required") return <Login loading={authLoading} error={authError} onSubmit={login} onRegister={register} />;
+  return <AuthenticatedApp key={user?.id || 'demo'} user={user} logout={logout} />;
 }
 export { App };

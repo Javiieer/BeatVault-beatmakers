@@ -1,36 +1,63 @@
-# Bugs
+# Known issues
 
-The confirmed Shorts audit gaps are corrected: shared hash links open the requested clip, beat links resolve against local mock data, follows use creator handles, and draft editing no longer mutates saved state before Save. Automated browser tests are not present, so validation is build/type validation plus manual interaction testing.
+Current record: 2026-10-09. Older claims that BeatVault has no backend,
+authentication, ESLint or automated tests are obsolete.
 
-## Storage boundary
+## Confirmed release blockers
 
-The upload draft is best-effort browser localStorage. Corrupt or unavailable storage is handled in the UI, but the draft cannot survive browser storage clearing, private-mode restrictions, or quota exhaustion. No cloud backup or synchronization is implied.
+- JSON storage has no transactional read/modify/write protection for concurrent
+  mutations. Multi-user production use is blocked until addressed.
+- There is no configured production email provider, so password recovery and
+  verification messages cannot reach users.
+- Production admin provisioning and real Postgres migration/restore behavior are
+  not yet established. The Oracle Compose profile is a private-pilot scaffold only.
 
-## Known integration constraint
+## Implemented corrections in this milestone
 
-The browser cannot directly write files into the Termux Android filesystem without an explicit transport or handoff mechanism. This is a planned Phase 5 integration concern, not a confirmed application bug.
+- Catalog entries retain owned audio and stable cover IDs. File name, format and size come from server records after reload; duration is not decoded server-side.
+- Owner playback/download survives reload, including after clearing browser caches.
+- Retrying the same owned file reuses its audio/catalog record after a lost response. Reselecting the file after reload is still required.
+- Catalog/project caches and upload drafts use account/demo namespaces. Legacy unscoped browser data is preserved but not silently assigned to an account.
+- Authenticated API failures do not expose cached lists or simulate successful local writes.
+- Fixed the browser fetch receiver that silently forced demo mode; a same-origin development proxy keeps cookies and CSRF on the frontend host.
+- Studio is now Mis subidas; new content is restricted to Beats and One-shots.
+- Catalog success is awaited, duplicate submissions are blocked and partially failed queues can be retried in the same session.
+- Home posts now appear in the owner's Publications tab from the same account-scoped IndexedDB store; no cross-device or public post delivery is implied.
+- Friends discovery exposes only opted-in public profile fields; request actions are session/CSRF protected and distinguish pending requests from accepted connections.
+- Friends now has an explicit API-offline state and retry action instead of presenting a misleading empty directory.
+- Removing the selected file selects the next available file correctly.
+- Temporary blob URLs are never written to the persistent catalog and stale legacy blob URLs are stripped on read.
+- Upload actions remain visible and usable on mobile.
+- Upload MIME values are normalized through an audio-only allowlist; the declared
+  format must match its container signature, and unknown MIME values are rejected.
 
-## File metadata boundary
+- Public catalog no longer returns other creators' private drafts/review entries.
+- Generic catalog writes cannot assign published/rejected moderation states.
+- JSON bodies are limited to 64 KiB, including requests without Content-Length.
+- Rejected origins are not echoed as permitted CORS origins.
+- Suffix and oversized media ranges now return valid byte bounds.
+- Private media responses receive defensive headers and consistent CORS handling.
+- API command entry detection accepts Windows filesystem paths.
 
-Audio duration is best-effort browser metadata. Unsupported, unreadable, or non-audio files show `Not available`; the selected file itself is never persisted in the local draft.
+Security regression assertions are in server/security-probes.test.ts.
+See SECURITY_FINDINGS.md for severity and unresolved security work.
 
-## Retired capture boundary
+## Remaining limitations
 
-Capture is not part of the current UI. Project handoff uses Markdown files; no browser-to-Termux transfer is supported.
+- Creator profiles support bundled cover/avatar presets, not custom image uploads.
+- Public profiles display published project metadata only; public audio previews and moderation decisions are not implemented.
+- The profile editor warns before page unload and explicit cancellation; in-app navigation can still discard unsaved changes.
+- Profile JSON writes are serialized within one repository instance only; this does not resolve global or multi-process JSON concurrency.
+- Password recovery has no email delivery provider yet. Local development can expose the one-time link only when `BEATVAULT_DEV_AUTH_TOKENS=true`; never enable this on a public deployment.
 
-## Retired capture history boundary
-
-Capture history is not part of the current UI; historical notes are retained only as documentation.
-
-## Known alpha gaps
-
-- `npm run lint` currently runs TypeScript compilation; no independent ESLint configuration is installed.
-- Only the four bundled FL Studio demo WAVs have playable previews. Other mock assets intentionally have no audio source.
-- Project, favorite, draft, and capture data are isolated to the current browser profile and are lost when browser storage is cleared or unavailable.
-- The sidebar status text remains a broad workspace message; individual features provide the more precise local-save status. It must not be interpreted as cloud synchronization.
-- No automated test suite, backend, authentication, publication service, moderation, cloud sync, or direct Termux transport exists.
-- Shorts draft cross-surface updates are local browser events/storage events only; blocked storage is session-only and the selected video cannot be restored after reload because only its filename is persisted. Review correctly requires reselecting it.
-- Library can edit and archive/restore a Shorts draft, but sends the user to Shorts for review so a real video File can be selected again.
-- Invalid or oversized video selections clear both the preview URL and metadata; selected video content remains session-only.
-- Shorts archived status is preserved when opening and saving the editor. Restoring to Draft is an explicit action only.
-- `saveShortDraft` now exposes storage failure to the modal instead of reporting a false successful save.
+- Postgres tests mock SQL; migrations and real database behavior need integration tests.
+- Sessions and rate limits are process-local. Rate limits currently use the socket address; behind a reverse proxy, trusted client-IP forwarding must be designed before scaling or opening registration broadly. Email verification/reset has no delivery provider.
+- Admin reads are protected but publication review actions are not implemented.
+- Audio header checks are not full media decoding; malformed files with valid headers
+  still need isolated media validation before public delivery.
+- Beats and dashboard contain demo/project data; they are not a complete public marketplace.
+- Desktop/mobile browser tests cover two accounts and the authenticated JSON-backed upload/reload/retry/playback workflow. Postgres integration remains unverified.
+- Browser storage can be unavailable or cleared; draft metadata is not an audio backup.
+- Shorts remains a local prototype. Selected video files cannot be restored after reload.
+- Home post media remains local to the browser. Friends are local-API relationships; no notifications, chat, block/report workflow or public post moderation is implemented.
+- No payments, payouts, licensing service, cloud sync or music distribution exists.

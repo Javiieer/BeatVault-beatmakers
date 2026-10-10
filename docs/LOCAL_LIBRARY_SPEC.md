@@ -1,5 +1,11 @@
 # Local Library Engine Specification
 
+## Persistent Uploads v1
+
+Persistent uploads are separate from browser-local drafts. The server accepts one multipart file per request, requires session plus CSRF, validates binary signatures, stores a streaming SHA-256 hash, and exposes ownership-protected preview/download/delete endpoints. JSON stores metadata in `assets.json`; Postgres uses `003_assets.sql`; neither stores binary content.
+
+Limits are 500 MiB per file, 510 MiB per request, one file, and eight fields. `BEATVAULT_UPLOAD_DIR` defaults to `data/uploads`. Startup reconciliation marks available records without files as `missing` and removes unreferenced files below owner directories.
+
 **Status:** Phase 2.2 implemented for browser-local sessions
 **Scope:** Browser-local development only
 

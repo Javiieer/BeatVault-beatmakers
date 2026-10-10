@@ -1,6 +1,6 @@
 # Admin Panel Discovery
 
-**Status:** Planned, not implemented
+**Status:** Phase 4.6 local read-only slice implemented
 
 ## Purpose
 
@@ -73,6 +73,8 @@ The browser must never access the database directly or receive provider credenti
 ## Deferred Work
 
 Do not implement real admin access, promotion redemption, billing changes, account suspension/deletion, refunds, or provider credentials in the local frontend. Mock screens may be designed later; sensitive behavior belongs behind the VPS API.
+
+Phase 4.7 mantiene las lecturas locales server-side y persiste auditoría redactada en JSON por defecto o PostgreSQL según `BEATVAULT_STORAGE_BACKEND`. `GET /api/admin/audit?page=1&limit=100` devuelve resultados limitados y paginados; el máximo de almacenamiento y días se configura con `BEATVAULT_AUDIT_MAX_ENTRIES` y `BEATVAULT_AUDIT_RETENTION_DAYS`.
 
 ## Decisions Required
 

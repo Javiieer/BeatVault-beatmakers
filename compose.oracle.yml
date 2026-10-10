@@ -1,0 +1,96 @@
+name: beatvault
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: beatvault
+      POSTGRES_USER: beatvault
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.oracle}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beatvault -d beatvault"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    networks: [data]
+
+  api:
+    build:
+      context: .
+      target: api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      BEATVAULT_HOST: 0.0.0.0
+      BEATVAULT_STORAGE_BACKEND: postgres
+      DATABASE_URL: postgresql://beatvault:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.oracle}@postgres:5432/beatvault
+      BEATVAULT_DATA_DIR: /app/data/server-local
+      BEATVAULT_UPLOAD_DIR: /app/data/uploads
+      BEATVAULT_DEMO_ENABLED: "false"
+      BEATVAULT_DEV_AUTH_TOKENS: "false"
+      BEATVAULT_COOKIE_SECURE: "true"
+      BEATVAULT_COOKIE_SAMESITE: Lax
+      BEATVAULT_CORS_ORIGINS: https://${BEATVAULT_DOMAIN:?Set BEATVAULT_DOMAIN in .env.oracle}
+    volumes:
+      - app_data:/app/data
+    expose:
+      - "4174"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4174/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [edge, data]
+
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    environment:
+      BEATVAULT_DOMAIN: ${BEATVAULT_DOMAIN:?Set BEATVAULT_DOMAIN in .env.oracle}
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [edge]
+
+volumes:
+  pg_data:
+    name: beatvault_pg_data
+  app_data:
+    name: beatvault_app_data
+  caddy_data:
+    name: beatvault_caddy_data
+  caddy_config:
+    name: beatvault_caddy_config
+
+networks:
+  edge:
+  data:
+    internal: true

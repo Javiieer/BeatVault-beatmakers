@@ -1,103 +1,55 @@
 # Roadmap
 
-## Phase 1 — UI Foundation
-Status: Complete
+Current priority: complete one reliable creator audio workflow before expanding modules.
+See RELEASE_SCOPE.md for the decision on every section.
 
-## Phase 1.1 — Visual refinement
-Status: Complete
+Home's browser-local composer/profile mirror and the Friends request foundation are
+implemented as supporting creator surfaces. Keep their local-only boundaries honest;
+do not let them displace review and published audio discovery from the next milestone.
 
-## Phase 1.2 — Responsive navigation
-Status: Complete
+Oracle VPS Compose/Caddy deployment scaffolding is now present for a single-machine
+private pilot. It is not public-launch ready; follow docs/DEPLOY_ORACLE_VPS.md and
+close the email, admin provisioning, Postgres restore, and media-validation blockers.
 
-## Phase 2 — Product and domain architecture
-Status: Complete
+## 1. Diagnostics and scope - implemented
 
-Defined BeatVault as a creator ecosystem with independent catalog, content, tags, preview, creators, beats, Shorts, streaming, marketplace, community, collaboration, releases, analytics, and AI boundaries. Shorts is planned as a future discovery module; no video infrastructure is included.
+Shared module inventory, focused navigation, repeatable code checks, local HTTP
+security probes, browser route coverage and a GitHub workflow definition.
+Results live in artifacts/diagnostics, with unresolved issues in BUGS.md.
 
-## Phase 3 — Catalog/content model
-Status: Complete
+## 2. Authenticated audio lifecycle - implemented with local JSON
 
-Initial TypeScript contracts are established for platform content, catalog entries, explicit metadata, tags, creators, publication validation, and preview references.
+Owned audio/cover references, reload playback/download, account cache isolation and
+lost-response retries have desktop/mobile coverage. Retrying after reload requires
+file reselection. Production storage and public media remain separate work.
 
-## Phase 4 — Upload and preview pipeline
-Status: Complete
+## 3. Publication and discovery
 
-Intentional upload UI, local metadata validation, publication checks, and preview-output placeholder are complete. Real upload, technical validation, preview generation, moderation, and cloud processing remain planned.
+The local admin review queue and published Beat catalog now use server records.
+Next: validate Postgres migrations/concurrency, then create a separate processed
+preview artifact with access rules that never expose the private original.
 
-## Phase 5 — Markdown project handoff
-Status: Complete
+## 3a. Social foundation - limited local scope
 
-Use Markdown files as the official project handoff between OpenCode, Termux, and GPT mobile. Track progress, errors, improvements, decisions, changelog entries, and the next small task. No in-app capture or Termux transport is part of BeatVault.
+Home posts are account-scoped to one browser and mirrored to the owner's profile.
+Friends discovers opted-in public profiles and persists requests/connections in the
+local API. PostgreSQL requires migration 006. Notifications, public post distribution,
+chat, blocking/reporting and friend-based feed ranking remain future work.
 
-Local project creation, validation, browser persistence, editing, deletion, and saved/error feedback are also complete. Projects remain browser-local and are not synchronized.
+## 4. Private pilot readiness
 
-### Current audit status
+Real Postgres integration and concurrency tests, durable sessions, email delivery,
+backup/restore drills, deployment configuration and authenticated browser coverage.
 
-The alpha UI and local workflows are implemented and validated by typecheck/lint/build. Shorts draft metadata can be edited from Library and its local publication state is shared across Library, Upload, and Shorts. The next implementation phase is selected from the Markdown handoff rather than from an in-app capture mechanism.
+## 5. Commerce - deferred
 
-## Phase 6 — Local catalog connection
-Status: Complete
+One Marketplace flow, licensing, checkout and payouts. Store merges into Marketplace.
+Plans follow an implemented purchase model, not an isolated pricing screen.
 
-Upload now creates browser-local catalog entries after explicit validation and “Publish for review”. Library displays those entries alongside demo content. No backend publication, cloud storage, moderation, or real preview processing exists yet.
+## 6. Expansion - deferred
 
-## Phase 7 — Marketplace
-Status: Future
+Shorts, expanded community and collaboration workflows after catalog validation. AI and distribution
+require separate evidence of demand and implementation scope.
 
-## Phase 7.1 — Catalog refinement
-Status: Complete
-
-Added local filters for draft, pending review, published, and archived states. Upload entries appear in Library as pending review.
-
-Products, licensing, review, checkout, and payouts.
-
-## Phase 8 — Streaming
-Status: Future
-
-Tracks, listening, and discovery.
-
-## Phase 9 — Shorts
-Status: UI prototype active
-
-Contained social-feed UI and local draft lifecycle are active; real short-form media infrastructure, moderation, analytics, and monetization remain future work.
-
-## Current priority — Visual product completion
-Status: Active
-
-Finish the local visual workflows for catalog content, beat details, Shorts, previews, and responsive interaction before beginning backend or database work.
-
-Shorts discovery remains tag-led through quick filters, tag search, and contextual creator, beat, and sound links.
-
-## Current execution phase — Upload validation refinement
-Status: Complete
-
-Upload now distinguishes session-only selected files from persisted metadata, validates basic file bounds, and reports local save failures. The next execution phase is Phase 7 — Shorts lifecycle refinement.
-
-## Current execution phase — Shorts lifecycle refinement
-Status: Complete
-
-Shorts draft editing, local publication transitions, restored-file rules, temporary media cleanup, and shared browser-local feedback are complete. Vertical creator and music discovery, moderation, media processing, and recommendations remain future work.
-
-## Current execution phase — Project workspace refinement
-Status: Complete
-
-Studio project filtering, ownership clarity, and local-workspace empty states are complete. Mock project records remain read-only and browser-local persistence remains best-effort.
-
-## Current execution phase — System states and resilience
-Status: Complete
-
-Loading, empty, error, unavailable-storage, reduced-motion, and action-feedback behavior was audited and the small safe corrections were completed without expanding the alpha boundary.
-
-## Next execution phase — Backend readiness contracts
-Status: Next
-
-Begin only after this handoff; do not start it as part of Phase 9.
-
-## Phase 10 — Community
-Status: Future
-
-Profiles, following, comments, sharing, and collaboration.
-
-## Phase 11 — AI
-Status: Future
-
-Suggestion workflows that never silently replace creator-defined metadata.
+Historical phase numbering and older "frontend only" limits remain in CHANGELOG.md
+and phase reports; they do not describe the current repository state.
