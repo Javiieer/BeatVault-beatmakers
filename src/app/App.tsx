@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Bell, ChartNoAxesColumn, ChevronDown, Check, Disc3, Grid2X2, Home as HomeIcon, Library as LibraryIcon, Menu, Music2, Search, Settings, Sparkles, Store, Upload as UploadIcon, Users, Video, CreditCard, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChartNoAxesColumn, ChevronDown, Check, Disc3, Grid2X2, Home as HomeIcon, Library as LibraryIcon, Menu, Music2, Search, Settings, Sparkles, Store, Upload as UploadIcon, Users, Video, CreditCard, ShieldCheck } from "lucide-react";
 import { assets } from "../data/mock";
 import {
   AudioPlayer,
@@ -40,6 +40,8 @@ import { ProfileMenu } from "../components/ProfileMenu";
 import { CreatorProfilePage } from '../components/CreatorProfile';
 import { PasswordRecovery } from '../components/PasswordRecovery';
 import { Friends } from '../components/Friends';
+import { createLocalArtworkUrl, readLocalArtwork, releaseLocalArtworkUrls, saveLocalArtwork } from '../data/localArtwork';
+import { NotificationCenter } from '../components/NotificationCenter';
 
 const navIcons = { home: HomeIcon, disc: Disc3, library: LibraryIcon, music: Music2, video: Video, users: Users, store: Store, grid: Grid2X2, sparkles: Sparkles, upload: UploadIcon, chart: ChartNoAxesColumn, settings: Settings, plans: CreditCard, admin: ShieldCheck } as const;
 const themes: ReadonlyArray<[Theme, string, string]> = [
@@ -56,6 +58,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
     return readStoredTheme(typeof localStorage === "undefined" ? undefined : localStorage);
   });
   const [activeAsset, setActiveAsset] = useState<AudioAsset>();
+  const closePlayer = useCallback(() => setActiveAsset(undefined), []);
   const [locationHash, setLocationHash] = useState(window.location.hash);
   const path = getPathname(locationHash);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -77,15 +80,21 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
   }, [sessionPreviews]);
   useEffect(() => () => {
     clearSessionPreviews(sessionPreviewsRef.current, URL.revokeObjectURL);
-  }, []);
+    releaseLocalArtworkUrls(scope);
+  }, [scope]);
   useEffect(() => {
     if (import.meta.env.MODE === "test") return;
     void catalogRepository.list().then(result => {
-      setCatalogAssets(result.assets);
+      void Promise.all(result.assets.map(async asset => {
+        const artwork = await readLocalArtwork(scope, asset.id).catch(() => undefined);
+        if (!artwork) return asset;
+        const cover = createLocalArtworkUrl(scope, artwork);
+        return { ...asset, cover };
+      })).then(setCatalogAssets);
       setCatalogSource(result.source);
       setCatalogError(result.error);
     });
-  }, [catalogRepository]);
+  }, [catalogRepository, scope]);
   useEffect(() => {
     if (import.meta.env.MODE === "test") return;
     void projectRepository.list().then(result => {
@@ -155,14 +164,24 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
           .includes(normalizedGlobalQuery),
       )
     : [];
-  const publishAsset = async (asset: CatalogAsset, previewUrl?: string) => {
+  const publishAsset = useCallback(async (asset: CatalogAsset, previewUrl?: string, artwork?: File) => {
     const result = await catalogRepository.create({ ...asset, ownerId: user?.id });
     setCatalogSource(result.source);
     if (!result.asset) { setCatalogError(result.error); return false; }
-    setCatalogAssets(current => mergeCatalogAssets([result.asset!], current));
+    let savedAsset = result.asset;
+    if (artwork) {
+      try {
+        await saveLocalArtwork(scope, savedAsset.id, artwork);
+        const cover = createLocalArtworkUrl(scope, artwork);
+        savedAsset = { ...savedAsset, cover };
+      } catch {
+        setCatalogError("Audio guardado, pero no se pudo guardar su artwork local.");
+      }
+    }
+    setCatalogAssets(current => mergeCatalogAssets([savedAsset], current));
     if (previewUrl) setSessionPreviews(previews => setSessionPreview(previews, result.asset!.id, previewUrl, URL.revokeObjectURL));
-    return true;
-  };
+    return result.asset.id;
+  }, [catalogRepository, scope, user?.id]);
   const updateCatalogAsset = async (asset: CatalogAsset): Promise<{ error?: string }> => {
     const result = await catalogRepository.update(asset);
     setCatalogSource(result.source);
@@ -180,12 +199,18 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
     setCatalogError(result.error);
     return { error: result.error };
   };
-  const refreshCatalog = async () => {
+  const refreshCatalog = useCallback(async () => {
     const result = await catalogRepository.list();
-    setCatalogAssets(result.assets); setCatalogSource(result.source); setCatalogError(result.error);
-  };
+    const hydrated = await Promise.all(result.assets.map(async asset => {
+      const artwork = await readLocalArtwork(scope, asset.id).catch(() => undefined);
+      if (!artwork) return asset;
+      const cover = createLocalArtworkUrl(scope, artwork);
+      return { ...asset, cover };
+    }));
+    setCatalogAssets(hydrated); setCatalogSource(result.source); setCatalogError(result.error);
+  }, [catalogRepository, scope]);
   return (
-    <div className="app-shell" data-theme={theme}>
+    <div className={`app-shell${activeAsset ? " has-player" : ""}`} data-theme={theme}>
       {menuOpen && <button type="button" className="drawer-scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
       <aside ref={sidebarRef} className={`sidebar ${menuOpen ? "open" : ""}`}>
         <a className="brand" href="#/home">
@@ -297,9 +322,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
                      {themes.map(([value, label, description]) => <button type="button" role="menuitemradio" aria-checked={theme === value} className={theme === value ? "selected" : ""} onClick={(event) => { setTheme(value); try { localStorage.setItem(themeStorageKey, value); } catch { /* storage may be blocked */ } event.currentTarget.closest("details")?.removeAttribute("open"); }} key={value}><i className={`theme-swatch ${value}`} /><span><strong>{label}</strong><small>{description}</small></span>{theme === value && <Check size={16} aria-hidden="true" />}</button>)}
                 </div>
               </details>
-              <button type="button" className="icon-button" aria-label="Notifications">
-               <Bell size={18} strokeWidth={1.8} aria-hidden="true" />
-            </button>
+              <NotificationCenter userId={user?.id} />
              <ProfileMenu user={user} onLogout={logout} />
           </div>
         </header>
@@ -309,7 +332,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
 
         </div>
       </main>
-      <AudioPlayer asset={activeAsset} />
+      <AudioPlayer asset={activeAsset} onClose={closePlayer} />
 
     </div>
   );
@@ -322,7 +345,7 @@ function renderPage(
   catalogAssets: CatalogAsset[],
   catalogSource: CatalogSource,
   catalogError: string | undefined,
-  publishAsset: (asset: CatalogAsset, previewUrl?: string) => Promise<boolean>,
+  publishAsset: (asset: CatalogAsset, previewUrl?: string, artwork?: File) => Promise<boolean | string>,
   sessionPreviews: ReadonlyMap<string, string>,
   onUpdateCatalogAsset: (asset: CatalogAsset) => Promise<{ error?: string }>,
   onDeleteCatalogAsset: (asset: CatalogAsset) => Promise<{ error?: string }>,

@@ -51,4 +51,15 @@ describe('creator upload submission', () => {
     expect(publish).toHaveBeenCalledTimes(3);
     expect(publish.mock.calls.map(call => call[0].name)).toEqual(['kick', 'snare', 'snare']);
   });
+  it('validates and attaches custom square artwork to the published audio', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 3000, height: 3000, close: vi.fn() })));
+    const publish = vi.fn().mockResolvedValue('catalog-artwork');
+    render(<Upload onPublish={publish} />);
+    completeForm();
+    const artwork = new File(['image'], 'cover.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Subir JPG o PNG'), { target: { files: [artwork] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar a revision' }));
+    await waitFor(() => expect(window.location.hash).toBe('#/studio'));
+    expect(publish.mock.calls[0][2]).toBe(artwork);
+  });
 });

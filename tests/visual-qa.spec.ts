@@ -44,6 +44,14 @@ test("mobile drawer opens and closes with Escape", async ({ page }) => {
   await expect(menu).toHaveAttribute("aria-expanded", "false");
 });
 
+test("desktop sidebar fills the viewport after removing the fixed player", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/#/home");
+  const bounds = await page.locator(".sidebar").boundingBox();
+  expect(bounds?.y).toBe(0);
+  expect(bounds?.height).toBe(900);
+});
+
 test("plans and admin routes expose their critical mock boundaries", async ({ page }) => {
   await page.goto("/#/plans");
   await expect(page.getByRole("heading", { name: "Plans & Subscription" })).toBeVisible();

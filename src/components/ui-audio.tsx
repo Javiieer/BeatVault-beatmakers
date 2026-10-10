@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { AudioAsset } from "../types";
 import { Badge } from "./ui-primitives";
 import { Download, Heart, LoaderCircle, Pause, Play, Volume2, X, MoreVertical } from "lucide-react";
@@ -121,14 +121,23 @@ export function AssetRow({
   );
 }
 
-export function AudioPlayer({ asset }: { asset?: AudioAsset }) {
+export function AudioPlayer({ asset, onClose }: { asset?: AudioAsset; onClose: () => void }) {
   const audioRef = useRef<HTMLAudioElement>(null);
+  const playerRef = useRef<HTMLElement>(null);
+  const dragRef = useRef<{ pointerId: number; x: number; y: number; left: number; top: number; nextLeft: number; nextTop: number } | null>(null);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [volume, setVolume] = useState(0.8);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(() => {
+    try {
+      const value: unknown = JSON.parse(localStorage.getItem("beatvault:player-position") || "null");
+      if (value && typeof value === "object" && Number.isFinite((value as { left?: unknown }).left) && Number.isFinite((value as { top?: unknown }).top)) return value as { left: number; top: number };
+    } catch { /* Use the default lower corner when storage is unavailable. */ }
+    return null;
+  });
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -168,6 +177,12 @@ export function AudioPlayer({ asset }: { asset?: AudioAsset }) {
     };
   }, [asset]);
   useEffect(() => {
+    if (!asset) return;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [asset, onClose]);
+  useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
   }, [volume]);
   const togglePlayback = () => {
@@ -194,6 +209,42 @@ export function AudioPlayer({ asset }: { asset?: AudioAsset }) {
     setVolume(value);
     if (audioRef.current) audioRef.current.volume = value;
   };
+  const moveTo = (left: number, top: number) => {
+    const bounds = playerRef.current?.getBoundingClientRect();
+    const width = bounds?.width || 520;
+    const height = bounds?.height || 70;
+    const next = {
+      left: Math.max(0, Math.min(window.innerWidth - width, left)),
+      top: Math.max(0, Math.min(window.innerHeight - height, top)),
+    };
+    setPosition(next);
+    try { localStorage.setItem("beatvault:player-position", JSON.stringify(next)); } catch { /* Dragging still works without persistence. */ }
+  };
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const bounds = playerRef.current?.getBoundingClientRect();
+    const left = position?.left ?? bounds?.left ?? 0;
+    const top = position?.top ?? bounds?.top ?? 0;
+    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left, top, nextLeft: left, nextTop: top };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+  const dragPlayer = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const bounds = playerRef.current?.getBoundingClientRect();
+    const width = bounds?.width || 520;
+    const height = bounds?.height || 70;
+    drag.nextLeft = Math.max(0, Math.min(window.innerWidth - width, drag.left + event.clientX - drag.x));
+    drag.nextTop = Math.max(0, Math.min(window.innerHeight - height, drag.top + event.clientY - drag.y));
+    setPosition({ left: drag.nextLeft, top: drag.nextTop });
+  };
+  const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    try { localStorage.setItem("beatvault:player-position", JSON.stringify({ left: drag.nextLeft, top: drag.nextTop })); } catch { /* Position remains until the player closes. */ }
+  };
   const clear = () => {
     const audio = audioRef.current;
     audio?.pause();
@@ -204,13 +255,19 @@ export function AudioPlayer({ asset }: { asset?: AudioAsset }) {
     setDuration(0);
     setError("");
     setLoading(false);
+    onClose();
   };
+  if (!asset) return null;
   const hasPlayableDuration = Boolean(asset?.previewUrl && duration > 0);
   return (
     <footer
+      ref={playerRef}
       className={`player${error ? " has-error" : ""}`}
+      role="dialog"
+      aria-label={`Reproductor de audio: ${asset.name}`}
       aria-busy={loading}
       data-state={loading ? "loading" : error ? "error" : playing ? "playing" : "paused"}
+      style={position ? { left: position.left, top: position.top, right: "auto", bottom: "auto" } : undefined}
     >
       <audio
         ref={audioRef}
@@ -251,7 +308,14 @@ export function AudioPlayer({ asset }: { asset?: AudioAsset }) {
           <Play size={17} fill="currentColor" aria-hidden="true" />
         )}
       </button>
-      <div className="now-playing">
+      <div className="now-playing player-drag-handle" role="group" tabIndex={0} aria-label="Arrastra para mover el reproductor; usa las flechas para ajustarlo" title="Arrastrar reproductor" onPointerDown={startDrag} onPointerMove={dragPlayer} onPointerUp={endDrag} onPointerCancel={endDrag} onKeyDown={event => {
+        if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        event.preventDefault();
+        const bounds = playerRef.current?.getBoundingClientRect();
+        const left = position?.left ?? bounds?.left ?? 0;
+        const top = position?.top ?? bounds?.top ?? 0;
+        moveTo(left + (event.key === "ArrowRight" ? 20 : event.key === "ArrowLeft" ? -20 : 0), top + (event.key === "ArrowDown" ? 20 : event.key === "ArrowUp" ? -20 : 0));
+      }}>
         <strong>{asset?.name ?? "No asset selected"}</strong>
         <span>
           {loading

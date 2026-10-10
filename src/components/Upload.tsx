@@ -9,7 +9,7 @@ import type { AssetRecord } from "../api/client";
 
 export function Upload({ onPublish, onRemoteUpload, scope }: {
   scope?: string;
-  onPublish: (asset: CatalogAsset, previewUrl?: string) => Promise<boolean>;
+  onPublish: (asset: CatalogAsset, previewUrl?: string, artwork?: File) => Promise<boolean | string>;
   onRemoteUpload?: (file: File) => Promise<{ ok: true; data: AssetRecord } | { ok: false; error: { message: string } }>;
 }) {
   const [draft, setDraft] = useState<UploadDraft>(() => {
@@ -20,6 +20,8 @@ export function Upload({ onPublish, onRemoteUpload, scope }: {
   const [queue, setQueue] = useState<ImportQueueItem[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [preview, setPreview] = useState<string>();
+  const [artwork, setArtwork] = useState<File>();
+  const [artworkPreview, setArtworkPreview] = useState<string>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(true);
@@ -38,6 +40,12 @@ export function Upload({ onPublish, onRemoteUpload, scope }: {
     setPreview(url);
     return () => URL.revokeObjectURL(url);
   }, [selectedFile]);
+  useEffect(() => {
+    if (!artwork) { setArtworkPreview(undefined); return; }
+    const url = URL.createObjectURL(artwork);
+    setArtworkPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [artwork]);
   const selectFiles = (files: File[]) => {
     if (!files.length || submitting.current) return;
     const next = createImportQueue(files).map(item => {
@@ -64,6 +72,18 @@ export function Upload({ onPublish, onRemoteUpload, scope }: {
     submitting.current = true; setBusy(true); setError("");
     const failures: string[] = [];
     try {
+      if (artwork) {
+        if (artwork.size > 10 * 1024 * 1024 || !["image/jpeg", "image/png"].includes(artwork.type)) {
+          setError("El artwork debe ser JPG o PNG y pesar como maximo 10 MB.");
+          return;
+        }
+        try {
+          const bitmap = await createImageBitmap(artwork);
+          const validDimensions = bitmap.width === bitmap.height && bitmap.width >= 640 && bitmap.width <= 10000;
+          bitmap.close();
+          if (!validDimensions) { setError("Usa una imagen cuadrada de 640 a 10 000 px por lado."); return; }
+        } catch { setError("No se pudo leer la imagen de artwork."); return; }
+      }
       for (const item of ready) {
         if (submittedRef.current.has(item.id)) continue;
         let previewUrl: string | undefined;
@@ -85,7 +105,7 @@ export function Upload({ onPublish, onRemoteUpload, scope }: {
             metadata: { duration: formatDuration(metadata.durationSeconds), size: metadata.size, format: item.file.name.split(".").pop()?.toUpperCase() || "AUDIO" },
             tags: draft.tags.map(label => ({ label })), color: "#35d0ba", favorite: false, waveform: [],
             publicationStatus: "pending-review", localAvailability: "session-preview",
-          }, previewUrl);
+          }, previewUrl, artwork);
           if (!accepted) { URL.revokeObjectURL(previewUrl); failures.push(`${item.file.name}: no se guardo en el catalogo.`); continue; }
           submittedRef.current.add(item.id);
           setSubmitted(new Set(submittedRef.current));
@@ -126,7 +146,12 @@ export function Upload({ onPublish, onRemoteUpload, scope }: {
             <label htmlFor="upload-type">Tipo<select id="upload-type" value={draft.type} onChange={event => setDraft({ ...draft, type: event.target.value })}><option value="">Seleccionar tipo</option>{creatorTypes.map(type => <option key={type}>{type}</option>)}</select></label>
           </div>
           <label className="short-upload-field" htmlFor="upload-tags">Tags<input id="upload-tags" placeholder="trap, oscuro, drums" value={tagsText} onChange={event => { setTagsText(event.target.value); setDraft({ ...draft, tags: [...new Set(event.target.value.split(",").map(tag => tag.trim()).filter(Boolean))].slice(0, 24) }); }} /></label>
-          <fieldset className="creator-cover-picker"><legend>Portada</legend>{uploadCovers.map(cover => <button type="button" key={cover.url} title={cover.name} aria-label={`Portada ${cover.name}`} aria-pressed={draft.cover === cover.url} onClick={() => setDraft({ ...draft, cover: cover.url })}><img src={cover.url} alt="" /></button>)}</fieldset>
+          <fieldset className="creator-cover-picker"><legend>Artwork del audio</legend>
+            <label className="artwork-upload" htmlFor="upload-artwork">Subir JPG o PNG<input id="upload-artwork" type="file" accept="image/jpeg,image/png" onChange={event => { const file = event.target.files?.[0]; if (file) { setArtwork(file); setError(""); } }} /></label>
+            {artwork && <button type="button" className="button ghost" onClick={() => setArtwork(undefined)}>Quitar artwork</button>}
+            {!artwork && uploadCovers.map(cover => <button type="button" key={cover.url} title={cover.name} aria-label={`Portada ${cover.name}`} aria-pressed={draft.cover === cover.url} onClick={() => setDraft({ ...draft, cover: cover.url })}><img src={cover.url} alt="" /></button>)}
+          </fieldset>
+          <p className="draft-status">Recomendado: 3000 × 3000 px, sRGB. JPG de alta calidad para fotos; PNG para texto o transparencia. No amplíes una imagen pequeña.</p>
           <div className="upload-actions">
             <button className="button ghost" type="button" onClick={() => setSaved(writeUploadDraft(draft, scope))}><Save size={16} /> Guardar borrador</button>
             <button className="button" type="button" disabled={!valid || busy} onClick={() => void submit()}><Send size={16} /> {busy ? "Enviando..." : "Enviar a revision"}</button>
@@ -136,7 +161,7 @@ export function Upload({ onPublish, onRemoteUpload, scope }: {
         <p className="draft-status" role="status">{saved ? "Borrador guardado en este navegador" : "No se pudo guardar el borrador"}</p>
       </section>
       <aside className="upload-side">
-        <img className="creator-upload-preview" src={draft.cover || uploadCovers[0].url} alt="Portada seleccionada" />
+        <img className="creator-upload-preview" src={artworkPreview || draft.cover || uploadCovers[0].url} alt="Artwork seleccionado" />
         <h2 className="creator-preview-title">{draft.title || "Sin titulo"}</h2>
         <p>{draft.type || "Tipo pendiente"}</p>
         {preview && <audio controls preload="metadata" src={preview} aria-label="Escuchar audio seleccionado" />}

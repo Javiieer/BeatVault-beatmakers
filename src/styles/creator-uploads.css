@@ -23,6 +23,8 @@
 .creator-recent { margin-top: 28px; }
 .creator-cover-picker { display: flex; gap: 12px; padding: 0; border: 0; margin: 20px 0; flex-wrap: wrap; }
 .creator-cover-picker legend { margin-bottom: 10px; font-size: 13px; }
+.creator-cover-picker .artwork-upload { display: grid; align-content: center; gap: 5px; min-height: 76px; padding: 10px 14px; border: 1px dashed var(--border-strong); border-radius: 6px; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
+.creator-cover-picker .artwork-upload input { max-width: 210px; font-size: 10px; }
 .creator-cover-picker button { padding: 3px; border: 2px solid transparent; border-radius: 6px; background: transparent; width: 76px; height: 76px; cursor: pointer; }
 .creator-cover-picker button[aria-pressed="true"] { border-color: var(--primary); }
 .creator-cover-picker img { width: 100%; height: 100%; object-fit: cover; border-radius: 3px; }
