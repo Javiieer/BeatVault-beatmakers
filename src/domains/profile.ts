@@ -11,8 +11,10 @@ export interface CreatorProfile {
   coverId: ProfileCover;
   avatarId: ProfileCover | 'initials';
   publicProfile: boolean;
+  packageBadges?: PackageBadge[];
 }
-export type ProfileInput = Omit<CreatorProfile, 'accountId'>;
+export type PackageBadge = 'creator' | 'studio';
+export type ProfileInput = Omit<CreatorProfile, 'accountId' | 'packageBadges'>;
 export const emptyProfile = (accountId: string): CreatorProfile => ({ accountId, displayName: 'Productor', bio: '', location: '', website: '', instagram: '', genres: [], coverId: 'lo-fi', avatarId: 'initials', publicProfile: false });
 export function isCreatorProfile(value: unknown): value is CreatorProfile {
   if (!value || typeof value !== 'object') return false;
@@ -20,5 +22,6 @@ export function isCreatorProfile(value: unknown): value is CreatorProfile {
   return typeof p.accountId === 'string' && typeof p.displayName === 'string' && typeof p.bio === 'string' &&
     typeof p.location === 'string' && typeof p.website === 'string' && typeof p.instagram === 'string' &&
     Array.isArray(p.genres) && p.genres.every(g => typeof g === 'string') &&
-    profileCoverIds.includes(p.coverId) && ['initials', ...profileCoverIds].includes(p.avatarId) && typeof p.publicProfile === 'boolean';
+    profileCoverIds.includes(p.coverId) && ['initials', ...profileCoverIds].includes(p.avatarId) && typeof p.publicProfile === 'boolean' &&
+    (p.packageBadges === undefined || Array.isArray(p.packageBadges) && p.packageBadges.every(badge => badge === 'creator' || badge === 'studio'));
 }

@@ -1,5 +1,113 @@
 # Changelog
 
+# 2026-10-11 - Capacidad visible en Paquetes
+
+- Paquetes convierte cada cuota en estimaciones de beats WAV y one-shots, muestra el uso real con barra de progreso y comparte las mismas constantes con el simulador.
+- El bot reporta sensibilidad para duraciones de 2–5 minutos y one-shots de 1–8 MiB; mantiene una cohorte determinista de 1,000 cuentas.
+
+# 2026-10-11 - Simulación de capacidad y badges de paquetes
+
+- Cuotas locales iniciales de 5/50/250 GiB, ajustables con configuración por entorno; precios y cobros siguen apagados.
+- `npm run test:plan-capacity` modela 1,000 usuarios virtuales con WAV sin compresión y tamaños supuestos de one-shot; no crea archivos ni sustituye telemetría real.
+- Perfiles propios y públicos muestran las insignias Creator/Studio desde el historial de compras verificadas. Asignar planes en Admin para QA no genera insignias.
+- Migración 014 persiste el historial de paquetes; su escritura interna queda preparada para conectarse a un webhook de pago autenticado, aún inexistente.
+
+# 2026-10-11 - Asignación local de paquetes y cuotas
+
+- Cuentas nuevas parten en Free; Admin puede asignar Free, Creator o Studio con CSRF y auditoría.
+- El servidor aplica el límite efectivo en consultas de almacenamiento y subidas: override de prueba, cuota configurada del paquete y fallback técnico global.
+- Las cuotas iniciales se derivan del modelo local de carga y se pueden ajustar por entorno; no se habilitan pagos.
+- Paquetes muestra la asignación y el uso real de originales; precios siguen explícitamente pendientes.
+- Migración 013 agrega el paquete a cuentas existentes con valor Free.
+
+# 2026-10-11 - Desglose de almacenamiento por cuenta
+
+- Admin separa bytes y cantidad de originales y previews, y muestra el total registrado.
+- La cuota de usuario sigue contando solo originales disponibles; el total suma metadata
+  de originales y previews registrados y no pretende medir espacio físico del servidor.
+- JSON y PostgreSQL exponen el mismo desglose; las pruebas validan agregado y contrato.
+
+# 2026-10-11 - Cuotas manuales por cuenta
+
+- Administración puede asignar o quitar un límite individual de almacenamiento para pruebas; requiere sesión admin, CSRF y queda auditado.
+- Las subidas respetan primero el límite individual y usan el global solo como fallback. La cuota no cambia al borrar archivos y no puede ampliar el uso ya existente.
+- Mis subidas indica si el límite viene de cuenta, configuración global o no está asignado.
+- Migración 012 y QA cubren persistencia JSON/PostgreSQL y prioridad de la cuota individual. No se crearon paquetes ni precios.
+
+# 2026-10-11 - Consumo de almacenamiento en Admin
+
+- El panel Admin muestra bytes originales usados por cada cuenta, ordenados de mayor a menor.
+- `GET /api/admin/storage` requiere rol admin y registra la lectura en auditoría; no expone credenciales ni activa límites.
+- JSON agrega uso por propietario y PostgreSQL consulta el ledger en una sola operación.
+- No se asignan paquetes, precios ni cuotas comerciales; el registro servirá para decidirlos con datos reales.
+
+# 2026-10-11 - Medición y control de almacenamiento
+
+- Se añadió la migración PostgreSQL 011 para registrar bytes originales almacenados por cuenta; los activos existentes se incluyen al migrar.
+- JSON local mide uso de manera aislada por propietario; PostgreSQL actualiza consumo y asset de forma atómica para impedir que subidas simultáneas excedan una cuota.
+- `GET /api/account/storage` reporta uso, capacidad configurada y espacio disponible; borrar un audio libera el consumo.
+- Mis subidas muestra el consumo del usuario y distingue claramente entre cuota pendiente y cuota activa.
+- La cuota se configura solo para pruebas con `BEATVAULT_STORAGE_QUOTA_BYTES`; sin valor configurado no se activa un límite comercial.
+- QA cubre dos subidas simultáneas cerca del límite, rechazo de exceso, aislamiento entre cuentas y recuperación de cuota tras borrar.
+
+# 2026-10-11 - Temas RGB y QA de formatos
+
+- Se reemplazaron los cuatro presets por Oscuro, Claro y RGB personalizado en Ajustes.
+- La paleta permite combinar fondo, tarjetas, botones y enlaces; se valida y guarda
+  por cuenta, y el color del texto se ajusta al brillo del fondo.
+- El bot visual recorre las 21 URLs declaradas por la navegación en escritorio y móvil
+  con los tres modos y guarda 126 capturas para inspección.
+- La matriz genera, valida y convierte WAV, MP3, FLAC, AAC, M4A, OGG y WEBM; un WAV
+  malformado no genera preview.
+- La presencia del chat ahora viene de conexiones reales; los puntos online/offline se
+  comparten solo con amistades aceptadas y consideran varias pestañas por cuenta.
+- El QA del chat verifica mensajes, lecturas y presencia en línea/desconexión entre dos
+  cuentas.
+- Validación: 66 pruebas de servidor y 15 journeys Playwright pasaron.
+
+# 2026-10-11 - Campana compacta en móvil
+
+- Se quitó la etiqueta visible "Notificaciones" del botón móvil; el icono y el badge
+  permanecen, junto con su nombre accesible para tecnologías de asistencia.
+- La prueba móvil verifica que la etiqueta no se renderice visualmente y que el botón
+  conserve su nombre accesible.
+
+# 2026-10-11 - Private originals and processed previews
+
+- Added migration 010 for optional, validated AAC/M4A preview metadata on owned assets.
+- Uploads can create a separate bounded AAC/M4A artifact using an externally installed
+  FFmpeg CLI; original files remain owner-only and unchanged.
+- Published catalog audio exposes only the processed derivative; moderation fails
+  closed when it is missing, and the public route supports byte ranges.
+- Added an owner-only preview retry action in Mis subidas, protected with CSRF and a
+  per-account rate limit; failed processing preserves the original and can be retried.
+- Extended PostgreSQL QA for private-original isolation, derivative publication,
+  fail-closed behavior and restart persistence. Real encoding requires external FFmpeg.
+- Configured an external LGPL FFmpeg build on the local machine; real WAV-to-AAC
+  conversion and catalog playback passed with disposable PostgreSQL and browser QA.
+
+# 2026-10-11 - QA de PostgreSQL real
+
+- Añadido `npm run test:postgres`, limitado a bases PostgreSQL locales `beatvault_test_*` o `beatvault_audit_*`; usa cuentas aisladas y limpia solo sus fixtures.
+- La prueba verifica migraciones 001-011, permisos de chat/CSRF, reconexión SSE, WAV real con byte ranges y acceso privado, estado del preview procesado, publicación o bloqueo seguro sin FFmpeg, persistencia tras reinicio, revisión concurrente, cuotas atómicas y auditoría.
+- Ejecutado correctamente sobre un contenedor temporal PostgreSQL 16; no se utilizó el volumen local existente.
+- Documentado el procedimiento seguro en [POSTGRES_QA.md](POSTGRES_QA.md).
+
+# 2026-10-11 - Auditoría integral y social de catálogo
+
+- Comentarios y reacciones persistentes en Beats publicados, con actividad visible en notificaciones; añadida migración PostgreSQL 009.
+- Preferencias de notificaciones para comentarios/reacciones; temas permanecen en Ajustes de perfil y la campana conserva su etiqueta en móvil.
+- `npm run diagnose:full`: 88 pruebas de navegador, 135 pruebas unitarias, TypeScript, ESLint, seguridad y build pasaron; `npm audit` reportó cero advisories.
+- Recorridos suplementarios usan cuentas efímeras de creador/admin contra el API desechable: validan imágenes de Home y el ciclo real de revisión en escritorio y móvil.
+- Añadida [auditoría del sitio](SITE_AUDIT.md) con inventario de rutas, decisiones y bloqueos reales de salida.
+
+# 2026-10-10 - Mensajes directos
+
+- Añadida bandeja de chat estilo Facebook, con lista de conversaciones en escritorio y navegación de lista/hilo en móvil.
+- Mensajes de texto persistentes entre amigos aceptados, estado leído/no leído, límites y autorización/CSRF en el servidor.
+- Eventos en vivo por SSE; migración PostgreSQL 008 y almacenamiento JSON local.
+- Verificación E2E de dos cuentas, entrega en vivo y recorrido móvil.
+
 ## 2026-10-09 - Moderación y catálogo publicado
 
 - El panel Admin revisa pendientes con permisos server-side, CSRF y auditoría; el rechazo requiere un motivo visible solo para el creador.

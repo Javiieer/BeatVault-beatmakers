@@ -53,8 +53,19 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     expect(entry.audio).not.toHaveProperty('storageKey');
     await page.evaluate(() => localStorage.clear());
     await page.reload();
+    await expect(page.getByRole('region', { name: 'Uso de almacenamiento' })).toContainText('31 KB usados');
+    await expect(page.getByRole('region', { name: 'Uso de almacenamiento' })).toContainText('cuota del paquete se definirá más adelante');
     const card = page.locator('.creator-upload-card').filter({ hasText: 'Persistent beat' });
     await expect(card).toBeVisible();
+    if (entry.audio.previewReady) {
+      await expect(card).not.toContainText('Preview público pendiente');
+      await expect(card.getByRole('button', { name: 'Generar preview' })).toHaveCount(0);
+    } else {
+      await expect(card).toContainText('Preview público pendiente');
+      await card.getByRole('button', { name: 'Generar preview' }).click();
+      await expect(page.getByRole('alert')).toContainText('Verifica FFmpeg');
+      await expect(card.getByRole('button', { name: 'Generar preview' })).toBeEnabled();
+    }
     await expect(card.locator('img')).toHaveAttribute('src', '/assets/demo/chill-lo-fi.png');
     await expect.poll(() => card.locator('img').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
     const preview = page.waitForResponse(response => response.url().includes(`/api/assets/${entry.assetId}/preview`) && response.ok());
@@ -64,6 +75,8 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     const download = await page.request.get(`/api/assets/${entry.assetId}/download`);
     expect(download.status()).toBe(200);
     expect(await download.body()).toEqual(file.buffer);
+    const clearPlayer = page.getByRole('button', { name: 'Clear player' });
+    if (await clearPlayer.count()) await clearPlayer.click();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: `artifacts/visual-qa/${viewport.name}-persistent-audio.png`, fullPage: true });
     await page.goto('/#/upload');

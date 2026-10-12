@@ -35,7 +35,10 @@ describe('creator profile privacy and persistence', () => {
     expect(response.status).toBe(200);
     const profile = (await response.json()).data;
     expect(profile).toMatchObject({ accountId: ownerId, displayName: 'Studio Seven', instagram: 'studio.seven', genres: ['Trap'] });
-    expect(await new LocalRepository().findProfile(ownerId)).toEqual(profile);
+    expect(profile.packageBadges).toEqual([]);
+    const editableProfile = { ...profile };
+    delete editableProfile.packageBadges;
+    expect(await new LocalRepository().findProfile(ownerId)).toEqual(editableProfile);
     expect((await (await call('/api/auth/me', { headers: owner })).json()).data).toEqual(before.data);
     expect((await call(`/api/profiles/${ownerId}`)).status).toBe(404);
     expect((await call(`/api/profiles/${ownerId}`, { headers: other })).status).toBe(404);

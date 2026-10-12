@@ -40,6 +40,8 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await page.locator('.producer-settings img').evaluateAll(images => Promise.all(images.map(img => (img as HTMLImageElement).decode())));
     await page.screenshot({ path: `artifacts/visual-qa/${viewport.name}-profile-editor.png`, fullPage: true });
     await page.getByRole('button', { name: 'Guardar cambios' }).click();
+    await expect(page).toHaveURL(/#\/settings$/);
+    await page.goto('/#/profile');
     await expect(page).toHaveURL(/#\/profile$/);
     await page.evaluate(() => localStorage.clear());
     await page.reload();
@@ -62,15 +64,26 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await expect(page.locator('.producer-project')).toHaveCount(0);
     const visitor = await browser.newContext({ viewport });
     const guest = await visitor.newPage();
+    await guest.route(`**/api/profiles/${me.id}`, async route => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data.packageBadges = ['creator', 'studio'];
+      await route.fulfill({ response, body: JSON.stringify(body) });
+    });
     await guest.goto(`http://127.0.0.1:5187/#/profile?id=${me.id}`);
     await expect(guest.getByRole('heading', { name: 'Northside Audio', exact: true })).toBeVisible();
+    await expect(guest.getByLabel('Paquetes adquiridos')).toContainText('Creator');
+    await expect(guest.getByLabel('Paquetes adquiridos')).toContainText('Studio');
+    await guest.screenshot({ path: `artifacts/visual-qa/${viewport.name}-package-badges.png`, fullPage: true });
+    await guest.unroute(`**/api/profiles/${me.id}`);
     await expect(guest.getByText(email, { exact: true })).toHaveCount(0);
     await expect(guest.getByRole('link', { name: 'Editar perfil', exact: true })).toHaveCount(0);
     await expect(guest.locator('.producer-project')).toHaveCount(0);
     await page.goto('/#/settings');
     await page.getByRole('checkbox', { name: 'Perfil publico' }).uncheck();
     await page.getByRole('button', { name: 'Guardar cambios' }).click();
-    await expect(page).toHaveURL(/#\/profile$/);
+    await expect(page).toHaveURL(/#\/settings$/);
+    await page.goto('/#/profile');
     await guest.reload();
     await expect(guest.getByRole('heading', { name: 'Perfil no disponible' })).toBeVisible();
     await visitor.close();

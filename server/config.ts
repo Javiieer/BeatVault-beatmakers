@@ -12,6 +12,10 @@ export type ServerConfig = {
   rateLimit: { limit: number; windowMs: number }
   dataDirectory: string
   uploadDirectory: string
+  storageQuotaBytes?: number
+  planStorageBytes: { free?: number; creator?: number; studio?: number }
+  ffmpegPath: string
+  previewDurationSeconds: number
   uploadLimits: { fileBytes: number; requestBytes: number; files: number; fields: number }
   audit: { maxEntries: number; retentionDays: number }
   storageBackend: StorageBackend
@@ -23,7 +27,7 @@ export type ServerConfig = {
 const bool = (value: string | undefined, fallback: boolean): boolean => value === undefined ? fallback : value.toLowerCase() === 'true'
 const positive = (name: string, value: string | undefined, fallback: number): number => {
   const parsed = value === undefined ? fallback : Number(value)
-  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} debe ser un entero positivo.`)
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${name} debe ser un entero positivo.`)
   return parsed
 }
 
@@ -60,6 +64,14 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServerConfig =
     rateLimit: { limit: positive('BEATVAULT_RATE_LIMIT', env.BEATVAULT_RATE_LIMIT, 5), windowMs: positive('BEATVAULT_RATE_WINDOW_MS', env.BEATVAULT_RATE_WINDOW_MS, 60000) },
     dataDirectory: resolve(env.BEATVAULT_DATA_DIR || 'data/server-local'),
     uploadDirectory: resolve(env.BEATVAULT_UPLOAD_DIR || 'data/uploads'),
+    storageQuotaBytes: env.BEATVAULT_STORAGE_QUOTA_BYTES === undefined ? undefined : positive('BEATVAULT_STORAGE_QUOTA_BYTES', env.BEATVAULT_STORAGE_QUOTA_BYTES, 1),
+    planStorageBytes: {
+      free: env.BEATVAULT_PLAN_FREE_STORAGE_BYTES === undefined ? undefined : positive('BEATVAULT_PLAN_FREE_STORAGE_BYTES', env.BEATVAULT_PLAN_FREE_STORAGE_BYTES, 1),
+      creator: env.BEATVAULT_PLAN_CREATOR_STORAGE_BYTES === undefined ? undefined : positive('BEATVAULT_PLAN_CREATOR_STORAGE_BYTES', env.BEATVAULT_PLAN_CREATOR_STORAGE_BYTES, 1),
+      studio: env.BEATVAULT_PLAN_STUDIO_STORAGE_BYTES === undefined ? undefined : positive('BEATVAULT_PLAN_STUDIO_STORAGE_BYTES', env.BEATVAULT_PLAN_STUDIO_STORAGE_BYTES, 1),
+    },
+    ffmpegPath: env.BEATVAULT_FFMPEG_PATH || 'ffmpeg',
+    previewDurationSeconds: positive('BEATVAULT_PREVIEW_DURATION_SECONDS', env.BEATVAULT_PREVIEW_DURATION_SECONDS, 30),
     uploadLimits: { fileBytes: positive('BEATVAULT_UPLOAD_MAX_FILE_BYTES', env.BEATVAULT_UPLOAD_MAX_FILE_BYTES, 500 * 1024 * 1024), requestBytes: positive('BEATVAULT_UPLOAD_MAX_REQUEST_BYTES', env.BEATVAULT_UPLOAD_MAX_REQUEST_BYTES, 510 * 1024 * 1024), files: positive('BEATVAULT_UPLOAD_MAX_FILES', env.BEATVAULT_UPLOAD_MAX_FILES, 1), fields: positive('BEATVAULT_UPLOAD_MAX_FIELDS', env.BEATVAULT_UPLOAD_MAX_FIELDS, 8) },
     audit: { maxEntries: positive('BEATVAULT_AUDIT_MAX_ENTRIES', env.BEATVAULT_AUDIT_MAX_ENTRIES, 10000), retentionDays: positive('BEATVAULT_AUDIT_RETENTION_DAYS', env.BEATVAULT_AUDIT_RETENTION_DAYS, 365) },
     storageBackend,

@@ -5,6 +5,8 @@ import type { CatalogAsset } from "../data/localCatalog";
 import { creatorType } from "../data/creatorUploads";
 import { scopedKey } from "../data/storageScope";
 import { readLocalHomePosts, type LocalHomePost } from "../data/homePosts";
+import { createCatalogComment, readCatalogSocial, toggleCatalogReaction } from "../data/socialRepository";
+import type { CatalogSocial } from "../domains/social";
 import { HomeComposer } from "./HomeComposer";
 import orchestraCover from "../../assets/demo/dark-orchestra.png";
 import loFiCover from "../../assets/demo/chill-lo-fi.png";
@@ -18,6 +20,9 @@ type FeedPost = {
   creator: string;
   handle: string;
   avatar: string;
+  profileBio?: string;
+  profileGenres?: string[];
+  profileHref?: string;
   time: string;
   text: string;
   image?: string;
@@ -31,7 +36,7 @@ type FeedPost = {
   mediaUrl?: string;
 };
 type Story = { creator: string; title: string; image: string; kind: "status" | "short" };
-type HomeComment = { id: string; text: string; createdAt: string };
+type HomeComment = { id: string; text: string; createdAt: string; authorName?: string };
 
 function readComments(scope: string): Record<string, HomeComment[]> {
   try {
@@ -52,10 +57,10 @@ const stories: Story[] = [
 ];
 
 const samplePosts: FeedPost[] = [
-  { id: "post-status-1", kind: "status", creator: "Milo North", handle: "@milonorth", avatar: hard808Cover, time: "hace 12 min", text: "¿Qué le pondrías a este bajo: drums secos o una textura más sucia?", tags: ["808", "trap"], likes: 18, comments: 4, demo: true },
-  { id: "post-photo-1", kind: "photo", creator: "Ari Sol", handle: "@arisol", avatar: loFiCover, time: "hace 38 min", text: "Una tarde buscando sonidos en cinta. Este loop terminó convirtiéndose en el inicio de un beat.", image: loFiCover, tags: ["lofi", "sample"], likes: 42, comments: 7, demo: true },
-  { id: "post-short-1", kind: "short", creator: "Kade Seven", handle: "@kadeseven", time: "hace 1 h", avatar: orchestraCover, text: "De una percusión grabada en casa a una textura para el próximo track.", image: orchestraCover, tags: ["sounddesign", "shorts"], likes: 31, comments: 3, href: "#/shorts", demo: true },
-  { id: "post-beat-1", kind: "beat", creator: "Juno.wav", handle: "@junowav", time: "hace 2 h", avatar: hard808Cover, text: "Boceto nocturno: espacio para una voz y un hook sencillo.", image: hard808Cover, tags: ["melodic", "beat"], likes: 26, comments: 5, beat: "Night Window", href: "#/beats", demo: true },
+  { id: "post-status-1", kind: "status", creator: "Milo North", handle: "@milonorth", avatar: hard808Cover, profileBio: "Productor de beats con bajos pesados y drums secos.", profileGenres: ["Trap", "Drill"], time: "hace 12 min", text: "¿Qué le pondrías a este bajo: drums secos o una textura más sucia?", tags: ["808", "trap"], likes: 18, comments: 4, demo: true },
+  { id: "post-photo-1", kind: "photo", creator: "Ari Sol", handle: "@arisol", avatar: loFiCover, profileBio: "Buscando calidez en samples, cinta y grabaciones cotidianas.", profileGenres: ["Lo-fi", "Soul"], time: "hace 38 min", text: "Una tarde buscando sonidos en cinta. Este loop terminó convirtiéndose en el inicio de un beat.", image: loFiCover, tags: ["lofi", "sample"], likes: 42, comments: 7, demo: true },
+  { id: "post-short-1", kind: "short", creator: "Kade Seven", handle: "@kadeseven", avatar: orchestraCover, profileBio: "Diseño sonoro y percusiones hechas a mano.", profileGenres: ["Sound design", "Cinemático"], time: "hace 1 h", text: "De una percusión grabada en casa a una textura para el próximo track.", image: orchestraCover, tags: ["sounddesign", "shorts"], likes: 31, comments: 3, href: "#/shorts", demo: true },
+  { id: "post-beat-1", kind: "beat", creator: "Juno.wav", handle: "@junowav", avatar: hard808Cover, profileBio: "Beats melódicos, espacios abiertos y demos para colaborar.", profileGenres: ["Melodic", "R&B"], time: "hace 2 h", text: "Boceto nocturno: espacio para una voz y un hook sencillo.", image: hard808Cover, tags: ["melodic", "beat"], likes: 26, comments: 5, beat: "Night Window", href: "#/beats", demo: true },
 ];
 
 function readIdSet(key: string, scope: string): Set<string> {
@@ -74,18 +79,36 @@ function toggleId(current: Set<string>, id: string): Set<string> {
   return next;
 }
 
-function HomePost({ post, liked, saved, followed, comments, onComment, onLike, onSave, onPlay, onShare, onFollow, onExpandPhoto }: {
-  post: FeedPost; liked: boolean; saved: boolean; onLike: () => void; onSave: () => void;
+function HomeProfilePreview({ post }: { post: FeedPost }) {
+  const [open, setOpen] = useState(false);
+  const wrapper = useRef<HTMLDivElement>(null);
+  return <div className="home-profile-hover" ref={wrapper} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)} onFocus={() => setOpen(true)} onBlur={event => { if (!wrapper.current?.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
+    <button type="button" className="home-profile-trigger" aria-expanded={open} onClick={() => setOpen(value => !value)}>
+      <img className="home-avatar" src={post.avatar} alt="" />
+      <span className="home-post-author"><strong>{post.creator}</strong><span>{post.handle} · {post.time}</span></span>
+    </button>
+    {open && <section className="home-profile-popover" aria-label={`Vista previa del perfil de ${post.creator}`}>
+      <div className="home-profile-cover"><img src={post.avatar} alt="" /></div>
+      <div className="home-profile-body"><img className="home-profile-avatar" src={post.avatar} alt="" /><strong>{post.creator}</strong><span>{post.handle}</span>
+        <p>{post.profileBio || (post.handle === "Tu publicación" ? "Comparte tus ideas y lanzamientos desde tu perfil." : "Creador de la comunidad BeatVault.")}</p>
+        {post.profileGenres?.length ? <div className="home-profile-genres">{post.profileGenres.slice(0, 3).map(genre => <span key={genre}>{genre}</span>)}</div> : null}
+        <a href={post.profileHref || (post.handle === "Tu publicación" ? "#/profile" : "#/friends")}>{post.profileHref || post.handle === "Tu publicación" ? "Ver perfil" : "Descubrir creadores"}</a>
+      </div>
+    </section>}
+  </div>;
+}
+
+function HomePost({ post, liked, likeCount, saved, followed, comments, onComment, onLike, onSave, onPlay, onShare, onFollow, onExpandPhoto }: {
+  post: FeedPost; liked: boolean; likeCount: number; saved: boolean; onLike: () => void; onSave: () => void;
   onPlay: (asset: AudioAsset) => void; onShare: () => void; followed: boolean; onFollow: () => void;
   comments: HomeComment[]; onComment: (text: string) => void;
   onExpandPhoto: () => void;
 }) {
   const [commentText, setCommentText] = useState("");
   const kindLabel = post.kind === "status" ? "Estado" : post.kind === "photo" ? "Foto" : post.kind === "video" ? "Video" : post.kind === "short" ? "Short" : "Beat";
-  return <article className={`home-post home-post-${post.kind}`}>
+  return <article id={`feed-post-${post.id}`} className={`home-post home-post-${post.kind}`}>
     <header className="home-post-header">
-      <img className="home-avatar" src={post.avatar} alt="" />
-      <div className="home-post-author"><strong>{post.creator}</strong><span>{post.handle} · {post.time}</span></div>
+      <HomeProfilePreview post={post} />
       <span className={`home-kind home-kind-${post.kind}`}>{post.asset ? creatorType(post.asset.type) : kindLabel}</span>
       {post.demo && <span className="home-demo-mark">DEMO</span>}
       {post.handle.startsWith("@") && <button type="button" className={`home-follow ${followed ? "is-following" : ""}`} aria-pressed={followed} onClick={onFollow}>{followed ? <><Check size={13} /> Siguiendo</> : "Seguir"}</button>}
@@ -102,14 +125,14 @@ function HomePost({ post, liked, saved, followed, comments, onComment, onLike, o
     {post.asset?.previewUrl && <button className="home-audio-preview" type="button" onClick={() => onPlay(post.asset!)}><Play size={16} fill="currentColor" /><span>Escuchar {post.asset.name}</span><span className="home-audio-bars" aria-hidden="true">▂ ▅ ▃ ▇ ▄ ▆ ▂ ▅</span></button>}
     <div className="home-post-tags">{post.tags.map(tag => <span key={tag}>#{tag}</span>)}</div>
     <div className="home-post-actions">
-      <button type="button" className={liked ? "is-active" : ""} aria-pressed={liked} aria-label={liked ? "Quitar me gusta" : "Me gusta"} onClick={onLike}><Heart size={19} fill={liked ? "currentColor" : "none"} /><span>{post.likes + (liked ? 1 : 0)}</span></button>
+      <button type="button" className={liked ? "is-active" : ""} aria-pressed={liked} aria-label={liked ? "Quitar me gusta" : "Me gusta"} onClick={onLike}><Heart size={19} fill={liked ? "currentColor" : "none"} /><span>{likeCount}</span></button>
       <span className="home-comment-count" aria-label={`${post.comments + comments.length} comentarios`}><MessageCircle size={18} /><span>{post.comments + comments.length}</span></span>
       {(post.demo || post.href) && <button type="button" aria-label="Compartir publicación" onClick={onShare}><Send size={18} /></button>}
       <button type="button" className={`home-save ${saved ? "is-active" : ""}`} aria-pressed={saved} aria-label={saved ? "Quitar de guardados" : "Guardar publicación"} onClick={onSave}><Bookmark size={18} fill={saved ? "currentColor" : "none"} /></button>
       {post.href && <a className="home-post-open" href={post.href}>{post.kind === "short" ? "Ver Short" : post.kind === "beat" ? "Explorar beats" : "Abrir"}</a>}
     </div>
     <section className="home-comments" aria-label={`Comentarios de ${post.creator}`}>
-      {comments.length > 0 && <div className="home-comment-list">{comments.slice(-3).map(comment => <p key={comment.id}><strong>Tú</strong><span>{comment.text}</span></p>)}</div>}
+      {comments.length > 0 && <div className="home-comment-list">{comments.slice(-3).map(comment => <p key={comment.id}><strong>{comment.authorName || "Tú"}</strong><span>{comment.text}</span></p>)}</div>}
       <form onSubmit={event => { event.preventDefault(); const text = commentText.trim(); if (!text) return; onComment(text); setCommentText(""); }}>
         <label className="sr-only" htmlFor={`comment-${post.id}`}>Escribe un comentario</label>
         <input id={`comment-${post.id}`} value={commentText} maxLength={500} onChange={event => setCommentText(event.target.value)} placeholder="Escribe un comentario..." />
@@ -134,7 +157,7 @@ function PhotoViewer({ post, comments, dialogRef, onClose, onComment }: {
       <header><div className="home-photo-viewer-author"><img src={post.avatar} alt="" /><span><strong>{post.creator}</strong><small>{post.handle} · {post.time}</small></span></div><button type="button" className="icon-button" aria-label="Cerrar foto ampliada" onClick={onClose}><X size={19} /></button></header>
       <p className="home-photo-viewer-copy">{post.text}</p>
       <section className="home-photo-viewer-thread" aria-label="Comentarios">
-        {comments.length === 0 ? <p className="home-photo-viewer-empty">Aún no hay comentarios. Inicia la conversación.</p> : comments.map(comment => <p className="home-photo-comment" key={comment.id}><strong>Tú</strong><span>{comment.text}</span></p>)}
+        {comments.length === 0 ? <p className="home-photo-viewer-empty">Aún no hay comentarios. Inicia la conversación.</p> : comments.map(comment => <p className="home-photo-comment" key={comment.id}><strong>{comment.authorName || "Tú"}</strong><span>{comment.text}</span></p>)}
       </section>
       <form onSubmit={event => { event.preventDefault(); const value = text.trim(); if (!value) return; onComment(value); setText(""); }}>
         <label className="sr-only" htmlFor={`viewer-comment-${post.id}`}>Escribe un comentario</label>
@@ -151,6 +174,7 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
   const [saved, setSaved] = useState(() => readIdSet("beatvault:home-saves", scope));
   const [followed, setFollowed] = useState(() => readIdSet("beatvault:home-follows", scope));
   const [comments, setComments] = useState(() => readComments(scope));
+  const [socialByContentId, setSocialByContentId] = useState<Record<string, CatalogSocial>>({});
   const [story, setStory] = useState<Story | null>(null);
   const [photo, setPhoto] = useState<FeedPost | null>(null);
   const [shareMessage, setShareMessage] = useState("");
@@ -191,16 +215,57 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
 
   const posts = useMemo(() => {
     const createdPosts: FeedPost[] = localPosts.map(post => ({
-      id: `local-${post.id}`, kind: post.kind, creator: "Tú", handle: "Tu publicación", time: new Date(post.createdAt).toLocaleString(), avatar: hard808Cover,
+      id: `local-${post.id}`, kind: post.kind, creator: "Tú", handle: "Tu publicación", profileHref: "#/profile", time: new Date(post.createdAt).toLocaleString(), avatar: hard808Cover,
       text: post.text, tags: [], likes: 0, comments: 0, mediaUrl: mediaUrls.get(post.id),
     }));
-    const ownPosts: FeedPost[] = uploads.filter(asset => asset.publicationStatus === "published" && creatorType(asset.type)).map(asset => ({
-      id: `own-${asset.id}`, kind: "beat", creator: "Tu perfil", handle: "Tu publicación", time: "publicado", avatar: asset.cover || hard808Cover,
+    const ownPosts: FeedPost[] = uploads.filter(asset => asset.publicationStatus === "published" && creatorType(asset.type)).map(asset => {
+      const mine = asset.ownerId === scope;
+      const creatorName = mine ? "Tu perfil" : asset.creatorName || "Productor";
+      return {
+      id: `own-${asset.id}`, kind: "beat", creator: creatorName, handle: mine ? "Tu publicación" : `@${creatorName.toLowerCase().replace(/[^a-z0-9]+/g, "")}`, profileHref: mine ? "#/profile" : `#/profile?id=${encodeURIComponent(asset.ownerId || "")}`, time: "publicado", avatar: asset.cover || hard808Cover,
       text: asset.name, image: asset.cover || hard808Cover, tags: asset.tags.map(tag => tag.label), likes: 0, comments: 0,
       beat: asset.name, href: "#/beats", asset,
-    }));
+    }; });
     return [...createdPosts, ...ownPosts, ...samplePosts];
-  }, [uploads, localPosts, mediaUrls]);
+  }, [uploads, localPosts, mediaUrls, scope]);
+  useEffect(() => {
+    if (scope === "demo") return;
+    let active = true;
+    const entries = posts.filter(post => post.asset).map(post => post.asset!);
+    void Promise.all(entries.map(async asset => {
+      const result = await readCatalogSocial(asset.id);
+      return result.ok ? [asset.id, result.data] as const : undefined;
+    })).then(results => {
+      if (active) setSocialByContentId(Object.fromEntries(results.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))));
+    });
+    return () => { active = false; };
+  }, [posts, scope]);
+  useEffect(() => {
+    const query = window.location.hash.split("?")[1];
+    const contentId = query ? new URLSearchParams(query).get("post") : null;
+    if (!contentId) return;
+    const timer = window.setTimeout(() => document.getElementById(`feed-post-own-${contentId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+    return () => window.clearTimeout(timer);
+  }, [posts]);
+  const addPostComment = async (post: FeedPost, text: string) => {
+    if (post.asset && scope !== "demo") {
+      const result = await createCatalogComment(post.asset.id, text);
+      if (result.ok) {
+        const social = result.data;
+        setSocialByContentId(current => ({ ...current, [post.asset!.id]: social }));
+      } else setShareMessage(result.error.message);
+      return;
+    }
+    addComment(post.id, text);
+  };
+  const togglePostLike = async (post: FeedPost) => {
+    if (post.asset && scope !== "demo") {
+      const result = await toggleCatalogReaction(post.asset.id);
+      if (result.ok) setSocialByContentId(current => ({ ...current, [post.asset!.id]: { ...(current[post.asset!.id] || { comments: [], reactedByMe: false, reactionCount: 0 }), reactedByMe: result.data.reacted, reactionCount: result.data.reactionCount } }));
+      return;
+    }
+    setLiked(current => toggleId(current, post.id));
+  };
   const visiblePosts = posts.filter(post => filter === "Para ti" || (filter === "Siguiendo" && followed.has(post.handle)) || (filter === "Beats" && post.kind === "beat") || (filter === "Fotos" && post.kind === "photo") || (filter === "Videos" && post.kind === "video") || (filter === "Shorts" && post.kind === "short") || (filter === "Estados" && post.kind === "status"));
 
   const share = async (post: FeedPost) => {
@@ -226,7 +291,11 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
         <div className="home-feed-toolbar"><div className="home-feed-tabs" role="group" aria-label="Filtrar publicaciones">{["Para ti", "Siguiendo", "Beats", "Fotos", "Videos", "Shorts", "Estados"].map(item => <button type="button" key={item} className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}</button>)}</div><span>{visiblePosts.length} publicaciones</span></div>
         {shareMessage && <p className="home-feedback" role="status"><Check size={14} />{shareMessage}</p>}
         {visiblePosts.length === 0 && <div className="home-empty"><h2>Aún no sigues a productores</h2><p>Explora el feed y sigue perfiles para verlos aquí.</p><button className="button ghost" type="button" onClick={() => setFilter("Para ti")}>Volver a Para ti</button></div>}
-        {visiblePosts.map(post => <HomePost key={post.id} post={post} liked={liked.has(post.id)} saved={saved.has(post.id)} followed={followed.has(post.handle)} comments={comments[post.id] || []} onComment={text => addComment(post.id, text)} onExpandPhoto={() => setPhoto(post)} onFollow={() => setFollowed(current => toggleId(current, post.handle))} onLike={() => setLiked(current => toggleId(current, post.id))} onSave={() => setSaved(current => toggleId(current, post.id))} onPlay={onPlay} onShare={() => void share(post)} />)}
+        {visiblePosts.map(post => {
+          const social = post.asset ? socialByContentId[post.asset.id] : undefined;
+          const postComments = social ? social.comments.map(comment => ({ id: comment.id, text: comment.body, createdAt: comment.createdAt, authorName: comment.authorName })) : comments[post.id] || [];
+          return <HomePost key={post.id} post={post} liked={social?.reactedByMe ?? liked.has(post.id)} likeCount={social?.reactionCount ?? post.likes + (liked.has(post.id) ? 1 : 0)} saved={saved.has(post.id)} followed={followed.has(post.handle)} comments={postComments} onComment={text => { void addPostComment(post, text); }} onExpandPhoto={() => setPhoto(post)} onFollow={() => setFollowed(current => toggleId(current, post.handle))} onLike={() => { void togglePostLike(post); }} onSave={() => setSaved(current => toggleId(current, post.id))} onPlay={onPlay} onShare={() => void share(post)} />;
+        })}
       </section>
       <aside className="home-rail">
         <section className="home-rail-card home-upload-cta"><span className="home-rail-icon"><CirclePlus size={18} /></span><div><h2>¿Tienes algo nuevo?</h2><p>Sube un beat o un one-shot a tu espacio.</p></div><a className="button" href="#/upload">Subir audio</a></section>

@@ -11,8 +11,10 @@
 .usage-card { padding: 19px; display: grid; gap: 9px; }
 .usage-card > svg { color: var(--primary); }.usage-card strong { font-size: 22px; }.usage-card strong small { color: var(--muted); font-size: 10px; font-weight: 400; }.usage-card > span, .usage-card em { color: var(--muted); font-size: 10px; font-style: normal; }.usage-bar { height: 5px; background: var(--border); border-radius: 4px; overflow: hidden; }.usage-bar i { display: block; height: 100%; background: var(--primary); border-radius: inherit; }.usage-bar i.attention { background: var(--amber); }.usage-bar i.full { background: var(--error); }
 .plans-grid { grid-template-columns: repeat(3, 1fr); }.plan-card { position: relative; padding: 24px; display: flex; flex-direction: column; gap: 12px; }.plan-card.featured { border-color: var(--primary); }.plan-ribbon { color: var(--primary); font-size: 10px; display: flex; gap: 5px; align-items: center; }.plan-price { font-size: 27px; margin: 8px 0; }.plan-price small { color: var(--muted); font-size: 10px; font-weight: 400; }.plan-card ul { list-style: none; padding: 0; margin: 2px 0 12px; display: grid; gap: 10px; color: var(--text-secondary); font-size: 11px; }.plan-card li { display: flex; gap: 8px; align-items: center; }.plan-card li svg { color: var(--primary); }.plan-card .button { margin-top: auto; }
+.plan-capacity { font-size: 19px; }.plan-storage-summary { display: grid; gap: 7px; min-width: min(100%, 240px); padding: 13px; border: 1px solid var(--border); border-radius: 6px; }.plan-storage-label { display: flex; align-items: center; gap: 8px; }.plan-storage-label svg { color: var(--primary); }.plan-storage-summary span, .plan-storage-summary small { color: var(--muted); font-size: 10px; }.plan-storage-summary strong { font-size: 15px; }.plan-storage-meter { display: grid; gap: 3px; }.plan-storage-meter progress { width: 100%; height: 7px; accent-color: var(--primary); }.plan-capacity-examples { min-height: 60px; }.admin-plan-controls { display: flex; align-items: center; gap: 8px; }.admin-plan-controls select { min-height: 36px; min-width: 110px; border: 1px solid var(--border); border-radius: 6px; padding: 0 8px; background: var(--bg); color: var(--text); }
 .demo-note { color: var(--muted); font-size: 11px; line-height: 1.5; }.admin-guard { display: flex; gap: 12px; align-items: flex-start; padding: 14px; border: 1px solid #69532e; background: #211c12; color: #d8c29b; border-radius: 8px; font-size: 11px; line-height: 1.5; }.admin-guard svg { flex: 0 0 auto; color: var(--amber); }.admin-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }.admin-list { display: grid; gap: 4px; }.admin-row { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 13px 0; border-top: 1px solid var(--border); }.admin-row div { min-width: 0; }.admin-row strong, .admin-row span { display: block; }.admin-row strong { font-size: 12px; }.admin-row div span { color: var(--muted); font-size: 10px; margin-top: 5px; }.empty-state { color: var(--muted); font-size: 11px; }.badge.pending, .badge.reported { color: var(--amber); background: #3b2d1b; }.badge.healthy, .badge.active { color: var(--success); background: #163c3a; }.badge.degraded { color: var(--amber); background: #3b2d1b; }.badge.paused { color: var(--muted); }.health-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }.health-grid > div { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 7px; }.health-grid svg { color: var(--primary); }.health-grid small { grid-column: 2 / -1; color: var(--muted); font-size: 10px; }
-@media (max-width: 767px) { .current-plan, .admin-row { align-items: flex-start; flex-direction: column; }.usage-grid, .plans-grid, .admin-columns { grid-template-columns: 1fr; }.health-grid { grid-template-columns: 1fr; }.current-plan .button { width: 100%; } }
+.admin-storage-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 0; border-top: 1px solid var(--border); }.admin-storage-row > div { min-width: 0; }.admin-storage-row strong { font-size: 12px; overflow-wrap: anywhere; }.admin-storage-row > div span { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }.admin-storage > .description { margin: -6px 0 14px; }.admin-quota-controls { display: flex; align-items: end; gap: 8px; }.admin-quota-controls label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }.admin-quota-controls input { width: 126px; min-height: 36px; border: 1px solid var(--border); border-radius: 6px; padding: 0 9px; background: var(--bg); color: var(--text); }
+@media (max-width: 767px) { .current-plan, .admin-row, .admin-storage-row { align-items: stretch; flex-direction: column; }.admin-plan-controls { flex-wrap: wrap; }.admin-plan-controls select { flex: 1; }.admin-quota-controls { flex-wrap: wrap; }.admin-quota-controls label { flex: 1 1 100%; }.admin-quota-controls input { width: 100%; }.admin-quota-controls .button { flex: 1 1 auto; }.usage-grid, .plans-grid, .admin-columns { grid-template-columns: 1fr; }.health-grid { grid-template-columns: 1fr; }.current-plan .button { width: 100%; } }
 .login-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 50% 0, #182b32, #0a0c10 52%); }
 .login-card { width: min(100%, 420px); display: grid; gap: 10px; padding: 34px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-elevated); box-shadow: 0 24px 80px #0008; }
 .login-card h1 { margin: 0 0 2px; font-size: 28px; }
@@ -931,6 +933,7 @@ nav a.active {
   background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
   backdrop-filter: blur(14px);
 }
+.topbar:has(.notification-panel) { position: relative; z-index: 20; }
 .search {
   border-color: var(--border);
   transition:
@@ -1241,6 +1244,9 @@ nav a.active {
   .top-actions .icon-button {
     display: none;
   }
+  .top-actions .notification-center .icon-button {
+    display: grid;
+  }
   .content {
     padding: 27px 16px;
   }
@@ -1306,23 +1312,46 @@ nav a.active {
 }
 
 .notification-center { position: relative; }
+.notification-trigger-label { display: none; }
 .notification-badge { position: absolute; top: 0; right: 0; display: grid; place-items: center; min-width: 16px; height: 16px; padding: 0 3px; border: 2px solid var(--surface); border-radius: 10px; background: var(--danger); color: white; font-size: 8px; font-weight: 700; }
-.notification-panel { position: absolute; z-index: 90; top: calc(100% + 10px); right: -52px; width: min(360px, calc(100vw - 24px)); max-height: min(480px, calc(100dvh - 100px)); overflow: auto; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-elevated); box-shadow: 0 14px 38px #0008; }
+.notification-panel { position: absolute; z-index: 90; top: calc(100% + 10px); right: -52px; display: flex; flex-direction: column; width: min(360px, calc(100vw - 24px)); min-height: 190px; max-height: min(480px, calc(100dvh - 100px)); overflow: auto; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-elevated); box-shadow: 0 14px 38px #0008; }
 .notification-panel > header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--border); }
 .notification-panel h2 { margin: 0; font-size: 15px; }
+.notification-filters { display: flex; gap: 5px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.notification-filters button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 9px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer; }
+.notification-filters button:hover { background: var(--surface-hover); color: var(--text); }
+.notification-filters button.active { border-color: var(--border); background: var(--surface); color: var(--text); }
+.notification-filters button span { min-width: 17px; padding: 2px 4px; border-radius: 9px; background: var(--surface-hover); color: var(--text-muted); font-size: 9px; text-align: center; }
 .notification-item { display: flex; align-items: center; gap: 10px; min-height: 64px; padding: 10px 14px; color: var(--text); text-decoration: none; }
 .notification-item:hover { background: var(--surface-hover); }
 .notification-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); }
+.notification-icon-request { background: color-mix(in srgb, #4ac8b5 18%, var(--surface)); color: #4ac8b5; }
+.notification-icon-message { background: color-mix(in srgb, #6098ff 18%, var(--surface)); color: #79a8ff; }
+.notification-icon-reaction { background: color-mix(in srgb, #f26686 18%, var(--surface)); color: #f26686; }
+.notification-icon-approved { background: color-mix(in srgb, #54c98b 18%, var(--surface)); color: #54c98b; }
+.notification-icon-review { background: color-mix(in srgb, #f0a64d 18%, var(--surface)); color: #f0a64d; }
 .notification-item > span:nth-child(2) { display: grid; gap: 4px; min-width: 0; flex: 1; }
 .notification-item strong { font-size: 11px; }
 .notification-item small, .notification-empty { color: var(--text-muted); font-size: 10px; line-height: 1.5; }
+.notification-tag { width: fit-content; padding: 2px 6px; border-radius: 4px; background: var(--surface-hover); color: var(--text-secondary); font-size: 9px; font-style: normal; }
+.notification-tag-request { background: color-mix(in srgb, #4ac8b5 14%, var(--surface)); color: #4ac8b5; }
+.notification-tag-message { background: color-mix(in srgb, #6098ff 14%, var(--surface)); color: #79a8ff; }
+.notification-tag-reaction { background: color-mix(in srgb, #f26686 14%, var(--surface)); color: #f26686; }
+.notification-tag-approved { background: color-mix(in srgb, #54c98b 14%, var(--surface)); color: #54c98b; }
+.notification-tag-review { background: color-mix(in srgb, #f0a64d 14%, var(--surface)); color: #f0a64d; }
 .notification-item i { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--primary); }
 .notification-empty { margin: 0; padding: 18px 14px; }
-.notification-all { display: block; padding: 12px; border-top: 1px solid var(--border); color: var(--primary); text-align: center; font-size: 11px; }
+.notification-list { flex: 1; min-height: 120px; }
+.notification-empty-state { display: grid; justify-items: center; align-content: center; gap: 8px; min-height: 140px; padding: 18px 20px; text-align: center; color: var(--text-secondary); }
+.notification-empty-state > svg { color: var(--primary); }
+.notification-empty-state strong { color: var(--text); font-size: 12px; }
+.notification-empty-state p { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.notification-retry { border: 0; background: transparent; color: var(--primary); font: inherit; font-size: 11px; text-decoration: underline; cursor: pointer; }
+.notification-all { display: block; flex: 0 0 auto; padding: 12px; border-top: 1px solid var(--border); color: var(--primary); text-align: center; font-size: 11px; }
 .notification-toast { position: fixed; z-index: 120; top: 78px; right: 20px; display: flex; align-items: center; gap: 10px; width: min(360px, calc(100vw - 24px)); padding: 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-elevated); box-shadow: 0 12px 36px #0008; color: var(--text); font-size: 11px; }
 .notification-toast > span:nth-child(2) { flex: 1; }
 .notification-toast button { display: grid; place-items: center; width: 30px; height: 30px; border: 0; background: transparent; color: var(--text-secondary); }
-@media (max-width: 600px) { .notification-panel { position: fixed; top: 62px; right: 10px; width: min(360px, calc(100vw - 20px)); }.notification-toast { top: 68px; right: 10px; } }
+@media (max-width: 600px) { .top-actions .notification-center .notification-trigger { width: 38px; min-width: 38px; gap: 0; padding-inline: 0; }.notification-trigger-label { display: none; }.notification-panel { position: fixed; top: 62px; right: 10px; width: min(360px, calc(100vw - 20px)); }.notification-toast { top: 68px; right: 10px; } }
 @media (max-width: 390px) {
   .mobile-brand b {
     display: none;

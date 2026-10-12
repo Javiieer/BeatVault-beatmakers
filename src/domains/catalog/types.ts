@@ -12,7 +12,9 @@ export interface CatalogEntry {
   assetId?: EntityId
   coverId?: '808' | 'orchestra' | 'lo-fi'
   reviewNote?: string
-  audio?: { originalName: string; mimeType: string; sizeBytes: number; state: 'available' | 'missing' | 'metadata-only' }
+  creatorName?: string
+  previewUrl?: string
+  audio?: { originalName: string; mimeType: string; sizeBytes: number; state: 'available' | 'missing' | 'metadata-only'; previewReady?: boolean }
 }
 
 export type CatalogInput = Pick<CatalogEntry, 'title' | 'type' | 'tagIds' | 'publicationStatus' | 'assetId' | 'coverId'>

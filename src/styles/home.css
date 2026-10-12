@@ -46,12 +46,28 @@
 .home-feed-tabs button { min-height: 34px; padding: 0 12px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-secondary); font-size: 11px; white-space: nowrap; cursor: pointer; }
 .home-feed-tabs button:hover { background: var(--surface-hover); color: var(--text); }
 .home-feed-tabs button.active { border-color: var(--border); background: var(--surface); color: var(--primary); }
-.home-post { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.home-post { position: relative; z-index: 0; min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.home-post:has(.home-profile-hover:hover), .home-post:has(.home-profile-hover:focus-within) { z-index: 5; }
 .home-post-header { display: flex; align-items: center; gap: 10px; padding: 14px 16px 0; }
 .home-avatar { width: 38px; height: 38px; flex: 0 0 38px; border: 1px solid var(--border-strong); border-radius: 50%; object-fit: cover; }
+.home-profile-hover { position: relative; flex: 1 1 auto; min-width: 0; }
+.home-profile-trigger { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.home-profile-trigger:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 .home-post-author { display: grid; gap: 4px; min-width: 0; flex: 1; }
 .home-post-author strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .home-post-author span { overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.home-profile-popover { position: absolute; z-index: 20; top: calc(100% + 9px); left: 0; width: min(310px, calc(100vw - 40px)); overflow: hidden; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-elevated); box-shadow: 0 14px 38px #0008; animation: home-profile-in .13s ease-out; }
+.home-profile-cover { height: 86px; overflow: hidden; background: var(--surface-hover); }
+.home-profile-cover img { width: 100%; height: 100%; object-fit: cover; filter: brightness(.72); }
+.home-profile-body { display: grid; justify-items: start; padding: 0 15px 14px; }
+.home-profile-avatar { width: 54px; height: 54px; margin-top: -29px; margin-bottom: 8px; border: 3px solid var(--bg-elevated); border-radius: 50%; object-fit: cover; }
+.home-profile-body > strong { font-size: 14px; }
+.home-profile-body > span { margin-top: 3px; color: var(--text-muted); font-size: 11px; }
+.home-profile-body > p { margin: 10px 0; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.home-profile-genres { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
+.home-profile-genres span { padding: 4px 7px; border-radius: 4px; background: var(--primary-soft); color: var(--primary); font-size: 9px; }
+.home-profile-body > a { display: grid; place-items: center; width: 100%; min-height: 34px; border-radius: 5px; background: var(--primary); color: var(--on-primary, #061310); font-size: 11px; font-weight: 700; text-decoration: none; }
+@keyframes home-profile-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 .home-follow { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--primary); font-size: 9px; cursor: pointer; }
 .home-follow.is-following { color: var(--text-secondary); }
 .home-demo-mark { color: var(--text-muted); font-size: 8px; }

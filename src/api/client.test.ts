@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiClient, isProjectRecord } from "./client";
+import { ApiClient, isAccountPlanSnapshot, isAccountStorageUsage, isProjectRecord } from "./client";
 
 const record = { id: "p1", ownerId: "o1", title: "Idea", status: "draft", updatedAt: "2026-01-01" };
 const response = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
 describe("ApiClient", () => {
+  it('validates account storage usage and package metadata', () => {
+    expect(isAccountStorageUsage({ usedBytes: 2048, limitBytes: null, availableBytes: null, quotaSource: 'none', planId: 'free' })).toBe(true);
+    expect(isAccountStorageUsage({ usedBytes: 2048, limitBytes: -1, availableBytes: 0, quotaSource: 'server', planId: 'free' })).toBe(false);
+  });
+  it('validates local package capacity without inventing billing values', () => {
+    expect(isAccountPlanSnapshot({ planId: 'free', status: 'local', plan: { id: 'free', name: 'Free', description: 'Starter', storageLimitBytes: 5 * 1024 ** 3 }, plans: [{ id: 'free', name: 'Free', description: 'Starter', storageLimitBytes: 5 * 1024 ** 3 }], pricing: 'undecided', billing: 'disabled' })).toBe(true);
+    expect(isAccountPlanSnapshot({ planId: 'free', status: 'active', plan: {}, plans: [], pricing: 'free', billing: 'enabled' })).toBe(false);
+  });
   it('does not bind browser fetch to the client instance', async () => {
     const fetcher = function(this: unknown) {
       expect(this).toBeUndefined();

@@ -7,9 +7,10 @@ go-live blockers, see [Oracle VPS deployment](docs/DEPLOY_ORACLE_VPS.md). The ex
 `docker-compose.yml` is for local PostgreSQL development only.
 
 Start with [the current handoff](docs/README.md) and [first-release scope](docs/RELEASE_SCOPE.md).
-The current navigation is Home, Amigos, Mis subidas, Library, Beats and Upload.
-The first-release priority remains the reliable creator audio workflow; Home and
-Amigos support discovery/community with browser-local and local-API boundaries.
+The current navigation is Home, Amigos, Mensajes, Mis subidas, Library, Beats and
+Upload. Direct chat is available between accepted friends with persisted text messages
+and live local-server updates. The first-release priority remains the reliable creator
+audio workflow; Home posts are still browser-local.
 
 Mis subidas replaces Studio project management. New submissions are limited to Beats
 and One-shots, with tags, bundled cover choices, draft recovery and archive/restore.
@@ -20,7 +21,9 @@ demo audio still uses temporary previews; it is not a persistent file backup.
 The account menu opens Mi perfil and Editar perfil. Creator metadata is stored on
 the server, with optional public visibility, local-only post mirror, project grid/list
 and cover/avatar presets. Amigos searches opted-in profiles and stores requests in the
-local API. Public profile responses do not expose email, permissions or private drafts.
+local API. Mensajes stores direct messages in the local API and streams live updates to
+connected sessions; PostgreSQL requires migrations 008-010. Public profile responses do
+not expose email, permissions or private drafts.
 Custom image uploads are not implemented. PostgreSQL profile storage requires
 migrations 005 and 006 after 001-004; the local JSON backend needs no migration.
 
@@ -29,7 +32,8 @@ migrations 005 and 006 after 001-004; the local JSON backend needs no migration.
 Run `npm run diagnose:full` for code checks, tests, isolated local security probes,
 dependency advisories and browser coverage of all sections. Reports are saved to
 `artifacts/diagnostics/latest.md` and `latest.json`. For the security suite alone,
-run `npm run test:security`. See [DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
+run `npm run test:security`. See [DIAGNOSTICS.md](docs/DIAGNOSTICS.md), the
+[site audit](docs/SITE_AUDIT.md), and the [QA bot guide](docs/QA_BOTS.md).
 
 ## Development
 
@@ -38,7 +42,11 @@ npm install
 npm run dev
 ```
 
-The current alpha uses local mock data and bundled demo assets. It includes local upload drafts, objective file metadata, library filters, local audio preview playback, and a browser-local Shorts flow. Capture/Termux transport is not implemented. Local development authentication is available only through the Phase 3 API; it is not production authentication.
+The local app combines server-backed authentication, catalog uploads, moderation,
+friend requests, direct messages and published-beat social interactions with
+browser-local Home posts and prototype Shorts. Demo content is labeled. Local auth
+is for development and QA, not production identity infrastructure; see the audit
+and release blockers before hosting.
 
 ### Local API prototype
 
@@ -58,7 +66,7 @@ production recovery needs a configured transactional email provider.
 
 Phase 4.5 adds an explicit development-only admin bootstrap. Set `BEATVAULT_ADMIN_EMAIL`, `BEATVAULT_ADMIN_PASSWORD`, and `BEATVAULT_ADMIN_BOOTSTRAP_TOKEN` (at least 32 characters) in the process environment, then run `npm run admin:bootstrap`. It is blocked in production, never accepts admin data from registration, and never prints secrets. See `docs/PHASE_4_5_REPORT.md`.
 
-Phase 4.6 introduced protected admin reads; the current admin panel also reviews pending catalog items with server-side role/CSRF checks, creator-visible rejection notes and audit events. Phase 4.7 persists redacted audit events in JSON or PostgreSQL. Apply all SQL migrations 001-007 before using the PostgreSQL review workflow.
+Phase 4.6 introduced protected admin reads; the current admin panel also reviews pending catalog items, assigns local plans and manages test quotas with server-side role/CSRF checks and audit events. Phase 4.7 persists redacted audit events in JSON or PostgreSQL. Apply SQL migrations 001-014 before using PostgreSQL chat, review, catalog-social, processed-preview, account storage quota and package workflows. Provisional storage limits and the deterministic virtual-user capacity model are documented in `docs/PLAN_CAPACITY_MODEL.md`; billing remains disabled.
 
 The Node API listens on `http://127.0.0.1:4174`. Vite proxies same-origin `/api`
 requests there so sessions and CSRF cookies work on the frontend host:
@@ -72,7 +80,7 @@ npm run dev
 For the current preview use `npm run dev -- --host 127.0.0.1 --port 5188`.
 For other frontend origins set `BEATVAULT_CORS_ORIGINS` explicitly in the API
 process environment. `BEATVAULT_API_PROXY` overrides Vite's API target. Production
-requires equivalent reverse-proxy routing. Apply all SQL migrations 001-007 for
+requires equivalent reverse-proxy routing. Apply all SQL migrations 001-014 for
 Postgres; existing databases do not acquire new migrations just by restarting Compose.
 
 It exposes public `/api/health` and `/api/catalog`, local session auth at `/api/auth/login`, `/api/auth/me`, `/api/auth/logout`, and owned project CRUD. Copy `.env.example` for documented local configuration; production values must be supplied by the environment, never committed. JSON remains the default. For local PostgreSQL run `docker compose up -d postgres`, use the migration mounted by Compose, set `BEATVAULT_STORAGE_BACKEND=postgres` and `DATABASE_URL`, then verify `/api/ready`. Roll back by setting the backend to `json`; JSON files are not modified by PostgreSQL mode. See `docs/PHASE_4_4_REPORT.md`.
@@ -97,7 +105,10 @@ creator audio/catalog records are server-backed; local upload drafts are not fil
 Plans (`#/plans`, alias `#/subscription`) remains a pricing prototype without payments.
 Admin (`#/admin`) provides a pending-review queue for authenticated admins, and Beats
 lists only published Beat catalog entries. Approved audio originals remain private to
-their owners; a dedicated preview derivative is still needed for cross-account playback.
+their owners. Public playback serves only a separate AAC/M4A preview of at most 30
+seconds; moderation refuses to publish linked audio until that derivative exists.
+Install FFmpeg separately and configure `BEATVAULT_FFMPEG_PATH` (or expose `ffmpeg` on
+PATH); BeatVault does not bundle its binary. See [FFmpeg licensing](https://ffmpeg.org/legal.html).
 Deferred routes are absent from the main menu.
 La autenticación local incluye verificación y recuperación sin proveedor de email. Para pruebas de desarrollo puede habilitarse explícitamente `BEATVAULT_DEV_AUTH_TOKENS=true`; nunca se devuelve un token en producción.
 

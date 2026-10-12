@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { randomBytes } from 'node:crypto'
+import { e2eAdmin } from './e2e-admin'
 
 const directory = await mkdtemp(join(tmpdir(), 'beatvault-e2e-'))
 Object.assign(process.env, {
@@ -12,6 +14,17 @@ Object.assign(process.env, {
 const { server, auth, audit } = await import('../server/index')
 await auth.initialize()
 await audit.initialize()
+const [{ createRepository }, { bootstrapAdmin }, { config }] = await Promise.all([
+  import('../server/repository'), import('../server/bootstrap'), import('../server/config'),
+])
+const adminRuntime = createRepository()
+await bootstrapAdmin({
+  ...process.env,
+  BEATVAULT_ADMIN_EMAIL: e2eAdmin.email,
+  BEATVAULT_ADMIN_PASSWORD: e2eAdmin.password,
+  BEATVAULT_ADMIN_BOOTSTRAP_TOKEN: randomBytes(32).toString('base64url'),
+}, adminRuntime.repository, audit, config)
+await adminRuntime.close()
 server.listen(45174, '127.0.0.1')
 const close = () => {
   auth.clearSessions()

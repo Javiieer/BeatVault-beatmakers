@@ -28,8 +28,49 @@ routes (`GET /api/creators`, `GET /api/friends`, `POST/DELETE /api/friend-reques
 and friend lists return an allowlisted profile DTO without email or credentials.
 Search is limited to opted-in public profiles. Mutations require the existing session
 and CSRF checks. Friend rows persist in `friendships.json`; Postgres uses migration
-006. These are local foundations, not a hosted social service; notifications, chat,
-block/report tools, and public post delivery do not exist.
+006. Home posts remain browser-local and are not public or cross-device.
+
+### Direct chat (2026-10-10)
+
+`/chat` provides one-to-one text conversations between accepted friends. The API
+rechecks the relationship for inbox, history, read-state, and send operations;
+mutations use the session CSRF token, messages are limited to 2,000 characters, and
+history reads return at most 100 messages. JSON messages are serialized in
+`messages.json`; PostgreSQL uses migration 008. Server-sent events notify connected
+clients of new messages, read state and online/offline presence, with at most three
+streams per account. Presence is visible only to accepted friends and remains online
+while at least one stream for the account is connected.
+Events are process-local, so a multi-instance deployment needs a shared pub/sub
+adapter. No attachments, group chats, blocking, reporting, or end-to-end encryption
+are implemented. Apply migrations 001-013 and validate live PostgreSQL before hosting.
+
+### Catalog social activity (2026-10-11)
+
+Published catalog Beats and One-shots expose authenticated comments and reactions.
+Activity is stored separately from the current reaction state so removing a reaction
+does not erase its notification event. The notification center combines social
+activity with friend requests, unread messages and local review-state changes. The
+JSON adapter persists this data locally; PostgreSQL uses migration 009. Connected
+clients receive activity refreshes over the existing process-local SSE channel;
+notifications are in-app, not push notifications.
+
+### Themes and route QA (2026-10-11)
+
+Account preferences in localStorage support only `dark`, `light` and `custom`. Custom
+RGB-picker colors are allowlisted hex values for page background, cards, buttons and
+links; invalid values fall back independently, derived text colors adapt to background
+brightness, and preferences remain isolated by account. Legacy theme names map to
+dark/light on read. Playwright captures all module routes in all three modes at mobile
+and desktop sizes; this is a visual regression check, not exhaustive manual review.
+
+### Audio source validation (2026-10-11)
+
+Upload source MIME is canonicalized and checked against file signatures before the
+original is stored. Tests generate WAV, MP3, FLAC, AAC, M4A, OGG and WEBM fixtures,
+verify signatures and transcode each to a bounded AAC/M4A preview. Invalid WAV input
+receives no derivative. The authenticated multipart and PostgreSQL request matrix
+remains WAV-only; this unit matrix does not establish production limits for large or
+adversarial files.
 
 Password recovery reuses `/api/auth/password-reset/request` and
 `/api/auth/password-reset/confirm`. Reset tokens are random, hashed before storage,
@@ -45,7 +86,8 @@ an authenticated admin session and CSRF token, transition only pending entries, 
 record decisions in the audit log. Rejection notes are returned only to the owning
 creator and admins; public catalog responses exclude rejected entries. Beats lists
 only published Beat records. Original audio downloads remain owner-only. Migration
-007 adds the bounded review note field. Historical sections
+007 adds the bounded review note field; 008 adds direct messages; 009 adds catalog
+comments, reactions and activity. Historical sections
 below describe earlier phases; "future backend" wording is not the current status.
 See README.md in this directory for the authoritative handoff.
 

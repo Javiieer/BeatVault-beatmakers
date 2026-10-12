@@ -44,6 +44,12 @@ They cover real WAV upload, lost-response retries, reload without browser cache,
 playback/download and two-account draft/audio isolation. They never use developer
 data directories. Neither test server reuses an occupied port.
 
+`tests/site-audit.spec.ts` additionally decodes every Home demo image and runs an
+actual creator submission/admin approval against the disposable E2E API at
+desktop/mobile sizes. The
+general route sweep intentionally tests many pages offline; its Admin screenshot is
+therefore the disconnected fallback, not evidence of an authenticated admin session.
+
 ## Automatic execution
 
 `.github/workflows/diagnostics.yml` runs the full diagnostic for pushes, pull requests

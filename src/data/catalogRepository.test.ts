@@ -39,6 +39,17 @@ describe("CatalogRepository", () => {
     expect(asset.cover).toContain('chill-lo-fi.png');
     expect(asset.metadata).toMatchObject({ size: '2.0 KB', format: 'WAV' });
   });
+  it('retries a processed preview and refreshes the owner catalog state', async () => {
+    const entry = { ...page.entries[0], contentId: 'beat-id', creatorId: 'owner', assetId: 'audio-id', audio: { originalName: 'beat.wav', mimeType: 'audio/wav', sizeBytes: 2044, state: 'available', previewReady: true } };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ ok: true, data: { id: 'audio-id', previewReady: true } }))
+      .mockResolvedValueOnce(response({ ok: true, data: { entries: [entry], total: 1 } }));
+    const repo = new CatalogRepository(new ApiClient('http://api', 100, fetcher), 'owner');
+    const result = await repo.retryPreview('audio-id');
+    expect(fetcher.mock.calls[0][0]).toBe('http://api/api/assets/audio-id/preview/process');
+    expect(fetcher.mock.calls[0][1]).toMatchObject({ method: 'POST', credentials: 'include' });
+    expect(result.asset).toMatchObject({ id: 'beat-id', assetId: 'audio-id', previewReady: true });
+  });
   it('preserves rejected status so creators can see review outcomes', async () => {
     const rejected = { ...page.entries[0], creatorId: 'owner', publicationStatus: 'rejected' }
     const repo = new CatalogRepository(new ApiClient('http://api', 100, vi.fn().mockResolvedValue(response({ ok: true, data: { entries: [rejected], total: 1 } }))), 'owner')

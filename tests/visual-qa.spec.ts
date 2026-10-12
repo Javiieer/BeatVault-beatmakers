@@ -52,6 +52,17 @@ test("desktop sidebar fills the viewport after removing the fixed player", async
   expect(bounds?.height).toBe(900);
 });
 
+test("home feed shows a creator profile preview on hover and keeps its link reachable", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/#/home");
+  const profile = page.locator(".home-profile-hover").filter({ hasText: "Milo North" }).first();
+  await profile.hover();
+  const preview = profile.getByRole("region", { name: "Vista previa del perfil de Milo North" });
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText("Trap");
+  await expect(preview.getByRole("link", { name: "Descubrir creadores" })).toHaveAttribute("href", "#/friends");
+});
+
 test("plans and admin routes expose their critical mock boundaries", async ({ page }) => {
   await page.goto("/#/plans");
   await expect(page.getByRole("heading", { name: "Plans & Subscription" })).toBeVisible();
@@ -65,7 +76,7 @@ test("plans and admin routes expose their critical mock boundaries", async ({ pa
 test("primary navigation contains the selected creator workflows", async ({ page }) => {
   await openFreshPage(page, "/dashboard");
   const links = page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link");
-  await expect(links).toHaveText(["Home", "Amigos", "Mis subidas", "Library", "Beats", "Upload"]);
+  await expect(links).toHaveText(["Home", "Amigos", "Mensajes", "Mis subidas", "Library", "Beats", "Upload"]);
 });
 
 test("friends shows a clear retry state while the local API is offline", async ({ page }) => {
@@ -113,24 +124,36 @@ test("upload removes one queue item without removing the others", async ({ page 
   await expect(queue).toContainText("keep-me.wav");
 });
 
-test("theme selector changes all themes and persists after reload", async ({ page }) => {
-  await openFreshPage(page, "/library");
-  const picker = page.locator(".theme-picker");
-  const themes = [
-    ["Classic", "classic"],
-    ["Ember Forge", "ember"],
-    ["Ivory Studio", "ivory"],
-    ["Verdant Signal", "verdant"],
-  ] as const;
-
-  for (const [label, value] of themes) {
-    await picker.locator("summary").click();
-    await picker.getByRole("menuitemradio", { name: new RegExp(label) }).click();
-    await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", value);
-  }
-
+test("theme preferences change dark, light and custom RGB colors and persist", async ({ page }) => {
+  await page.unrouteAll();
+  const account = { id: "theme-creator", email: "theme@beatvault.local", role: "creator", verificationState: "unverified" };
+  const profile = { accountId: account.id, displayName: "Theme Creator", bio: "", location: "", website: "", instagram: "", genres: [], coverId: "lo-fi", avatarId: "initials", publicProfile: false };
+  await page.route(url => url.pathname.startsWith("/api/"), async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/chat/events") return route.abort();
+    const data = path === "/api/auth/me" ? account
+      : path === "/api/profile" ? profile
+        : path === "/api/catalog" ? { entries: [], total: 0 }
+          : path === "/api/projects" ? []
+            : path === "/api/friends" ? { friends: [], incoming: [], outgoing: [] }
+              : path === "/api/chat/conversations" || path === "/api/notifications/social" ? [] : null;
+    return route.fulfill({ json: { ok: true, data, requestId: "theme-test" } });
+  });
+  await openFreshPage(page, "/settings");
+  await page.getByRole("button", { name: "Preferencias" }).click();
+  await page.getByLabel("Tema visual").selectOption("dark");
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "dark");
+  await page.getByLabel("Tema visual").selectOption("light");
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "light");
+  await page.getByLabel("Tema visual").selectOption("custom");
+  await page.getByLabel("Color tarjetas").fill("#243144");
+  await page.getByLabel("Color enlaces").fill("#55c7ff");
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "custom");
   await page.reload();
-  await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "verdant");
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "custom");
+  await expect(page.getByLabel("Color tarjetas")).toHaveValue("#243144");
+  await expect(page.getByLabel("Color enlaces")).toHaveValue("#55c7ff");
+  await expect(page.locator(".theme-picker")).toHaveCount(0);
 });
 
 test("library keeps navigation available and fits the mobile viewport", async ({ page }) => {

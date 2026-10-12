@@ -2,7 +2,7 @@
 
 ## Purpose and scope
 
-This document is product discovery for a future plans page and account control panel. It does not define final pricing and does not authorize payment, authentication, backend, or entitlement implementation in the current local-only prototype.
+This document is product discovery for the plans page and account control panel. It does not define final pricing or authorize payment processing in the current local-only prototype.
 
 ## User types
 
@@ -83,4 +83,4 @@ Future implementation should include authenticated sessions, least-privilege wor
 
 ## Current boundary
 
-No pricing, payment flow, auth, backend, billing provider, entitlement service, cloud integration, or functional plans/control-panel page is implemented. The existing frontend remains local-only with mock data and browser-local persistence.
+No final pricing, payment flow, or billing provider is implemented. Free, Creator, and Studio can be assigned by Admin for local tests; new accounts default to Free. Storage enforcement resolves an admin test override, a configured plan capacity, and then a technical server fallback. Plan capacities are unset unless `BEATVAULT_PLAN_*_STORAGE_BYTES` is explicitly configured. Per-account original-byte usage is measured in JSON/PostgreSQL, and no mock values are treated as commercial package values. The package screen is connected to the authenticated account; billing and other package capabilities remain undecided.

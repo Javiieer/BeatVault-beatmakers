@@ -19,14 +19,17 @@ const isCatalogEntry = (value: unknown): value is CatalogEntry => {
     const audio = item.audio as Record<string, unknown>;
     if (typeof audio.originalName !== 'string' || typeof audio.mimeType !== 'string' ||
       typeof audio.sizeBytes !== 'number' || !Number.isFinite(audio.sizeBytes) || audio.sizeBytes <= 0 ||
-      !['available', 'missing', 'metadata-only'].includes(audio.state as string)) return false;
+      !['available', 'missing', 'metadata-only'].includes(audio.state as string) ||
+      (audio.previewReady !== undefined && typeof audio.previewReady !== 'boolean')) return false;
   }
   return typeof item.contentId === "string" && typeof item.title === "string" &&
     typeof item.creatorId === "string" && Array.isArray(item.tagIds) &&
     item.tagIds.every((tag) => typeof tag === "string") && Array.isArray(item.previewIds) &&
     item.previewIds.every((preview) => typeof preview === "string") &&
     statuses.includes(item.publicationStatus as (typeof statuses)[number]) &&
-    (item.reviewNote === undefined || typeof item.reviewNote === 'string' && item.reviewNote.length <= 160);
+    (item.reviewNote === undefined || typeof item.reviewNote === 'string' && item.reviewNote.length <= 160) &&
+    (item.creatorName === undefined || typeof item.creatorName === 'string') &&
+    (item.previewUrl === undefined || typeof item.previewUrl === 'string');
 };
 export const isCatalogPage = (value: unknown): value is CatalogPage => {
   if (!value || typeof value !== "object") return false;
@@ -36,10 +39,11 @@ export const isCatalogPage = (value: unknown): value is CatalogPage => {
 
 const fromEntry = (entry: CatalogEntry, cached?: CatalogAsset): CatalogAsset => ({
   id: entry.contentId, name: entry.title, type: creatorType(entry.type) || entry.type,
-  ownerId: entry.creatorId, assetId: entry.assetId, coverId: entry.coverId,
+  ownerId: entry.creatorId, creatorName: entry.creatorName, assetId: entry.assetId, coverId: entry.coverId,
   cover: uploadCovers.find(cover => cover.id === entry.coverId)?.url || cached?.cover,
-  previewUrl: entry.assetId && entry.audio?.state === 'available' ? apiUrl(`/api/assets/${encodeURIComponent(entry.assetId)}/preview`) : undefined,
+  previewUrl: entry.previewUrl || (entry.assetId && entry.audio?.state === 'available' ? apiUrl(`/api/assets/${encodeURIComponent(entry.assetId)}/preview`) : undefined),
   downloadUrl: entry.assetId && entry.audio?.state === 'available' ? apiUrl(`/api/assets/${encodeURIComponent(entry.assetId)}/download`) : undefined,
+  previewReady: entry.audio?.previewReady,
   productType: entry.type === "beat" ? "beat" : entry.type === "pack" ? "sound-pack" : "sound",
   metadata: entry.audio ? { duration: "--", size: formatFileSize(entry.audio.sizeBytes), format: entry.audio.originalName.split('.').pop()?.toUpperCase() || 'AUDIO' } : cached?.metadata || { duration: "--", size: "Metadata only", format: "--" },
   tags: entry.tagIds.map((label) => ({ label })), color: "#35d0ba", favorite: false,
@@ -95,5 +99,11 @@ export class CatalogRepository {
     if (this.authenticated || (result.error.code !== "NETWORK_ERROR" && result.error.code !== "TIMEOUT")) return { source: "api", error: result.error.message };
     this.write(this.read().filter((item) => item.id !== id));
     return { deleted: true, source: "fallback" };
+  }
+  async retryPreview(assetId: string): Promise<{ asset?: CatalogAsset; error?: string }> {
+    const result = await this.api.request(`/api/assets/${encodeURIComponent(assetId)}/preview/process`, { method: 'POST' }, (value): value is { id: string; previewReady: true } => Boolean(value && typeof value === 'object' && (value as { id?: unknown }).id === assetId && (value as { previewReady?: unknown }).previewReady === true));
+    if (!result.ok) return { error: result.error.message };
+    const refreshed = await this.list();
+    return { asset: refreshed.assets.find(asset => asset.assetId === assetId), error: refreshed.error };
   }
 }

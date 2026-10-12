@@ -10,6 +10,10 @@ import { readProfile, saveProfile } from '../data/profileRepository';
 import { profileCovers, profileCoverUrl } from '../data/profileArtwork';
 import { readLocalHomePosts, subscribeToLocalHomePosts, type LocalHomePost } from '../data/homePosts';
 import '../styles/creator-profile.css';
+import { authClient, isAuthUser, isNull } from '../api/client';
+import { readUserSettings, saveUserSettings, type UserSettings } from '../data/userSettings';
+import { Globe2, Bell, Shield, UserRound, Palette, Languages } from 'lucide-react';
+import { toRgb } from '../app/theme';
 
 const artwork = (id: string) => uploadCovers.find(cover => cover.id === id)?.url || uploadCovers[2].url;
 function Avatar({ profile }: { profile: CreatorProfile }) {
@@ -23,6 +27,7 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
   const [genres, setGenres] = useState(initial.genres.join(', '));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [savedMessage, setSavedMessage] = useState('');
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
   useEffect(() => {
     if (!dirty) return;
@@ -36,7 +41,7 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
     setBusy(true); setError('');
     try {
       const result = await saveProfile(draft);
-      if (result.ok) { onSaved(result.data); window.location.hash = '#/profile'; }
+      if (result.ok) { onSaved(result.data); setSavedMessage('Perfil actualizado.'); }
       else setError(result.error.message);
     } finally { setBusy(false); }
   };
@@ -57,10 +62,66 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
           <section><h2>Enlaces</h2><div className="producer-form-grid"><label>Sitio web<input type="url" maxLength={200} placeholder="https://" value={draft.website} onChange={e => setDraft({ ...draft, website: e.target.value })} /></label><label>Instagram<input maxLength={31} placeholder="@usuario" value={draft.instagram} onChange={e => setDraft({ ...draft, instagram: e.target.value })} /></label></div></section>
           <section><h2>Visibilidad</h2><label className="producer-visibility"><input type="checkbox" checked={draft.publicProfile} onChange={e => setDraft({ ...draft, publicProfile: e.target.checked })} />Perfil publico</label></section>
           {error && <p role="alert" className="form-error">{error}</p>}
+          {savedMessage && <p role="status" className="settings-notice"><Check size={15} />{savedMessage}</p>}
           <div className="producer-save"><button type="button" className="button ghost" onClick={cancel}>Cancelar</button><button className="button" disabled={!draft.displayName.trim()}><Check size={16} />{busy ? 'Guardando...' : 'Guardar cambios'}</button></div>
         </fieldset>
       </form>
       <aside className="producer-settings-preview"><p className="eyebrow">Vista previa</p><img className="producer-preview-cover" src={profileCoverUrl(draft.coverId)} alt="Portada seleccionada" /><Avatar profile={{ ...draft, accountId: profile.accountId }} /><h2>{draft.displayName || 'Tu nombre'}</h2><p>{draft.bio || 'Sin biografia'}</p><dl className="producer-private-account"><dt>Correo de acceso</dt><dd>{user.email}</dd><dt>Permisos</dt><dd>{user.role === 'admin' ? 'Administrador' : 'Creador'}</dd></dl></aside>
+    </div>
+  </div>;
+}
+
+function SettingsCenter({ profile, user, onProfileSaved }: { profile: CreatorProfile; user: AuthUser; onProfileSaved: (profile: CreatorProfile) => void }) {
+  const sections = [
+    ['profile', 'Perfil', UserRound], ['privacy', 'Privacidad', Shield], ['preferences', 'Preferencias', Palette],
+    ['notifications', 'Notificaciones', Bell], ['account', 'Cuenta', Globe2], ['security', 'Seguridad', LockKeyhole],
+  ] as const;
+  const [section, setSection] = useState<(typeof sections)[number][0]>('profile');
+  const [settings, setSettings] = useState<UserSettings>(() => readUserSettings(user.id));
+  const [email, setEmail] = useState(user.email);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const updateSettings = (next: UserSettings) => {
+    setSettings(next);
+    setNotice(saveUserSettings(user.id, next) ? 'Preferencias guardadas en este dispositivo.' : 'El navegador no permitió guardar los cambios.');
+  };
+  useEffect(() => {
+    document.documentElement.lang = settings.language;
+    document.documentElement.classList.toggle('reduce-motion', settings.reducedMotion);
+    return () => document.documentElement.classList.remove('reduce-motion');
+  }, [settings.language, settings.reducedMotion]);
+  const changeEmail = async (event: React.FormEvent) => {
+    event.preventDefault(); setBusy(true); setError(''); setNotice('');
+    const result = await authClient.request('/api/auth/email-change', { method: 'POST', body: JSON.stringify({ email, currentPassword }) }, isAuthUser);
+    setBusy(false);
+    if (!result.ok) { setError(result.error.message); return; }
+    setEmail(result.data.email); setCurrentPassword(''); setNotice('Correo actualizado localmente. Queda sin verificar; la confirmación por email debe habilitarse antes de producción.');
+    window.dispatchEvent(new CustomEvent('beatvault:account-updated', { detail: result.data }));
+  };
+  const changePassword = async (event: React.FormEvent) => {
+    event.preventDefault(); setBusy(true); setError(''); setNotice('');
+    const result = await authClient.request('/api/auth/password-change', { method: 'POST', body: JSON.stringify({ currentPassword, password: newPassword }) }, isNull);
+    setBusy(false);
+    if (!result.ok) { setError(result.error.message); return; }
+    setCurrentPassword(''); setNewPassword(''); setNotice('Contraseña actualizada. Las demás sesiones se cerraron; esta sesión sigue activa.');
+  };
+  const title = sections.find(item => item[0] === section)?.[1] || 'Ajustes';
+  return <div className="producer-settings">
+    <header className="producer-settings-heading"><div><p className="eyebrow">Cuenta y preferencias</p><h1>Ajustes</h1></div><a className="button ghost" href="#/profile"><ArrowLeft size={16} />Volver al perfil</a></header>
+    <div className="settings-center-layout">
+      <nav className="settings-nav" aria-label="Secciones de ajustes">{sections.map(([id, label, Icon]) => <button key={id} type="button" className={section === id ? 'active' : ''} aria-current={section === id ? 'page' : undefined} onClick={() => { setSection(id); setNotice(''); setError(''); }}><Icon size={17} />{label}</button>)}</nav>
+      <section className="settings-panel" aria-labelledby="settings-section-title">
+        <header><h2 id="settings-section-title">{title}</h2>{notice && <p role="status" className="settings-notice"><Check size={15} />{notice}</p>}{error && <p role="alert" className="form-error">{error}</p>}</header>
+        {section === 'profile' && <ProfileEditor profile={profile} user={user} onSaved={onProfileSaved} />}
+        {section === 'privacy' && <div className="settings-options"><p>Controla qué partes de tu cuenta pueden descubrir otros productores.</p><label className="settings-toggle"><span><strong>Perfil público</strong><small>Permite que aparezcas en el directorio y que otros vean tu perfil.</small></span><input type="checkbox" checked={profile.publicProfile} onChange={async event => { const updated = { displayName: profile.displayName, bio: profile.bio, location: profile.location, website: profile.website, instagram: profile.instagram, genres: profile.genres, coverId: profile.coverId, avatarId: profile.avatarId, publicProfile: event.target.checked }; const result = await saveProfile(updated); if (result.ok) { onProfileSaved(result.data); setNotice('Privacidad actualizada.'); } else setError(result.error.message); }} /></label><div className="settings-info"><Shield size={17} /><span>Tus publicaciones personales se guardan localmente en este dispositivo y no se muestran a otros usuarios.</span></div></div>}
+        {section === 'preferences' && <div className="settings-options"><label className="settings-control"><span><Palette size={17} />Tema visual</span><select aria-label="Tema visual" value={settings.theme} onChange={event => updateSettings({ ...settings, theme: event.target.value as UserSettings['theme'] })}><option value="dark">Oscuro</option><option value="light">Claro</option><option value="custom">RGB personalizado</option></select></label>{settings.theme === 'custom' && <><fieldset className="custom-theme-colors"><legend className="sr-only">Colores del tema personalizado</legend>{([['background', 'Fondo'], ['card', 'Tarjetas'], ['button', 'Botones'], ['link', 'Enlaces']] as const).map(([key, label]) => <label key={key}><span>{label}</span><input aria-label={`Color ${label.toLocaleLowerCase()}`} type="color" value={settings.customTheme[key]} onChange={event => updateSettings({ ...settings, customTheme: { ...settings.customTheme, [key]: event.target.value } })} /><output>{toRgb(settings.customTheme[key])}</output></label>)}</fieldset><p className="settings-subtle">Elige cada color con el selector RGB. Los colores de texto y estados se ajustan automáticamente para conservar legibilidad.</p></>}<label className="settings-control"><span><Languages size={17} />Idioma preferido</span><select value={settings.language} onChange={event => updateSettings({ ...settings, language: event.target.value as 'es' | 'en' })}><option value="es">Español</option><option value="en">English</option></select></label><p className="settings-subtle">El idioma elegido se aplica a preferencias y formatos compatibles; faltan traducciones del resto de la interfaz.</p><label className="settings-toggle"><span><strong>Reducir movimiento</strong><small>Reduce animaciones y transiciones de la interfaz.</small></span><input type="checkbox" checked={settings.reducedMotion} onChange={event => updateSettings({ ...settings, reducedMotion: event.target.checked })} /></label></div>}
+        {section === 'notifications' && <div className="settings-options"><p>Elige qué avisos emergentes quieres recibir en esta cuenta.</p>{([['messages', 'Mensajes', 'Avisos de nuevos mensajes directos.'], ['friendRequests', 'Solicitudes de amistad', 'Avisos de nuevas solicitudes.'], ['comments', 'Comentarios', 'Cuando alguien comenta en uno de tus beats publicados.'], ['reactions', 'Reacciones', 'Cuando alguien reacciona a uno de tus beats publicados.'], ['reviews', 'Revisión de subidas', 'Avisos sobre el estado de tus beats y one-shots.']] as const).map(([key, label, description]) => <label className="settings-toggle" key={key}><span><strong>{label}</strong><small>{description}</small></span><input type="checkbox" checked={settings.notifications[key]} onChange={event => updateSettings({ ...settings, notifications: { ...settings.notifications, [key]: event.target.checked } })} /></label>)}<div className="settings-info"><Bell size={17} /><span>Los avisos sociales se generan para interacciones en tus beats publicados y respetan estas opciones.</span></div></div>}
+        {section === 'account' && <div className="settings-options"><p className="settings-subtle">ID de cuenta: <code>{user.id}</code> · Rol: {user.role === 'admin' ? 'Administración' : 'Creador'}</p><form className="settings-form" onSubmit={event => void changeEmail(event)}><h3>Correo de acceso</h3><label>Nuevo correo<input type="email" required maxLength={254} autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} /></label><label>Confirma tu contraseña<input type="password" required autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} /></label><button className="button" disabled={busy || email.trim().toLowerCase() === user.email.toLowerCase()}>Actualizar correo</button><small>En local se actualiza de inmediato. En producción se exigirá confirmación del nuevo correo.</small></form></div>}
+        {section === 'security' && <div className="settings-options"><form className="settings-form" onSubmit={event => void changePassword(event)}><h3>Cambiar contraseña</h3><label>Contraseña actual<input type="password" required autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} /></label><label>Nueva contraseña<input type="password" required minLength={12} maxLength={128} autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} /><small>Usa al menos 12 caracteres.</small></label><button className="button" disabled={busy || newPassword.length < 12}>Actualizar contraseña</button></form><div className="settings-info"><LockKeyhole size={17} /><span>Al cambiarla, las demás sesiones de tu cuenta se invalidan. Conservas esta sesión.</span></div><a href="#/forgot-password">¿Olvidaste tu contraseña?</a></div>}
+      </section>
     </div>
   </div>;
 }
@@ -134,7 +195,7 @@ export function CreatorProfilePage({ user, uploads, onPlay, editing = false, tar
   useEffect(() => { if (selectedOpen) dialog.current?.showModal(); }, [selectedOpen]);
   if (loading) return <section className="producer-message" role="status">Cargando perfil...</section>;
   if (!profile) return <section className="producer-message"><h1>Perfil no disponible</h1><p role="alert">{error}</p></section>;
-  if (editing) return user ? <ProfileEditor profile={profile} user={user} onSaved={setProfile} /> : <section className="producer-message"><h1>Configuracion de perfil</h1><p>Inicia sesion para editar tu perfil.</p></section>;
+  if (editing) return user ? <SettingsCenter profile={profile} user={user} onProfileSaved={setProfile} /> : <section className="producer-message"><h1>Configuracion de perfil</h1><p>Inicia sesion para editar tu perfil.</p></section>;
   const isOwner = user?.id === profile.accountId;
   const showPrivate = isOwner && !publicView;
   const projects = (uploads || remoteUploads).filter(asset => asset.ownerId === profile.accountId && creatorType(asset.type) && (showPrivate ? asset.publicationStatus !== 'archived' : asset.publicationStatus === 'published'));
@@ -147,7 +208,7 @@ export function CreatorProfilePage({ user, uploads, onPlay, editing = false, tar
     <div className="producer-banner"><img src={profileCoverUrl(profile.coverId)} alt="Portada del perfil" />{isOwner && <a className="producer-cover-edit" href="#/settings" title="Editar portada" aria-label="Editar portada"><Pencil size={18} /></a>}</div>
     <section className="producer-identity-band">
       <Avatar profile={profile} />
-      <div className="producer-name"><p className="eyebrow">BeatVault Creator</p><h1>{profile.displayName}</h1><div className="producer-meta">{profile.location && <span><MapPin size={14} />{profile.location}</span>}{isOwner && !profile.publicProfile && <span><LockKeyhole size={14} />Perfil privado</span>}</div></div>
+      <div className="producer-name"><p className="eyebrow">BeatVault Creator</p><h1>{profile.displayName}</h1>{profile.packageBadges?.length ? <div className="package-badges" aria-label="Paquetes adquiridos">{profile.packageBadges.map(packageId => <span key={packageId} className={`package-badge ${packageId}`} title={`Paquete ${packageId} adquirido`}>{packageId === 'creator' ? 'Creator' : 'Studio'}</span>)}</div> : null}<div className="producer-meta">{profile.location && <span><MapPin size={14} />{profile.location}</span>}{isOwner && !profile.publicProfile && <span><LockKeyhole size={14} />Perfil privado</span>}</div></div>
       <div className="producer-profile-actions">{isOwner && <><a className="button ghost" href="#/settings"><Pencil size={16} />Editar perfil</a><button className="button ghost" aria-pressed={publicView} onClick={() => { setPublicView(value => !value); setSelected(undefined); }}>{publicView ? 'Mi vista' : 'Vista publica'}</button></>}{profile.publicProfile && <button className="button ghost" onClick={() => void share()}><Share2 size={16} />Compartir</button>}</div>
     </section>
     <div className="producer-summary"><div><p className="producer-bio">{profile.bio || 'Sin biografia'}</p><div className="producer-genres">{profile.genres.map(genre => <span key={genre}>{genre}</span>)}</div></div><div className="producer-count"><strong>{projects.length}</strong><span>proyectos</span></div></div>
