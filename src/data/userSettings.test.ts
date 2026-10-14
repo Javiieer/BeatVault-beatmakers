@@ -7,17 +7,18 @@ describe('account preferences', () => {
 
   it('keeps settings isolated by account and restores saved choices', () => {
     const initial = readUserSettings('creator-one')
-    const next = { ...initial, theme: 'custom' as const, customTheme: { ...initial.customTheme, button: '#e34b77' }, language: 'en' as const, reducedMotion: true }
+    const next = { ...initial, theme: 'custom' as const, customTheme: { ...initial.customTheme, button: '#e34b77' }, language: 'en' as const, currency: 'MXN' as const, reducedMotion: true }
     expect(saveUserSettings('creator-one', next)).toBe(true)
     expect(readUserSettings('creator-one')).toMatchObject(next)
     expect(readUserSettings('creator-two').theme).toBe('dark')
     expect(readUserSettings('creator-one').customTheme.button).toBe('#e34b77')
+    expect(readUserSettings('creator-one').currency).toBe('MXN')
     expect(localStorage.getItem(userSettingsKey('creator-one'))).toContain('custom')
   })
 
   it('recovers safely from invalid stored preferences', () => {
     localStorage.setItem(userSettingsKey('creator-one'), '{broken')
-    expect(readUserSettings('creator-one')).toMatchObject({ theme: 'dark', customTheme: defaultCustomTheme, language: 'es', reducedMotion: false })
+    expect(readUserSettings('creator-one')).toMatchObject({ theme: 'dark', customTheme: defaultCustomTheme, language: 'en', currency: 'USD', reducedMotion: false })
   })
 
   it('broadcasts changes so app chrome can update immediately', () => {

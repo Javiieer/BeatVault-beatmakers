@@ -26,7 +26,7 @@ export interface RequestContext {
 }
 
 export type AuthProvider = 'password' | 'oauth'
-export type AccountRole = 'creator' | 'admin'
+export type AccountRole = 'creator' | 'community_manager' | 'admin'
 
 export interface Account {
   id: EntityId

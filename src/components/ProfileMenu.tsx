@@ -67,7 +67,7 @@ export function ProfileMenu({ user, onLogout }: { user?: AuthUser; onLogout: () 
       <div ref={menu} className="profile-popover" style={{ top: placement.top, right: placement.right, maxHeight: `calc(100dvh - ${placement.top}px - 16px)` }}>
       <div className="profile-identity">
         <strong>{user?.email || 'Demo local'}</strong>
-        <span>{user?.role === 'admin' ? 'Administrador' : user ? 'Creador' : 'Sin cuenta conectada'}</span>
+        <span>{user?.role === 'admin' ? 'Administrador' : user?.role === 'community_manager' ? 'Community manager' : user ? 'Creador' : 'Sin cuenta conectada'}</span>
       </div>
       <div id={id} role="menu" aria-label="Opciones de perfil">
         <a role="menuitem" href="#/profile" onClick={close}><UserRound size={17} />Ver mi perfil</a>
@@ -75,6 +75,7 @@ export function ProfileMenu({ user, onLogout }: { user?: AuthUser; onLogout: () 
         <a role="menuitem" href="#/studio" onClick={close}><Disc3 size={17} />Mis subidas</a>
         <a role="menuitem" href="#/upload" onClick={close}><Upload size={17} />Subir audio</a>
         {user?.role === 'admin' && <a role="menuitem" href="#/admin" onClick={close}><ShieldCheck size={17} />Panel de administracion</a>}
+        {(user?.role === 'admin' || user?.role === 'community_manager') && <a role="menuitem" href="#/community-review" onClick={close}><ShieldCheck size={17} />Marketplace review</a>}
         {user && <button role="menuitem" type="button" className="profile-logout" aria-disabled={busy} onClick={() => void logout()}><LogOut size={17} />{busy ? 'Cerrando sesion...' : 'Cerrar sesion'}</button>}
       </div>
       {error && <p className="profile-error" role="alert">{error}</p>}

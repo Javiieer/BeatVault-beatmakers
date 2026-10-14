@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { contrastRatio, customThemeStyle, defaultCustomTheme, defaultTheme, isHexColor, parseCustomTheme, parseTheme, readableAccent, readableText, readStoredTheme, toRgb } from "./theme";
 
+const colorHex = (value: string) => value.startsWith("#")
+  ? value
+  : `#${value.match(/[\d.]+/g)!.slice(0, 3).map(channel => Number(channel).toString(16).padStart(2, "0")).join("")}`;
+const hueOf = (value: string) => {
+  const hex = colorHex(value);
+  const [red, green, blue] = [1, 3, 5].map(index => Number.parseInt(hex.slice(index, index + 2), 16) / 255);
+  const maximum = Math.max(red, green, blue);
+  const minimum = Math.min(red, green, blue);
+  const delta = maximum - minimum;
+  if (!delta) return 0;
+  const hue = maximum === red ? 60 * (((green - blue) / delta) % 6)
+    : maximum === green ? 60 * ((blue - red) / delta + 2) : 60 * ((red - green) / delta + 4);
+  return (hue + 360) % 360;
+};
+const hueDistance = (first: string, second: string) => Math.abs(((hueOf(first) - hueOf(second) + 540) % 360) - 180);
+
 describe("theme preferences", () => {
   it.each(["dark", "light", "custom"])("accepts %s", value => {
     expect(parseTheme(value)).toBe(value);
@@ -41,7 +57,7 @@ describe("theme preferences", () => {
     const card = effectiveColor(style["--surface"]);
     expect(contrastRatio(style["--text"], background)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(style["--surface-text"], card)).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(style["--on-primary"], palette.button)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(style["--on-primary"], effectiveColor(style["--primary"]))).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(style["--link"], background)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(style["--surface-link"], card)).toBeGreaterThanOrEqual(4.5);
     for (const token of ["success", "warning", "error", "info", "violet"]) {
@@ -55,10 +71,18 @@ describe("theme preferences", () => {
     expect(contrastRatio(readableText("#ffffff"), "#ffffff")).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("softens neon surface colors and pulls clashing card hues toward the background", () => {
-    const style = customThemeStyle({ background: "#f00000", card: "#00f000", button: "#0000ff", link: "#ffffff" });
+  it("softens neon surfaces and harmonizes button and link accents with a vivid background", () => {
+    const style = customThemeStyle({ background: "#f00000", card: "#00f000", button: "#0000ff", link: "#00ff00" });
     expect(style["--bg"]).not.toBe(toRgb("#f00000"));
     expect(style["--surface"]).not.toBe(toRgb("#00f000"));
-    expect(style["--primary"]).toBe(toRgb("#0000ff"));
+    expect(style["--primary"]).not.toBe(toRgb("#0000ff"));
+    expect(style["--link"]).not.toBe("#00ff00");
+    expect(hueDistance(style["--primary"], "#f00000")).toBeLessThanOrEqual(33);
+    expect(hueDistance(style["--link"], "#f00000")).toBeLessThanOrEqual(33);
+  });
+
+  it("preserves selected accent hues on neutral backgrounds", () => {
+    const style = customThemeStyle({ ...defaultCustomTheme, button: "#2478d0" });
+    expect(style["--primary"]).toBe(toRgb("#2478d0"));
   });
 });

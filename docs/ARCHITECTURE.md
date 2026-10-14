@@ -54,6 +54,16 @@ JSON adapter persists this data locally; PostgreSQL uses migration 009. Connecte
 clients receive activity refreshes over the existing process-local SSE channel;
 notifications are in-app, not push notifications.
 
+### Marketplace discovery (2026-10-12)
+
+`GET /api/marketplace` is a public, read-only projection over approved Beat and
+One-shot catalog entries. It supports bounded query, creator, tag, type and cursor
+filters. Search uses public creator display names only; private profiles resolve to a
+generic creator label. Response projection removes original asset IDs and audio
+metadata, and delegates playable media to the existing published-preview route.
+Moderation remains exclusively in the admin catalog workflow. This endpoint does not
+create offers, orders, entitlements or payment records.
+
 ### Themes and route QA (2026-10-11)
 
 Account preferences in localStorage support only `dark`, `light` and `custom`. Custom
@@ -187,3 +197,11 @@ Phase 3.9 mantiene tokens de verificación/reset como hashes efímeros en el rep
 ## Admin Control Center (Phase 4.6)
 
 `server/admin.ts` contiene los tipos de lectura y la redacción de cuentas. Las rutas `/api/admin/*` requieren la sesión HttpOnly existente y comprueban el rol recuperado server-side; el navegador no puede elevar permisos enviando `role` o `adminId`. Accounts, projects, catalog y audit se leen desde el backend seleccionado. Audit usa una cola serializada, metadata allowlist-by-redaction y retención configurable (`BEATVAULT_AUDIT_MAX_ENTRIES`, `BEATVAULT_AUDIT_RETENTION_DAYS`).
+
+Marketplace promotion rules are managed through admin-only, CSRF-protected routes and persist in local JSON or PostgreSQL (`015_marketplace_promotions.sql`). Rules support a global or product-category scope, 1-75% off, optional date bounds, and an enabled flag. They are configuration only: no catalog price, licensing, discount calculation, or checkout is wired to them yet.
+
+USD is the marketplace base/listing currency. Account display currency (`USD`, `MXN`, `EUR`) is a local preference; `/api/currency-rates` serves a validated European Central Bank daily reference snapshot with a six-hour process cache, and MXN/EUR conversions are informational only. Do not use this reference rate as a payment settlement quote. Stripe Connect Express is selected for a test-only Mexican seller-onboarding slice: `/api/connect/*` creates Express accounts and Stripe-hosted onboarding links, while a raw-body signature-verified webhook persists `account.updated` capabilities and deduplicates event IDs. Both test secrets are required, live keys are rejected, and Stripe is disabled in production. This does not create buyer charges, marketplace transfers, subscription billing, tax calculation, seller withholding or payouts from BeatVault. The checkout ledger must distinguish discounted subtotal, applicable tax, provider cost, platform fee, and seller net.
+
+Beat seller intake is private and separate from public catalog metadata. `GET /api/seller/beat-listings` and owner-scoped `PUT /api/seller/beat-listings/:contentId` save per-beat commercial-preparation drafts; the server checks session, CSRF, catalog ownership and beat type, validates composition/master shares independently, and fixes offer currency/status/version to USD/draft-only. PostgreSQL uses migration `016_marketplace_beat_listing_drafts`; local mode uses `beat-listing-drafts.json`. Rights evidence is a separate private record: PDF/JPEG/PNG, at most 10 MB each and three per listing, signature-checked, and stored under a non-public path. Only the owning seller or admin/community-manager review endpoints can retrieve it, with no-store, nosniff and forced attachment headers. Migration `018_marketplace_seller_evidence.sql` adds the Postgres table; local mode uses `seller-evidence.json`. Sample-proof readiness is derived from uploaded records, never the client checkbox. Evidence remains seller-provided and is not legal or forensic verification. The rights-intake confirmation records its server timestamp/version, but is explicitly not a buyer license or sale. No listing is activated: legal templates, private master/stem bundles, checkout, entitlements and payouts remain future work.
+
+Community managers are a separate least-privilege role. Admins may assign an existing non-admin account to `community_manager` through the CSRF-protected account-role route; public registration cannot assign it, and the route cannot grant or alter administrator accounts. `/api/staff/marketplace-review` exposes private beat-intake drafts and private rights evidence only to admins and community managers. Staff can record a reasoned recommendation or request changes; recommendations are logged in the audit store and do not publish content, approve a sale, activate an offer, or access `/api/admin/*`. Admins use `/api/admin/marketplace-listings` for the separate final intake decision. Approval requires a complete draft and a current positive recommendation from a community manager other than the seller. Every decision requires a reason and is audited; seller edits make the decision stale. Approval means only reviewed for a future activation and leaves offers `draft-only`; it does not publish a sale. Migration `017_community_manager_role.sql` extends the PostgreSQL role constraint. Evidence is never treated as legal clearance.

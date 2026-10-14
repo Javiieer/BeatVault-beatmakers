@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
 import { request as httpRequest } from 'node:http'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -12,7 +12,7 @@ import { hashPassword } from '../server/auth'
 import { emptyProfile } from '../src/domains/profile'
 import { config } from '../server/config'
 
-const databaseUrl = process.env.BEATVAULT_TEST_DATABASE_URL
+const databaseUrl = process.env.BEATVAULT_TEST_DATABASE_URL ?? ''
 if (!databaseUrl) throw new Error('Define BEATVAULT_TEST_DATABASE_URL para ejecutar la QA PostgreSQL.')
 const database = new URL(databaseUrl)
 const databaseName = decodeURIComponent(database.pathname.slice(1))
@@ -32,6 +32,7 @@ const password = 'Postgres-QA-Only-2026!'
 const emailFor = (kind: string) => `${fixturePrefix}-${kind}@beatvault.invalid`
 const uploadsDir = await mkdtemp(join(tmpdir(), 'beatvault-postgres-qa-'))
 const dataDir = join(uploadsDir, 'data')
+const uploadDirectory = join(uploadsDir, 'uploads')
 const apiDir = process.cwd()
 let api: ChildProcess | undefined
 let apiOutput = ''
@@ -67,20 +68,20 @@ async function freePort(): Promise<number> {
   return address.port
 }
 
-async function startApi(): Promise<void> {
+async function startApi(databaseConnection = databaseUrl, mediaDirectory = uploadDirectory): Promise<void> {
   apiPort = await freePort()
   apiOutput = ''
   api = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
     cwd: apiDir,
     env: {
       ...process.env,
-      NODE_ENV: 'test', BEATVAULT_STORAGE_BACKEND: 'postgres', DATABASE_URL: databaseUrl,
+      NODE_ENV: 'test', BEATVAULT_STORAGE_BACKEND: 'postgres', DATABASE_URL: databaseConnection,
       BEATVAULT_HOST: '127.0.0.1', BEATVAULT_PORT: String(apiPort), BEATVAULT_DEMO_ENABLED: 'false',
       BEATVAULT_RATE_LIMIT: '200', BEATVAULT_CORS_ORIGINS: 'http://127.0.0.1:5187',
       BEATVAULT_UPLOAD_MAX_FILE_BYTES: String(512 * 1024), BEATVAULT_UPLOAD_MAX_REQUEST_BYTES: String(640 * 1024),
       BEATVAULT_STORAGE_QUOTA_BYTES: '250000',
       BEATVAULT_PLAN_CREATOR_STORAGE_BYTES: '100000',
-      BEATVAULT_DATA_DIR: dataDir, BEATVAULT_UPLOAD_DIR: join(uploadsDir, 'uploads'),
+      BEATVAULT_DATA_DIR: dataDir, BEATVAULT_UPLOAD_DIR: mediaDirectory,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -107,6 +108,91 @@ async function stopApi(): Promise<void> {
     child.kill('SIGTERM')
   })
   api = undefined
+}
+
+function run(command: string, args: string[], input?: Buffer) {
+  return spawnSync(command, args, { input, windowsHide: true, maxBuffer: 128 * 1024 * 1024 })
+}
+
+async function verifyBackupRestore(assetId: string, creatorContentId: string, expectedWav: Buffer): Promise<void> {
+  const container = process.env.BEATVAULT_TEST_DATABASE_CONTAINER
+  if (!container) {
+    console.log('SKIP: PostgreSQL/media restore drill (set BEATVAULT_TEST_DATABASE_CONTAINER to a labeled disposable PostgreSQL 16 container).')
+    return
+  }
+  assert(databaseName.startsWith('beatvault_test_'), 'El ensayo de restauración solo acepta bases beatvault_test_*.')
+
+  const inspected = run('docker', ['inspect', '--format', '{{json .Config.Labels}}|{{.Config.Image}}|{{json .NetworkSettings.Ports}}', container])
+  assert(inspected.status === 0, `No se pudo inspeccionar el contenedor de QA: ${inspected.stderr.toString()}`)
+  const [labelsText, image, bindingsText] = inspected.stdout.toString().trim().split('|')
+  const labels = JSON.parse(labelsText || 'null') as Record<string, string> | null
+  const bindings = JSON.parse(bindingsText || 'null') as Record<string, Array<{ HostIp: string; HostPort: string }>> | null
+  const sourcePort = database.port || '5432'
+  const localBinding = bindings?.['5432/tcp']?.some(binding =>
+    ['127.0.0.1', '::1'].includes(binding.HostIp) && binding.HostPort === sourcePort)
+  assert(labels?.['beatvault.qa'] === 'true' && image === 'postgres:16' && localBinding,
+    'El ensayo requiere un contenedor etiquetado beatvault.qa=true, imagen postgres:16 y puerto publicado solo en loopback que coincida con la URL QA.')
+
+  const restoreDb = `beatvault_test_restore_${randomUUID().replaceAll('-', '').slice(0, 12)}`
+  const restoreUrl = new URL(databaseUrl)
+  restoreUrl.pathname = `/${restoreDb}`
+  const backupDirectory = await mkdtemp(join(tmpdir(), 'beatvault-restore-qa-'))
+  const dumpPath = join(backupDirectory, 'database.dump')
+  const mediaArchive = join(backupDirectory, 'uploads.tar.gz')
+  const restoredMedia = join(backupDirectory, 'restored-uploads')
+  const username = decodeURIComponent(database.username)
+  let restorePool: Pool | undefined
+  let targetApiStarted = false
+  try {
+    await stopApi()
+    const dump = run('docker', ['exec', container, 'pg_dump', '-Fc', '--no-owner', '--no-acl', '-U', username, '-d', databaseName])
+    assert(dump.status === 0 && dump.stdout.length > 0, `pg_dump falló: ${dump.stderr.toString()}`)
+    await writeFile(dumpPath, dump.stdout)
+
+    const mediaBackup = run('tar', ['-czf', mediaArchive, '-C', uploadsDir, 'uploads'])
+    assert(mediaBackup.status === 0, `No se pudo respaldar el directorio de audio: ${mediaBackup.stderr.toString()}`)
+    assert((await stat(mediaArchive)).size > 0, 'El archivo de respaldo de audios quedó vacío.')
+
+    const created = run('docker', ['exec', container, 'createdb', '-U', username, restoreDb])
+    assert(created.status === 0, `No se pudo crear la base temporal de restauración: ${created.stderr.toString()}`)
+    const restored = run('docker', ['exec', '-i', container, 'pg_restore', '--no-owner', '--no-acl', '-U', username, '-d', restoreDb], await readFile(dumpPath))
+    assert(restored.status === 0, `pg_restore falló: ${restored.stderr.toString()}`)
+
+    await mkdir(restoredMedia, { recursive: true })
+    const extract = run('tar', ['-xzf', mediaArchive, '-C', restoredMedia])
+    assert(extract.status === 0, `No se pudo extraer el respaldo de audios: ${extract.stderr.toString()}`)
+    const extractedMedia = join(restoredMedia, 'uploads')
+    const sourceAsset = (await pool.query<{ storage_key: string }>('SELECT storage_key FROM assets WHERE id = $1', [assetId])).rows[0]
+    assert(sourceAsset?.storage_key, 'No se encontró el original de audio para el ensayo de restauración.')
+    const restoredPath = join(extractedMedia, sourceAsset.storage_key)
+    assert((await readFile(restoredPath)).equals(expectedWav), 'El respaldo de medios no recuperó exactamente los bytes del audio original.')
+
+    restorePool = new Pool({ connectionString: restoreUrl.toString(), max: 2, connectionTimeoutMillis: 5000 })
+    const sourceCounts = await Promise.all(tables.map(async table => [table, Number((await pool.query(`SELECT count(*) AS count FROM public.${table}`)).rows[0].count)] as const))
+    const restoredCounts = await Promise.all(tables.map(async table => [table, Number((await restorePool!.query(`SELECT count(*) AS count FROM public.${table}`)).rows[0].count)] as const))
+    assert(JSON.stringify(sourceCounts) === JSON.stringify(restoredCounts), 'El respaldo restaurado no conserva las filas de todas las tablas QA.')
+    const restoredMessage = await restorePool.query("SELECT 1 FROM direct_messages WHERE body = 'SSE after reconnect' AND sender_id = $1 AND recipient_id = $2", [adminId, creatorId])
+    assert(restoredMessage.rowCount === 1, 'El historial de chat no sobrevivió la restauración PostgreSQL.')
+    const restoredPackage = await restorePool.query('SELECT purchased_plan_ids FROM accounts WHERE id = $1', [creatorId])
+    assert(restoredPackage.rows[0]?.purchased_plan_ids?.includes('studio'), 'El historial de paquetes no sobrevivió la restauración PostgreSQL.')
+
+    await startApi(restoreUrl.toString(), extractedMedia)
+    targetApiStarted = true
+    const restoredCreator = await login(emailFor('creator'))
+    const restoredDownload = await fetch(`${base()}/api/assets/${assetId}/download`, { headers: { cookie: restoredCreator.cookie } })
+    assert(restoredDownload.status === 200 && Buffer.from(await restoredDownload.arrayBuffer()).equals(expectedWav), 'La API restaurada no pudo servir el audio recuperado.')
+    const restoredMessages = (await request(restoredCreator, `/api/chat/conversations/${adminId}/messages`).then(value => value.json()) as { data: Array<{ body: string }> }).data
+    assert(restoredMessages.some(message => message.body === 'SSE after reconnect'), 'La API restaurada no pudo leer el chat recuperado.')
+    const restoredCatalog = (await request(restoredCreator, '/api/catalog').then(value => value.json()) as { data: { entries: Array<{ contentId: string }> } }).data.entries
+    assert(restoredCatalog.some(entry => entry.contentId === creatorContentId), 'La API restaurada no pudo leer el catálogo recuperado.')
+    console.log('PASS: PostgreSQL custom-format backup/restore, table row counts, package history, chat, catalog and original audio archive.')
+  } finally {
+    if (targetApiStarted || api) await stopApi()
+    await restorePool?.end()
+    const dropped = run('docker', ['exec', container, 'dropdb', '--if-exists', '-U', username, restoreDb])
+    if (dropped.status !== 0) console.error(`Restore QA cleanup warning; temporary database ${restoreDb} may need removal: ${dropped.stderr.toString()}`)
+    await rm(backupDirectory, { recursive: true, force: true })
+  }
 }
 
 type Session = { cookie: string; csrf: string }
@@ -172,7 +258,7 @@ async function waitForEvent(reader: ReadableStreamDefaultReader<Uint8Array>, tim
   throw new Error('No llegó el evento SSE esperado.')
 }
 
-const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'projects']
+const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_promotions', 'projects']
 try {
   const schema = await pool.query<{ name: string; exists: boolean }>(
     'SELECT name, to_regclass($1 || \'.\' || name) IS NOT NULL AS exists FROM unnest($2::text[]) AS name',
@@ -204,6 +290,14 @@ try {
   assert(response.status === 201, 'No se creó la solicitud de amistad.')
   const friendship = (await response.json() as { data: { id: string } }).data
   const admin = await login(emailFor('admin'))
+  response = await request(admin, '/api/admin/promotions', 'POST', { name: 'Postgres launch', scope: 'one-shot', percentOff: 10, enabled: true })
+  assert(response.status === 201, 'Admin no pudo crear la promoción en PostgreSQL.')
+  const promotion = (await response.json() as { data: { id: string; scope: string; percentOff: number } }).data
+  assert(promotion.scope === 'one-shot' && promotion.percentOff === 10, 'La promoción no persistió su categoría/descuento en PostgreSQL.')
+  const promotions = (await request(admin, '/api/admin/promotions').then(value => value.json()) as { data: Array<{ id: string }> }).data
+  assert(promotions.some(item => item.id === promotion.id), 'No se pudo leer la promoción persistida en PostgreSQL.')
+  response = await request(admin, `/api/admin/promotions/${promotion.id}`, 'DELETE')
+  assert(response.status === 200, 'No se pudo eliminar la promoción de QA PostgreSQL.')
   response = await request(admin, `/api/admin/accounts/${creatorId}/plan`, 'PATCH', { planId: 'creator' })
   assert(response.status === 200, 'Admin no pudo asignar un paquete de prueba en PostgreSQL.')
   const creatorPlan = (await request(creator, '/api/account/plan').then(value => value.json()) as { data: { planId: string; plan: { storageLimitBytes: number | null } } }).data
@@ -416,6 +510,7 @@ try {
   assert(messages.some(message => message.body === 'SSE after reconnect'), 'El historial no sobrevivió al reinicio de la API.')
   const auditCount = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM audit_events WHERE actor_id = $1 AND metadata->>'resource' = 'catalog-review'", [adminId])
   assert(auditCount.rows[0].count >= 2, 'No persistieron los eventos de auditoría de revisión.')
+  await verifyBackupRestore(asset.id, previewCatalog.contentId, wav)
   console.log('PASS: PostgreSQL auth/chat/SSE, plan assignment and storage resolution, package-quota concurrent upload race, seven audio formats, malformed-container fail-closed, declared/chunked upload limits, atomic account quotas, storage usage and moderation.')
 } finally {
   await stopApi()

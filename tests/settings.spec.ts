@@ -12,9 +12,10 @@ test('settings controls persist account preferences and fit on mobile', async ({
       : path === '/api/profile' ? profile
         : path === '/api/catalog' ? { entries: [], total: 0 }
           : path === '/api/projects' ? []
-            : path === '/api/friends' ? { friends: [], incoming: [], outgoing: [] }
-              : path === '/api/chat/conversations' ? []
-                : path === '/api/notifications/social' ? []
+              : path === '/api/friends' ? { friends: [], incoming: [], outgoing: [] }
+                : path === '/api/chat/conversations' ? []
+                  : path === '/api/notifications/social' ? []
+                    : path === '/api/currency-rates' ? { base: 'EUR', date: '2026-10-12', rates: { EUR: 1, USD: 1.1, MXN: 20 }, source: 'ECB' }
                 : null
     if (path === '/api/chat/events') return route.abort()
     if (path === '/api/profile' && method === 'PUT') {
@@ -28,14 +29,19 @@ test('settings controls persist account preferences and fit on mobile', async ({
   await expect(page.getByRole('heading', { name: 'Ajustes' })).toBeVisible()
   await page.getByRole('button', { name: 'Preferencias' }).click()
   await page.getByLabel('Tema visual').selectOption('light')
-  await page.getByLabel('Idioma preferido').selectOption('en')
+  await expect(page.getByLabel('Display currency')).toHaveValue('USD')
+  await page.screenshot({ path: 'artifacts/visual-qa/currency-selector-usd-mobile.png', fullPage: true })
+  await page.getByLabel('Display currency').selectOption('MXN')
+  await expect(page.getByRole('status').filter({ hasText: '1 USD' })).toContainText('MXN')
+  await page.screenshot({ path: 'artifacts/visual-qa/currency-selector-mobile.png', fullPage: true })
+  await page.getByLabel(/Preferred language|Idioma preferido/).selectOption('en')
   await expect(page.locator('.app-shell')).toHaveAttribute('data-theme', 'light')
   await page.getByLabel('Tema visual').selectOption('custom')
   await page.getByLabel('Color botones').fill('#e34b77')
   await expect(page.locator('.app-shell')).toHaveAttribute('data-theme', 'custom')
   await expect(page.locator('.app-shell')).toHaveCSS('--primary', 'rgb(227 75 119)')
   await expect(page.locator('html')).toHaveAttribute('lang', 'en')
-  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('beatvault:settings:settings-creator') || '{}'))).toMatchObject({ theme: 'custom', customTheme: { button: '#e34b77' }, language: 'en' })
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('beatvault:settings:settings-creator') || '{}'))).toMatchObject({ theme: 'custom', customTheme: { button: '#e34b77' }, language: 'en', currency: 'MXN' })
   await page.getByRole('button', { name: 'Seguridad' }).click()
   await expect(page.getByRole('heading', { name: 'Cambiar contraseña' })).toBeVisible()
   await page.locator('.notification-trigger').click()

@@ -68,4 +68,41 @@ describe('JsonStore', () => {
       await rm(directory, { recursive: true, force: true })
     }
   })
+  it('persists seller beat listing drafts privately by owner and preserves original creation time', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'beatvault-listing-drafts-'))
+    const previousDirectory = config.dataDirectory
+    config.dataDirectory = directory
+    try {
+      const repo = new LocalRepository()
+      const record = { contentId: 'beat-1', ownerId: 'owner-1', description: 'A melodic beat draft for artists.', genre: 'R&B', explicitContent: false, rights: { sellerCompositionShareBps: 10000, sellerMasterShareBps: 10000, sampleDisclosure: 'none' as const, sampleProofAvailable: false, collaborators: [], declarationAccepted: false }, offers: [{ id: 'standard', label: 'Standard', amountMinor: 3000, currency: 'USD' as const, deliverables: ['wav' as const], usageSummary: 'Draft only, pending review.', termsVersion: 'non-exclusive-offer-draft-v1' as const, status: 'draft-only' as const }], currency: 'USD' as const, status: 'draft-only' as const, schemaVersion: 1 as const, rightsDeclarationVersion: 'rights-intake-v1' as const, createdAt: '2026-10-10T00:00:00.000Z', updatedAt: '2026-10-10T00:00:00.000Z' }
+      await repo.saveBeatListingDraft(record)
+      const updated = await repo.saveBeatListingDraft({ ...record, description: 'Updated description for an artist.', createdAt: '2026-10-12T00:00:00.000Z', updatedAt: '2026-10-12T00:00:00.000Z' })
+      expect(updated.createdAt).toBe(record.createdAt)
+      expect(await repo.listBeatListingDrafts('owner-1')).toMatchObject([{ contentId: 'beat-1', description: 'Updated description for an artist.' }])
+      expect(await repo.listBeatListingDrafts('other-owner')).toEqual([])
+      await expect(repo.saveBeatListingDraft({ ...record, ownerId: 'other-owner' })).rejects.toThrow('LISTING_NOT_FOUND')
+    } finally {
+      config.dataDirectory = previousDirectory
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+  it('stores rights evidence privately, enforces the per-listing limit, and scopes deletion to its owner', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'beatvault-seller-evidence-'))
+    const previousDirectory = config.dataDirectory
+    config.dataDirectory = directory
+    try {
+      const repo = new LocalRepository()
+      const record = (id: string) => ({ id, contentId: 'beat-evidence', ownerId: 'seller-a', originalName: `${id}.pdf`, mimeType: 'application/pdf' as const, sizeBytes: 16, storageKey: `private-marketplace-evidence/seller-a/${id}`, contentHash: 'a'.repeat(64), createdAt: new Date().toISOString() })
+      await repo.saveSellerEvidence(record('evidence-1'))
+      await repo.saveSellerEvidence(record('evidence-2'))
+      await repo.saveSellerEvidence(record('evidence-3'))
+      await expect(repo.saveSellerEvidence(record('evidence-4'))).rejects.toThrow('EVIDENCE_LIMIT')
+      expect(await repo.listSellerEvidence('beat-evidence', 'seller-b')).toEqual([])
+      expect(await repo.deleteSellerEvidence('evidence-1', 'seller-b')).toBe(false)
+      expect(await repo.listSellerEvidence('beat-evidence', 'seller-a')).toHaveLength(3)
+    } finally {
+      config.dataDirectory = previousDirectory
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 })

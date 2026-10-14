@@ -7,6 +7,7 @@ import type { IncomingMessage } from 'node:http'
 import { config } from './config'
 import type { AssetRecord, ServerRepository } from './store'
 import { createProcessedPreview, previewArtifactPath, previewStorageKey } from './media-preview'
+import { sellerEvidencePath } from './seller-evidence-upload'
 
 const validName = (name: string): string => name.replace(/[\\/\0]/g, '_').slice(0, 255) || 'unnamed'
 const mimeAliases: Record<string, string> = {
@@ -147,6 +148,9 @@ export async function reconcileUploads(repo: ServerRepository): Promise<void> {
       try { await stat(previewPath) } catch { await repo.updateAssetPreview(asset.id, {}) }
     }
   }
+  const listings = await repo.listAllBeatListingDrafts()
+  const evidence = await Promise.all(listings.map(listing => repo.listSellerEvidence(listing.contentId, listing.ownerId)))
+  for (const record of evidence.flat()) known.add(sellerEvidencePath(record))
   let owners: string[]; try { owners = await readdir(config.uploadDirectory) } catch { return }
   for (const owner of owners) { if (owner.startsWith('.tmp-')) continue; let files: string[]; try { files = await readdir(join(config.uploadDirectory, owner)) } catch { continue }; for (const file of files) { const path = join(config.uploadDirectory, owner, file); if (!known.has(path)) { try { if ((await stat(path)).isFile()) await unlink(path) } catch { /* concurrent cleanup */ } } } }
 }

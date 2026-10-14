@@ -43,7 +43,7 @@ export const toRgb = (hex: string): string => {
 const channels = (hex: string) => [0, 2, 4].map(index => Number.parseInt(hex.slice(index + 1, index + 3), 16) / 255);
 const luminance = (hex: string) => channels(hex).map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
 
-const harmonizeSurface = (hex: string, referenceHue?: number) => {
+const harmonizeColor = (hex: string, referenceHue?: number, maximumSaturation = 0.18, maximumHueDifference = 32) => {
   const [red, green, blue] = channels(hex);
   const maximum = Math.max(red, green, blue);
   const minimum = Math.min(red, green, blue);
@@ -58,9 +58,9 @@ const harmonizeSurface = (hex: string, referenceHue?: number) => {
   hue = (hue + 360) % 360;
   if (referenceHue !== undefined) {
     const difference = ((hue - referenceHue + 540) % 360) - 180;
-    if (Math.abs(difference) > 42) hue = (referenceHue + Math.sign(difference) * 42 + 360) % 360;
+    if (Math.abs(difference) > maximumHueDifference) hue = (referenceHue + Math.sign(difference) * maximumHueDifference + 360) % 360;
   }
-  const saturation = Math.min(delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1)), 0.18);
+  const saturation = Math.min(delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1)), maximumSaturation);
   const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
   const section = hue / 60;
   const secondary = chroma * (1 - Math.abs(section % 2 - 1));
@@ -70,6 +70,18 @@ const harmonizeSurface = (hex: string, referenceHue?: number) => {
       : section < 5 ? [secondary, 0, chroma] : [chroma, 0, secondary];
   return `#${rgb.map(value => Math.round((value + match) * 255).toString(16).padStart(2, "0")).join("")}`;
 };
+
+const saturationOf = (hex: string) => {
+  const values = channels(hex);
+  const delta = Math.max(...values) - Math.min(...values);
+  const lightness = (Math.max(...values) + Math.min(...values)) / 2;
+  return delta === 0 ? 0 : delta / (1 - Math.abs(2 * lightness - 1));
+};
+
+const harmonizeSurface = (hex: string, referenceHue?: number) => harmonizeColor(hex, referenceHue);
+
+const harmonizeAccent = (hex: string, referenceHue: number, harmonize: boolean) =>
+  harmonize ? harmonizeColor(hex, referenceHue, 0.62, 32) : hex;
 
 const hueOf = (hex: string) => {
   const [red, green, blue] = channels(hex);
@@ -124,10 +136,13 @@ export const customThemeStyle = (input: CustomThemeColors): Record<string, strin
   const colors = parseCustomTheme(input);
   const background = harmonizeSurface(colors.background);
   const card = harmonizeSurface(colors.card, hueOf(background));
+  const shouldHarmonizeAccents = saturationOf(colors.background) >= 0.28;
+  const button = harmonizeAccent(colors.button, hueOf(colors.background), shouldHarmonizeAccents);
+  const linkColor = harmonizeAccent(colors.link, hueOf(colors.background), shouldHarmonizeAccents);
   const surfaceText = readableText(card);
-  const buttonText = readableText(colors.button);
-  const link = readableAccent(colors.link, [background]);
-  const surfaceLink = readableAccent(colors.link, [card]);
+  const buttonText = readableText(button);
+  const link = readableAccent(linkColor, [background]);
+  const surfaceLink = readableAccent(linkColor, [card]);
   const semantic = {
     success: "#16834b",
     warning: "#9b5b00",
@@ -144,9 +159,9 @@ export const customThemeStyle = (input: CustomThemeColors): Record<string, strin
     "--surface-hover": `color-mix(in srgb, ${toRgb(card)} 88%, ${surfaceText})`,
     "--border": `color-mix(in srgb, ${toRgb(card)} 78%, ${surfaceText})`,
     "--border-strong": `color-mix(in srgb, ${toRgb(card)} 62%, ${surfaceText})`,
-    "--primary": toRgb(colors.button),
-    "--primary-hover": `color-mix(in srgb, ${toRgb(colors.button)} 86%, ${buttonText})`,
-    "--primary-soft": `color-mix(in srgb, ${toRgb(colors.button)} 20%, ${toRgb(background)})`,
+    "--primary": toRgb(button),
+    "--primary-hover": `color-mix(in srgb, ${toRgb(button)} 86%, ${buttonText})`,
+    "--primary-soft": `color-mix(in srgb, ${toRgb(button)} 20%, ${toRgb(background)})`,
     "--link": link,
     "--surface-link": surfaceLink,
     "--secondary": link,

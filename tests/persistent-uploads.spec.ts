@@ -46,8 +46,11 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await page.getByRole('button', { name: 'Enviar a revision' }).click();
     await expect(page).toHaveURL(/#\/studio$/);
     const result = await (await page.request.get('/api/catalog')).json();
-    expect(result.data.entries).toHaveLength(1);
-    const entry = result.data.entries[0];
+    const currentUser = await (await page.request.get('/api/auth/me')).json();
+    const ownedEntries = result.data.entries.filter((item: { creatorId: string; title: string }) =>
+      item.creatorId === currentUser.data.id && item.title === 'Persistent beat');
+    expect(ownedEntries).toHaveLength(1);
+    const entry = ownedEntries[0];
     expect(entry.coverId).toBe('lo-fi');
     expect(entry.audio.sizeBytes).toBe(file.buffer.length);
     expect(entry.audio).not.toHaveProperty('storageKey');

@@ -19,6 +19,28 @@ describe('PostgresRepository', () => {
     await repo.setStorageQuota('owner', null, 'admin')
     expect(query).toHaveBeenLastCalledWith('DELETE FROM account_storage_quotas WHERE owner_id = $1', ['owner'])
   })
+  it('lists and persists marketplace promotion rules with parameterized queries', async () => {
+    const row = { id: 'promotion-id', name: 'Launch', scope: 'loop' as const, percent_off: 10, starts_at: null, ends_at: null, enabled: true, created_at: '2026-10-12T00:00:00.000Z', updated_at: '2026-10-12T00:00:00.000Z', updated_by: 'admin' }
+    const query = vi.fn().mockResolvedValue({ rows: [row] })
+    const repo = new PostgresRepository({ query: query as unknown as SqlClient['query'] })
+    const promotion = { id: row.id, name: row.name, scope: row.scope, percentOff: 10, enabled: true, createdAt: row.created_at, updatedAt: row.updated_at, updatedBy: row.updated_by }
+    expect(await repo.savePromotion(promotion)).toEqual(promotion)
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('ON CONFLICT (id) DO UPDATE'), [row.id, row.name, 'loop', 10, null, null, true, row.created_at, 'admin'])
+    expect(await repo.listPromotions()).toEqual([promotion])
+    expect(await repo.deletePromotion(row.id)).toBe(true)
+    expect(query).toHaveBeenLastCalledWith('DELETE FROM marketplace_promotions WHERE id = $1 RETURNING id', [row.id])
+  })
+  it('persists seller beat offer drafts as owner-scoped JSON with parameterized writes', async () => {
+    const record = { contentId: 'content-id', ownerId: 'owner-id', description: 'Beat listing for artist placements.', genre: 'R&B', explicitContent: false, rights: { sellerCompositionShareBps: 10000, sellerMasterShareBps: 10000, sampleDisclosure: 'none' as const, sampleProofAvailable: false, collaborators: [], declarationAccepted: false }, offers: [{ id: 'standard', label: 'Standard', amountMinor: 3000, currency: 'USD' as const, deliverables: ['wav' as const], usageSummary: 'Draft only, not a license.', termsVersion: 'non-exclusive-offer-draft-v1' as const, status: 'draft-only' as const }], currency: 'USD' as const, status: 'draft-only' as const, schemaVersion: 1 as const, rightsDeclarationVersion: 'rights-intake-v1' as const, createdAt: '2026-10-12T00:00:00.000Z', updatedAt: '2026-10-12T00:00:00.000Z' }
+    const query = vi.fn().mockResolvedValue({ rows: [{ data: record }] })
+    const repo = new PostgresRepository({ query: query as unknown as SqlClient['query'] })
+    expect(await repo.saveBeatListingDraft(record)).toEqual(record)
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('ON CONFLICT (content_id)'), [record.contentId, record.ownerId, JSON.stringify(record), record.createdAt])
+    expect(await repo.findBeatListingDraft(record.contentId, record.ownerId)).toEqual(record)
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining('WHERE content_id = $1 AND owner_id = $2'), [record.contentId, record.ownerId])
+    query.mockResolvedValueOnce({ rows: [] })
+    await expect(repo.saveBeatListingDraft(record)).rejects.toThrow('LISTING_NOT_FOUND')
+  })
   it('stores profile metadata separately and uses the account column as identity', async () => {
     const profile = { ...emptyProfile('owner'), displayName: 'Producer' };
     const { accountId, ...metadata } = profile;
@@ -49,6 +71,19 @@ describe('PostgresRepository', () => {
     expect(result?.planId).toBe('free')
     expect(result?.purchasedPlanIds).toEqual([])
     expect(query).toHaveBeenCalledWith(expect.stringContaining('WHERE email = $1'), ['a@test'])
+  })
+  it('stores only hashed durable sessions and scopes revocation by account', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ token_hash: 'a'.repeat(64), account_id: 'account-1', csrf_token_hash: 'b'.repeat(64), expires_at: '1792000000000' }] })
+    const repo = new PostgresRepository({ query: query as unknown as SqlClient['query'] })
+    const session = { tokenHash: 'a'.repeat(64), accountId: 'account-1', csrfTokenHash: 'b'.repeat(64), expiresAt: 1792000000000 }
+    await repo.createSession(session)
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO auth_sessions'), [session.tokenHash, session.accountId, session.csrfTokenHash, session.expiresAt])
+    expect(await repo.findSession(session.tokenHash)).toEqual(session)
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining('expires_at > NOW()'), [session.tokenHash])
+    await repo.deleteAccountSessions(session.accountId, session.tokenHash)
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining('token_hash <> $2'), [session.accountId, session.tokenHash])
+    await repo.deleteExpiredSessions(1700000000000)
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining('expires_at <= to_timestamp($1 / 1000.0)'), [1700000000000])
   })
   it('maps project update and reports missing rows', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [] })

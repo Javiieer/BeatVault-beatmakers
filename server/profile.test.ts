@@ -24,7 +24,7 @@ describe('creator profile privacy and persistence', () => {
     const a = await account('profile-owner@test.local'); ownerId = a.account.id; owner = a.headers;
     other = (await account('profile-other@test.local')).headers;
   });
-  afterAll(async () => { auth.clearSessions(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  afterAll(async () => { await auth.clearSessions(); await new Promise<void>(resolve => server.close(() => resolve())); });
   it('requires auth and CSRF for profile writes', async () => {
     expect((await call('/api/profile')).status).toBe(401);
     expect((await call('/api/profile', { method: 'PUT', headers: { ...owner, 'x-csrf-token': '' }, body: JSON.stringify(data) })).status).toBe(403);

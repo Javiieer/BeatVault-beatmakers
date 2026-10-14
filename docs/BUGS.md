@@ -1,6 +1,6 @@
 # Known issues
 
-Current record: 2026-10-11. Older claims that BeatVault has no backend,
+Current record: 2026-10-12. Older claims that BeatVault has no backend,
 authentication, ESLint or automated tests are obsolete.
 
 ## Confirmed release blockers
@@ -50,7 +50,7 @@ See SECURITY_FINDINGS.md for severity and unresolved security work.
 - Profile JSON writes are serialized within one repository instance only; this does not resolve global or multi-process JSON concurrency.
 - Password recovery has no email delivery provider yet. Local development can expose the one-time link only when `BEATVAULT_DEV_AUTH_TOKENS=true`; never enable this on a public deployment.
 
-- Disposable PostgreSQL 16 integration verifies migrations 001-013, social/chat authorization, moderation, account storage quota concurrency, admin-assigned package/limit policy, audit persistence, restart recovery and FFmpeg preview conversion. Production database backups/restores and multi-user deployment still need validation.
+- Disposable PostgreSQL 16 integration verifies migrations 001-014, social/chat authorization, moderation, account storage quota concurrency, admin-assigned package/limit policy, audit persistence, restart recovery and FFmpeg preview conversion. The optional labeled-container restore rehearsal checks database and audio round trips; a production VPS restore drill and multi-user deployment still need validation.
 - Storage usage is measured by original audio bytes. A quota is only active when the server is configured; plan-specific limits, artwork/video accounting and downgrade behavior are intentionally undecided.
 - Sessions and rate limits are process-local. Rate limits currently use the socket address; behind a reverse proxy, trusted client-IP forwarding must be designed before scaling or opening registration broadly. Email verification/reset has no delivery provider.
 - Admin reads and publication review actions are protected by server-side role/CSRF checks and passed disposable-PostgreSQL integration; the running local app still uses JSON.

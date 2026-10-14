@@ -1,9 +1,18 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { isIP } from 'node:net'
+import type { IncomingMessage } from 'node:http'
 import type { ServerConfig } from './config'
-export type Role = 'admin' | 'creator'
-export type AuditAction = 'login_success' | 'login_failure' | 'logout' | 'create' | 'update' | 'delete' | 'admin_bootstrap' | 'admin_read'
+export type Role = 'admin' | 'creator' | 'community_manager'
+export type AuditAction = 'login_success' | 'login_failure' | 'logout' | 'create' | 'update' | 'delete' | 'admin_bootstrap' | 'admin_read' | 'marketplace_review_recommendation' | 'marketplace_admin_decision'
 export type SafeMetadata = Readonly<Record<string, string | number | boolean | null>>
 export type AuditEvent = { id: string; timestamp: string; action: AuditAction; requestId: string; actorId?: string; targetId?: string; success: boolean; metadata: SafeMetadata }
+export const clientAddress = (request: Pick<IncomingMessage, 'headers' | 'socket'>, trustProxyHeader = false): string => {
+  const remoteAddress = request.socket.remoteAddress || 'unknown'
+  const forwardedAddress = request.headers['x-beatvault-client-ip']
+  if (!trustProxyHeader || typeof forwardedAddress !== 'string') return remoteAddress
+  const candidate = forwardedAddress.trim()
+  return isIP(candidate) ? candidate : remoteAddress
+}
 export class RateLimiter {
   private readonly hits = new Map<string, number[]>()
   private nextPruneAt = 0

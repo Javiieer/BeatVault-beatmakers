@@ -38,6 +38,42 @@
 .creator-cover-picker img { width: 100%; height: 100%; object-fit: cover; border-radius: 3px; }
 .creator-upload-preview { width: 100%; max-width: 240px; aspect-ratio: 1; object-fit: cover; border-radius: 8px; }
 .publication-pill.rejected { color: var(--danger, #ef6a65); background: color-mix(in srgb, var(--danger, #ef6a65) 12%, transparent); }
+.creator-offer-button { min-height: 36px; padding-inline: 10px; font-size: 12px; }
+.beat-listing-private-status { display: inline-flex; width: fit-content; margin-top: 6px; padding: 4px 7px; border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border)); border-radius: 5px; color: var(--accent); font-size: 10px; }
+.beat-listing-status-banner { display: flex; align-items: center; gap: 12px; margin: 16px 0; padding: 12px 14px; border-left: 3px solid var(--accent); background: var(--surface); color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+.beat-listing-status-banner svg { flex: none; color: var(--accent); }
+.beat-listing-status-banner strong { color: var(--text); }
+.beat-listing-dialog { width: min(820px, calc(100% - 28px)); padding: 0; }
+.beat-listing-dialog > form { padding: 24px; }
+.beat-listing-dialog .modal-heading { position: sticky; z-index: 2; top: -24px; margin: -24px -24px 18px; padding: 18px 24px 12px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.beat-listing-dialog .modal-heading h2 { margin: 4px 0 0; }
+.beat-listing-dialog .modal-heading .eyebrow { margin: 0; }
+.beat-listing-notice { margin: 16px 0 22px; padding: 12px 14px; background: color-mix(in srgb, var(--warning, #f0b35a) 9%, var(--surface)); border: 1px solid color-mix(in srgb, var(--warning, #f0b35a) 30%, var(--border)); border-radius: 6px; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.beat-listing-notice strong { color: var(--text); }
+.beat-listing-section { padding: 18px 0; border-bottom: 1px solid var(--border); }
+.beat-listing-section .upload-step { margin-bottom: 18px; }
+.beat-listing-section .upload-step h3 { margin: 0 0 4px; font-size: 16px; }
+.beat-listing-section .upload-step p { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.beat-listing-dialog label { color: var(--text-secondary); font-size: 12px; }
+.beat-listing-dialog input:not([type="checkbox"]), .beat-listing-dialog textarea { width: 100%; box-sizing: border-box; padding: 10px 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elevated); color: var(--text); font: inherit; }
+.beat-listing-dialog textarea { resize: vertical; min-height: 78px; line-height: 1.5; }
+.beat-listing-dialog input:focus-visible, .beat-listing-dialog textarea:focus-visible, .beat-listing-dialog select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.beat-listing-dialog .form-grid label.beat-listing-toggle { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 9px; margin: 10px 0; line-height: 1.5; }
+.beat-listing-toggle input, .beat-listing-deliverables input { width: 16px; min-width: 16px; accent-color: var(--accent); margin: 3px 0 0; }
+.beat-listing-share-total { margin: -4px 0 14px; color: var(--accent); font-size: 12px; }
+.beat-listing-share-total.invalid { color: var(--danger, #ef6a65); }
+.beat-listing-contributor { display: grid; grid-template-columns: 1.1fr 1.1fr .8fr .8fr 36px; align-items: end; gap: 10px; margin: 12px 0; }
+.beat-listing-contributor label, .beat-listing-offer .form-grid label { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
+.beat-listing-add { margin: 8px 0; }
+.beat-listing-declaration { margin: 18px 0 4px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elevated); }
+.beat-listing-offer { margin: 14px 0; padding: 14px; border: 1px solid var(--border); border-radius: 6px; }
+.beat-listing-offer-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.beat-listing-offer-heading strong { font-size: 13px; }
+.beat-listing-deliverables { display: flex; flex-wrap: wrap; gap: 16px; margin: 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; }
+.beat-listing-deliverables legend { padding-inline: 5px; color: var(--text-secondary); font-size: 11px; }
+.beat-listing-deliverables label { display: inline-flex; align-items: center; gap: 6px; }
+.beat-listing-dialog .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+@media (max-width: 600px) { .beat-listing-dialog > form { padding: 18px; } .beat-listing-dialog .modal-heading { top: -18px; margin: -18px -18px 16px; padding: 16px 18px 12px; } .beat-listing-contributor { grid-template-columns: 1fr 1fr; } .beat-listing-contributor .icon-button { grid-column: 2; justify-self: end; } .beat-listing-offer { padding: 11px; } .beat-listing-dialog .form-grid { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .creator-upload-toolbar > .library-sort { flex: 1 1 100%; } .creator-upload-toolbar .filter-chips { flex-wrap: wrap; } .creator-upload-dialog { padding: 18px; } .creator-storage-summary { align-items: stretch; flex-direction: column; } .creator-storage-meter { width: 100%; } }
 .creator-upload-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
 .creator-upload-fields .upload-step { align-items: center; }
@@ -46,3 +82,10 @@
 .creator-upload-fields .check .text-button { text-align: left; min-width: 0; overflow-wrap: anywhere; }
 .creator-preview-title { font-size: 19px; overflow-wrap: anywhere; }
 .upload-side audio { width: 100%; max-width: 320px; }
+.seller-evidence-field { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.seller-evidence-field > label { display: grid; gap: 7px; }
+.seller-evidence-field small { color: var(--muted); line-height: 1.45; }
+.seller-evidence-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.seller-evidence-item a { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.seller-admin-review-status { margin: 7px 0 0; color: var(--success); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.seller-admin-review-status.stale { color: var(--amber); }

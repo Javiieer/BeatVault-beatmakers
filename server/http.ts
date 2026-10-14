@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http'
 
 export const maxJsonBytes = 64 * 1024
+export const maxStripeWebhookBytes = 1024 * 1024
 
 export class HttpInputError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -31,6 +32,25 @@ export async function readJson(req: IncomingMessage): Promise<unknown> {
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown }
   catch { throw new HttpInputError(400, 'INVALID_JSON', 'JSON invalido.') }
+}
+
+export async function readRawBody(req: IncomingMessage, maxBytes = maxStripeWebhookBytes): Promise<Buffer> {
+  if (Number(req.headers['content-length']) > maxBytes) {
+    req.resume()
+    throw new HttpInputError(413, 'PAYLOAD_TOO_LARGE', 'Webhook payload exceeds the allowed size.')
+  }
+  let bytes = 0
+  const chunks: Buffer[] = []
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    bytes += buffer.length
+    if (bytes > maxBytes) {
+      req.resume()
+      throw new HttpInputError(413, 'PAYLOAD_TOO_LARGE', 'Webhook payload exceeds the allowed size.')
+    }
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks)
 }
 
 export function parseByteRange(value: string, size: number): { start: number; end: number } | undefined {

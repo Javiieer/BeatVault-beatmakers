@@ -24,8 +24,16 @@ for (const viewport of viewports) {
       page.on("pageerror", error => errors.push(error.message));
       await page.goto(`/#${route}`);
       await expect(page.locator(["/forgot-password", "/password-reset"].includes(route) ? ".login-page" : ".app-shell")).toBeVisible();
-      if (["/studio", "/upload", "/dashboard"].includes(route)) {
-        await expect.poll(() => page.locator("img").evaluateAll(images => images.every(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0))).toBe(true);
+      if (["/home", "/studio", "/upload", "/dashboard"].includes(route)) {
+        const images = page.locator(route === "/home" ? ".home-stories img, .home-post-media img, .home-rail img" : "img");
+        for (const image of await images.all()) {
+          await image.scrollIntoViewIfNeeded();
+          await expect.poll(() => image.evaluate(element => {
+            const img = element as HTMLImageElement;
+            return img.complete && img.naturalWidth > 0 && img.naturalHeight > 0;
+          })).toBe(true);
+        }
+        await page.evaluate(() => window.scrollTo(0, 0));
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       expect(errors).toEqual([]);
@@ -65,8 +73,10 @@ test("home feed shows a creator profile preview on hover and keeps its link reac
 
 test("plans and admin routes expose their critical mock boundaries", async ({ page }) => {
   await page.goto("/#/plans");
-  await expect(page.getByRole("heading", { name: "Plans & Subscription" })).toBeVisible();
-  await expect(page.getByText("DEMO · SIN PAGOS")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Plans", exact: true })).toBeVisible();
+  await expect(page.getByText("PRICING PROPOSAL · PAYMENTS OFF")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Estimate your platform fee" })).toBeVisible();
+  await expect(page.getByText("No sales or payouts are active yet.")).toBeVisible();
   await page.goto("/#/admin");
   await expect(page.getByRole("heading", { name: "Administración" })).toBeVisible();
   await expect(page.getByText(/Autorización validada en servidor/)).toBeVisible();
@@ -76,7 +86,7 @@ test("plans and admin routes expose their critical mock boundaries", async ({ pa
 test("primary navigation contains the selected creator workflows", async ({ page }) => {
   await openFreshPage(page, "/dashboard");
   const links = page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link");
-  await expect(links).toHaveText(["Home", "Amigos", "Mensajes", "Mis subidas", "Library", "Beats", "Upload"]);
+  await expect(links).toHaveText(["Home", "Friends", "Messages", "My uploads", "Library", "Beats", "Marketplace", "Upload", "Plans"]);
 });
 
 test("friends shows a clear retry state while the local API is offline", async ({ page }) => {
@@ -151,6 +161,7 @@ test("theme preferences change dark, light and custom RGB colors and persist", a
   await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "custom");
   await page.reload();
   await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "custom");
+  await page.getByRole("button", { name: "Preferencias" }).click();
   await expect(page.getByLabel("Color tarjetas")).toHaveValue("#243144");
   await expect(page.getByLabel("Color enlaces")).toHaveValue("#55c7ff");
   await expect(page.locator(".theme-picker")).toHaveCount(0);

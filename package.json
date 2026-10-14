@@ -33,6 +33,7 @@
     "pg": "^8.23.0",
     "react": "latest",
     "react-dom": "latest",
+    "stripe": "^23.0.0",
     "typescript": "latest",
     "vite": "latest"
   },

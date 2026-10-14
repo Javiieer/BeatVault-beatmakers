@@ -39,6 +39,14 @@ describe("CatalogRepository", () => {
     expect(asset.cover).toContain('chill-lo-fi.png');
     expect(asset.metadata).toMatchObject({ size: '2.0 KB', format: 'WAV' });
   });
+  it('requests filtered marketplace pages and preserves the next cursor', async () => {
+    const entry = { ...page.entries[0], type: 'beat' as const, title: 'Night Session' };
+    const fetcher = vi.fn().mockResolvedValue(response({ ok: true, data: { entries: [entry], total: 31, nextCursor: entry.contentId } }));
+    const repo = new CatalogRepository(new ApiClient('http://api', 100, fetcher), 'visitor');
+    const result = await repo.marketplacePage({ query: 'night', type: 'beat', tag: 'trap', limit: 24 });
+    expect(fetcher.mock.calls[0][0]).toBe('http://api/api/marketplace?q=night&type=beat&tag=trap&limit=24');
+    expect(result).toMatchObject({ total: 31, nextCursor: entry.contentId, assets: [{ name: 'Night Session' }] });
+  });
   it('retries a processed preview and refreshes the owner catalog state', async () => {
     const entry = { ...page.entries[0], contentId: 'beat-id', creatorId: 'owner', assetId: 'audio-id', audio: { originalName: 'beat.wav', mimeType: 'audio/wav', sizeBytes: 2044, state: 'available', previewReady: true } };
     const fetcher = vi.fn()

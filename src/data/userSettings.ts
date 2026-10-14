@@ -1,9 +1,11 @@
 import { defaultCustomTheme, defaultTheme, parseCustomTheme, parseTheme, type CustomThemeColors, type Theme } from '../app/theme'
+import { isCurrencyCode, type CurrencyCode } from '../domains/marketplace/currency'
 
 export type UserSettings = {
   theme: Theme
   customTheme: CustomThemeColors
   language: 'es' | 'en'
+  currency: CurrencyCode
   notifications: { messages: boolean; friendRequests: boolean; comments: boolean; reactions: boolean; reviews: boolean }
   reducedMotion: boolean
 }
@@ -11,7 +13,8 @@ export type UserSettings = {
 export const defaultUserSettings: UserSettings = {
   theme: defaultTheme,
   customTheme: defaultCustomTheme,
-  language: 'es',
+  language: 'en',
+  currency: 'USD',
   notifications: { messages: true, friendRequests: true, comments: true, reactions: true, reviews: true },
   reducedMotion: false,
 }
@@ -27,6 +30,7 @@ export function readUserSettings(userId: string): UserSettings {
       theme: parseTheme(input.theme),
       customTheme: parseCustomTheme(input.customTheme),
       language: input.language === 'en' ? 'en' : 'es',
+      currency: isCurrencyCode(input.currency) ? input.currency : defaultUserSettings.currency,
       notifications: {
         messages: input.notifications?.messages !== false,
         friendRequests: input.notifications?.friendRequests !== false,

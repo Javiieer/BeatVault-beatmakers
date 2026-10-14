@@ -57,28 +57,35 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
       const accountRow = page.locator('.admin-row').filter({ hasText: creatorEmail })
       await accountRow.getByLabel(`Paquete para ${creatorEmail}`).selectOption('creator')
       await accountRow.getByRole('button', { name: 'Asignar' }).click()
-      const assignedPlan = await creatorApi.get('/api/account/plan').then(response => response.json()) as { data: { planId: string } }
-      expect(assignedPlan.data.planId).toBe('creator')
+      await expect.poll(async () => {
+        const response = await creatorApi.get('/api/account/plan')
+        const payload = await response.json() as { data: { planId: string } }
+        return payload.data.planId
+      }).toBe('creator')
       const row = page.locator('.admin-review-row').filter({ hasText: title })
       await expect(row).toBeVisible()
       await page.screenshot({ path: `artifacts/site-audit/${viewport.name}-admin-storage-quota.png`, fullPage: true })
       await storageRow.getByRole('button', { name: 'Quitar' }).click()
-      const clearedStorage = await creatorApi.get('/api/account/storage').then(response => response.json()) as { data: { limitBytes: number | null; quotaSource: string } }
-      expect(clearedStorage.data).toMatchObject({ limitBytes: 50 * 1024 ** 3, quotaSource: 'plan' })
+      await expect(storageRow).toContainText('sin límite individual')
+      await expect.poll(async () => {
+        const response = await creatorApi.get('/api/account/storage')
+        const payload = await response.json() as { data: { limitBytes: number | null; quotaSource: string } }
+        return payload.data
+      }).toMatchObject({ limitBytes: 50 * 1024 ** 3, quotaSource: 'plan' })
       await row.getByRole('button', { name: 'Aprobar' }).click()
       await expect(row).toHaveCount(0)
       const catalogResponse = await page.request.get('/api/catalog')
       const catalog = (await catalogResponse.json()).data.entries as Array<{ title: string; publicationStatus: string }>
       expect(catalog.find(item => item.title === title)?.publicationStatus).toBe('published')
       await page.goto('/#/plans')
-      await expect(page.getByRole('heading', { name: 'Paquetes', exact: true })).toBeVisible()
-      await expect(page.getByText('ASIGNADO LOCALMENTE')).toBeVisible()
+      await expect(page.getByRole('heading', { name: 'Plans', exact: true })).toBeVisible()
+      await expect(page.getByText('LOCAL TEST ASSIGNMENT')).toBeVisible()
       await expect(page.getByText('Creator', { exact: true }).first()).toBeVisible()
-      await expect(page.getByText('50 GiB', { exact: true })).toBeVisible()
-      await expect(page.getByText('≈1,127 beats WAV de 3 min')).toBeVisible()
-      await expect(page.getByText('≈12,800 one-shots de 4 MiB')).toBeVisible()
-      await expect(page.getByRole('progressbar', { name: 'Uso de almacenamiento' })).toBeVisible()
-      await expect(page.getByText('50 GiB', { exact: true })).toBeVisible()
+      await expect(page.getByText('50 GiB provisional storage', { exact: true })).toBeVisible()
+      await expect(page.getByText('≈1,127 3-min WAV beats (est.)')).toBeVisible()
+      await expect(page.getByText('≈12,800 one-shots (est.)')).toBeVisible()
+      await expect(page.getByRole('progressbar', { name: 'Storage usage' })).toBeVisible()
+      await expect(page.getByText('50 GiB provisional storage', { exact: true })).toBeVisible()
       await page.screenshot({ path: `artifacts/site-audit/${viewport.name}-plans.png`, fullPage: true })
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
     } finally {

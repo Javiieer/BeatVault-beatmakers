@@ -3,7 +3,9 @@
 
 	@api path /api/*
 	handle @api {
-		reverse_proxy api:4174
+		reverse_proxy api:4174 {
+			header_up X-BeatVault-Client-IP {remote_host}
+		}
 	}
 
 	handle {

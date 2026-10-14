@@ -1,6 +1,7 @@
 import type { CreateProjectInput, ProjectStatus, ProjectRecord } from '../src/domains/core/contracts'
 import type { CatalogEntry, CatalogInput } from '../src/domains/catalog/types'
 import type { ContentType, PublicationStatus } from '../src/domains/content/types'
+import { isBeatListingInput, type BeatListingInput } from '../src/domains/marketplace/sellerListings'
 
 const contentTypes: ContentType[] = ['sample', 'beat', 'loop', 'vocal', 'midi', 'preset', 'pack', 'stem', 'template']
 const statuses: ProjectStatus[] = ['draft', 'working', 'demo', 'ready', 'released']
@@ -85,4 +86,41 @@ export function validateUpdateCatalog(value: unknown): CatalogInput {
 
 export function validateCatalogId(value: string | undefined): string {
   return validateProjectId(value)
+}
+
+export function validateBeatListingInput(value: unknown): BeatListingInput {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ValidationError('body', 'El formulario debe ser un objeto.')
+  const body = value as Record<string, unknown>
+  if ('ownerId' in body || 'contentId' in body || 'status' in body || 'createdAt' in body || 'updatedAt' in body) throw new ValidationError('ownerId', 'Los datos del servidor no pueden enviarse desde el formulario.')
+  if (!body.rights || typeof body.rights !== 'object' || Array.isArray(body.rights) || !Array.isArray(body.offers)) throw new ValidationError('body', 'Completa los datos de derechos y ofertas.')
+  const rights = body.rights as Record<string, unknown>
+  const collaborators = Array.isArray(rights.collaborators) ? rights.collaborators.map(value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ValidationError('collaborators', 'Revisa los créditos de colaboradores.')
+    const item = value as Record<string, unknown>
+    return { name: item.name, role: item.role, compositionShareBps: item.compositionShareBps, masterShareBps: item.masterShareBps }
+  }) : rights.collaborators
+  const offers = body.offers.map(value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ValidationError('offers', 'Revisa las ofertas preliminares.')
+    const item = value as Record<string, unknown>
+    return { id: item.id, label: item.label, amountMinor: item.amountMinor, currency: item.currency, deliverables: item.deliverables, usageSummary: item.usageSummary, termsVersion: item.termsVersion, status: item.status }
+  })
+  const input = {
+    description: typeof body.description === 'string' ? body.description.trim() : body.description,
+    genre: typeof body.genre === 'string' ? body.genre.trim() : body.genre,
+    ...(body.bpm === undefined ? {} : { bpm: body.bpm }),
+    ...(body.musicalKey === undefined ? {} : { musicalKey: body.musicalKey }),
+    explicitContent: body.explicitContent,
+    rights: {
+      sellerCompositionShareBps: rights.sellerCompositionShareBps,
+      sellerMasterShareBps: rights.sellerMasterShareBps,
+      sampleDisclosure: rights.sampleDisclosure,
+      ...(rights.sampleSource === undefined ? {} : { sampleSource: typeof rights.sampleSource === 'string' ? rights.sampleSource.trim() : rights.sampleSource }),
+      sampleProofAvailable: rights.sampleProofAvailable,
+      collaborators,
+      declarationAccepted: rights.declarationAccepted,
+    },
+    offers,
+  }
+  if (!isBeatListingInput(input)) throw new ValidationError('listing', 'Revisa los campos, porcentajes individuales, créditos, samples y formatos de las ofertas preliminares.')
+  return input
 }

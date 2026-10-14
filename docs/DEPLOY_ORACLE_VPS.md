@@ -28,20 +28,41 @@ bash scripts/deploy-oracle.sh
 Put the real domain in `BEATVAULT_DOMAIN` and the generated 64-character hex value
 in `POSTGRES_PASSWORD`. Keep `.env.oracle` private; the script restricts it to the
 deploying user. The script validates the Compose configuration, builds both images
-and starts the stack. Migrations 001-005 run automatically only when PostgreSQL
-creates a fresh data volume. Future database changes need a separate migration step.
+and starts the stack. Migrations 001-022 run automatically only when PostgreSQL
+creates a fresh data volume. Future database changes need a separate migration step;
+re-deploying does not apply migrations to an existing volume.
+
+For an existing deployment, back up PostgreSQL first, then apply new SQL migrations
+from the project directory on the VM. For migration 022:
+
+```bash
+docker compose --env-file .env.oracle exec -T postgres psql -v ON_ERROR_STOP=1 -U beatvault -d beatvault < db/migrations/022_auth_sessions.sql
+```
 
 The app listens on HTTPS at the domain. Compose publishes only TCP 80/443 through
 Caddy; API and PostgreSQL have no host port mappings. The API runs as the unprivileged
 Node user with a read-only container filesystem and writable persistent data volume.
 Demo access and development reset tokens are disabled in production configuration.
+The API trusts `X-BeatVault-Client-IP` only in this Compose deployment. Caddy
+overwrites that header with the connecting visitor IP, so authentication rate
+limits remain per visitor instead of sharing Caddy's container address. Keep the
+API private and do not enable `BEATVAULT_TRUST_PROXY_HEADERS` when clients can
+reach the API directly.
 
 ## Backups and updates
 
 Run `bash scripts/backup-oracle.sh` for a local database dump and a separate archive
 of uploaded audio. It briefly stops the API to keep the database and audio snapshot
-aligned. Copy both generated archives off the VM and rehearse restoring them before
-storing real creator uploads. Docker named volumes on one VM are not an off-site backup.
+aligned. A SHA-256 manifest is written alongside both files; verify it with
+`sha256sum --check beatvault-checksums-<stamp>.sha256` from the backup directory.
+Copy all three files off the VM and rehearse restoring them before storing real
+creator uploads. Docker named volumes on one VM are not an off-site backup.
+
+To rehearse the actual backup script locally without using the app's database or
+uploads, run `bash scripts/backup-oracle-qa.sh`. It creates uniquely named temporary
+PostgreSQL and upload volumes, validates the hashes, restores the SQL dump into a
+separate database, checks a recovered upload and confirms the API service restarts.
+The QA Compose project and its test files are removed on exit.
 OCI Block Volume can be attached as expandable VM storage, but it also needs its own
 backup plan ([OCI Block Volume overview](https://docs.oracle.com/en-us/iaas/Content/Block/Concepts/overview.htm)).
 

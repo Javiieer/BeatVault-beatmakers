@@ -1,0 +1,24 @@
+name: beatvault-backup-qa-${BEATVAULT_QA_RUN:?Set a unique QA run id}
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: beatvault
+      POSTGRES_USER: beatvault_qa
+      POSTGRES_PASSWORD: qa_only_local
+    volumes:
+      - qa_pg:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+
+  api:
+    image: alpine:3.21
+    command: ["sh", "-c", "while true; do sleep 3600; done"]
+    volumes:
+      - qa_uploads:/app/data
+
+volumes:
+  qa_pg:
+    name: beatvault-backup-qa-${BEATVAULT_QA_RUN:?Set a unique QA run id}-pg
+  qa_uploads:
+    name: beatvault-backup-qa-${BEATVAULT_QA_RUN:?Set a unique QA run id}-uploads

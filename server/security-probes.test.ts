@@ -47,7 +47,7 @@ describe('local security probes', () => {
     assetId = ((await upload.json()) as { data: { id: string } }).data.id
   })
   afterAll(async () => {
-    auth.clearSessions()
+    await auth.clearSessions()
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   })
 

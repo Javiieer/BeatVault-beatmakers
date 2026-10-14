@@ -47,9 +47,38 @@ The trial should have a stated duration, eligible user rule, payment-method requ
 
 Upgrades should state when increased limits become available and how proration is handled. Downgrades should state whether they apply immediately or at period end, what happens when usage exceeds the new limit, and whether existing files remain readable. Cancellation should normally preserve access through the paid period, stop renewal, and provide export/deletion guidance. Past-due, payment-failed, grace-period, suspension, and data-retention states require explicit product decisions.
 
-## Future billing provider
+## Provider selection: Stripe Connect for seller onboarding
 
-Select a provider later after tax, geography, payout, marketplace licensing, invoicing, and platform-fee requirements are known. The billing adapter should be replaceable and the application should store provider-neutral customer, subscription, invoice, and event identifiers. Provider webhooks must be authenticated, replay-safe, ordered by event version or timestamp policy, and observable. The provider remains the source of payment truth; BeatVault remains the source of product entitlement policy.
+Stripe Connect is selected for a first, test-only seller-onboarding slice. The API creates Mexican Express connected accounts, redirects creators to Stripe-hosted onboarding, verifies webhook signatures using the raw body, ignores live-mode events, and persists account capabilities plus processed event IDs. Setup is documented in `docs/STRIPE_CONNECT_TESTING.md`. This is not the final checkout or subscription architecture: no customer charges, subscriptions, transfers, or marketplace payouts are active, and production Stripe keys are explicitly rejected. Before money movement, decide seller and buyer jurisdiction, legal classification, payout timing, refunds/disputes, taxes, invoicing, fee policy and account liability. Subscription entitlements remain provider-neutral and must only change after authenticated, replay-safe payment events.
+
+## Local pricing proposal (2026-10-12)
+
+The Plans screen now presents a proposal for product discussion only. It does not
+change server entitlements or enable a charge:
+
+| Plan | Monthly | Annual | Proposed marketplace fee |
+| --- | ---: | ---: | ---: |
+| Free | $0 | $0 | 12% |
+| Creator | $5.99 | $59 | 8% |
+| Studio | $12.99 | $129 | 5% |
+
+USD is the reference currency. Free remains available without a subscription.
+Memberships do not include beat licenses or transfer ownership of marketplace
+products. Those are separate one-time purchases with a versioned offer/license.
+Do not sell one-shots individually at very low ticket values until the fixed
+payment cost, minimum order, and creator payout model are known; packs are a better
+initial candidate. A monthly-sales calculator in the UI subtracts only the
+proposed marketplace fee and explicitly excludes payment processing, subscription
+cost, taxes, refunds, and chargebacks.
+
+The local checkout preview summarizes the selected interval and fee but cannot
+collect payment details or activate a plan. A future purchase must follow:
+authenticated account -> provider-hosted checkout -> verified, replay-safe provider
+webhook -> persisted subscription and entitlement -> audited profile badge. Never
+record a purchase badge from a client confirmation screen or admin test assignment.
+Before activating these prices, decide seller payout terms, payment fees, tax
+handling, capacity guarantees, cancellation/refund policy, and legally reviewed
+seller and buyer terms.
 
 ## Security and server-side entitlements
 
@@ -83,4 +112,11 @@ Future implementation should include authenticated sessions, least-privilege wor
 
 ## Current boundary
 
-No final pricing, payment flow, or billing provider is implemented. Free, Creator, and Studio can be assigned by Admin for local tests; new accounts default to Free. Storage enforcement resolves an admin test override, a configured plan capacity, and then a technical server fallback. Plan capacities are unset unless `BEATVAULT_PLAN_*_STORAGE_BYTES` is explicitly configured. Per-account original-byte usage is measured in JSON/PostgreSQL, and no mock values are treated as commercial package values. The package screen is connected to the authenticated account; billing and other package capabilities remain undecided.
+The proposal above is not approved commercial pricing. No payment flow or billing
+provider is implemented. Free, Creator, and Studio can be assigned by Admin for
+local tests; new accounts default to Free. Storage enforcement resolves an admin
+test override, a configured plan capacity, and then a technical server fallback.
+Plan capacities are unset unless `BEATVAULT_PLAN_*_STORAGE_BYTES` is explicitly
+configured. Per-account original-byte usage is measured in JSON/PostgreSQL; the
+screen labels technical capacity assumptions as provisional. The checkout preview
+is informational and performs no transaction.

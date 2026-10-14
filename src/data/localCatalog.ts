@@ -4,7 +4,7 @@ import { scopedKey } from './storageScope';
 import type { CatalogEntry } from '../domains/catalog/types';
 
 export type CatalogStatus = "draft" | "pending-review" | "published" | "rejected" | "archived";
-export type CatalogAsset = AudioAsset & { publicationStatus: CatalogStatus; ownerId?: string; creatorName?: string; assetId?: string; coverId?: CatalogEntry['coverId']; reviewNote?: string; previewReady?: boolean };
+export type CatalogAsset = AudioAsset & { publicationStatus: CatalogStatus; ownerId?: string; creatorName?: string; assetId?: string; coverId?: CatalogEntry['coverId']; reviewNote?: string; previewReady?: boolean; purchaseOffers?: CatalogEntry['purchaseOffers'] };
 
 const catalogKey = "beatvault:local-catalog";
 

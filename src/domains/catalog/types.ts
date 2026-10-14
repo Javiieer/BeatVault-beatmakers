@@ -15,6 +15,7 @@ export interface CatalogEntry {
   creatorName?: string
   previewUrl?: string
   audio?: { originalName: string; mimeType: string; sizeBytes: number; state: 'available' | 'missing' | 'metadata-only'; previewReady?: boolean }
+  purchaseOffers?: Array<{ id: string; label: string; amountMinor: number; currency: 'USD'; deliverables: string[] }>
 }
 
 export type CatalogInput = Pick<CatalogEntry, 'title' | 'type' | 'tagIds' | 'publicationStatus' | 'assetId' | 'coverId'>

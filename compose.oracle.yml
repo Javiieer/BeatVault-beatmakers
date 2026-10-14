@@ -35,6 +35,7 @@ services:
       BEATVAULT_DEV_AUTH_TOKENS: "false"
       BEATVAULT_COOKIE_SECURE: "true"
       BEATVAULT_COOKIE_SAMESITE: Lax
+      BEATVAULT_TRUST_PROXY_HEADERS: "true"
       BEATVAULT_CORS_ORIGINS: https://${BEATVAULT_DOMAIN:?Set BEATVAULT_DOMAIN in .env.oracle}
     volumes:
       - app_data:/app/data

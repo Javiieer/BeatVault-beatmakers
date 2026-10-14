@@ -39,8 +39,24 @@ moderation, actual AAC encoding, seven upload formats, quota concurrency, admin
 account-specific quota overrides and local package assignment passed against a
 disposable database. Provisional 5/50/250 GiB package caps have deterministic
 virtual-user estimates; replace planning assumptions with measured usage before
-choosing VPS disk sizing. Billing is still disabled; payment verification is needed
-before purchased-package profile badges can be awarded in production.
+choosing VPS disk sizing. Stripe Connect test-only seller onboarding has started;
+subscriptions, charges, marketplace transfers, payouts and purchased-package badges
+remain disabled until pricing, terms, tax and the full payment ledger are designed.
+
+### Marketplace discovery backend (2026-10-12)
+
+`GET /api/marketplace` returns only approved Beats and One-shots, with bounded search,
+creator/tag/type filters and cursor pagination. Public DTOs continue to omit original
+asset IDs and private audio metadata; only approved preview endpoints are exposed.
+The UI requests filtered pages and supports loading additional results. Stripe Connect
+Express seller onboarding is available behind local test credentials, with signed,
+replay-safe account webhooks. This is still not commerce: offers, license terms, orders,
+buyer charges, marketplace transfers, refunds and tax handling are not implemented.
+
+English is now the default document/navigation/Marketplace locale, with Spanish
+translations for those strings and a message catalog that can be extended. The
+settings preference supports English and Spanish; remaining application routes still
+need their strings migrated before complete localization can be claimed.
 
 ## 3a. Social foundation - limited local scope
 
@@ -57,10 +73,29 @@ and friend-based feed ranking remain future work.
 Real Postgres integration and concurrency tests, durable sessions, email delivery,
 backup/restore drills, deployment configuration and authenticated browser coverage.
 
-## 5. Commerce - deferred
+## 5. Market discovery - partial; commerce deferred
 
-One Marketplace flow, licensing, checkout and payouts. Store merges into Marketplace.
-Plans follow an implemented purchase model, not an isolated pricing screen.
+The Mercado surface browses published Beats and One-shots, with creator links and audio
+previews. Admin can persist category-scoped promotional rules (migration 015), but they
+are not applied to listing prices or checkout. USD is the selected marketplace base and
+listing currency. Users can choose USD, MXN, or EUR for display, with cached ECB
+reference rates for indicative conversion only. Seller settlement currency is not yet
+selected. One purchase flow replaces Store; license pricing, tax handling, platform
+fees, checkout, and payouts wait for product, fiscal, and payment-provider decisions.
+The private beat offer-intake form persists artist-facing metadata, separate master and
+composition shares, collaborator credits, sample provenance declarations, USD reference
+offers, and a versioned rights-intake timestamp. Offers remain `draft-only`. Sellers can
+attach private, signature-checked PDF/JPEG/PNG rights evidence. Community managers can
+leave a reasoned recommendation or request changes; admins can make a reasoned final
+intake decision only after a current positive recommendation from a different account.
+Admin approval does not activate offers or permit purchases. Evidence and the seller rules
+in `docs/MARKETPLACE_SELLER_RULES.md` are not legal clearance or enforceable terms.
+Sellers can see the community recommendation and final admin decision, including when
+either review became stale after an edit. A current approval is explicitly not a sale
+activation; UI and API tests cover these boundaries. Next, review license templates and
+seller terms with qualified counsel. Paid delivery and checkout remain gated on approved
+terms, tax handling, payment ledger design, and end-to-end purchase/refund testing. Plans
+follow an implemented purchase model, not an isolated pricing screen.
 
 ## 6. Expansion - deferred
 

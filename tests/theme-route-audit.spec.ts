@@ -84,6 +84,17 @@ test('navigation QA bot renders every menu URL in dark, light and custom RGB on 
           })
           expect(Object.entries(contrast).filter(([key]) => key !== 'semantic').every(([, value]) => typeof value === 'number' && value >= 4.5), `${mode.name} ${viewport.name} ${route.path} contrast ${JSON.stringify(contrast)}`).toBe(true)
         }
+        if (route.path === '/home') {
+          const images = page.locator('.home-stories img, .home-post-media img, .home-rail img')
+          for (const image of await images.all()) {
+            await image.scrollIntoViewIfNeeded()
+            await expect.poll(() => image.evaluate(element => {
+              const img = element as HTMLImageElement
+              return img.complete && img.naturalWidth > 0 && img.naturalHeight > 0
+            })).toBe(true)
+          }
+          await page.evaluate(() => window.scrollTo(0, 0))
+        }
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${mode.name} ${viewport.name} ${route.path} overflowed`).toBe(true)
         const filename = `${route.path.replaceAll('/', '_').replace(/^_/, '') || 'home'}.png`
         const screenshot = join(shotsRoot, mode.name, viewport.name, filename)

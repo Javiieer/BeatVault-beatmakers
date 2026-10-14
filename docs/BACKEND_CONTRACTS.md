@@ -12,7 +12,7 @@ Repositories return domain-shaped records and never expose database rows, storag
 
 ## Authentication and authorization
 
-`AuthService` owns session lookup, sign-in, and sign-out. A session contains an account, role, optional creator relationship, access token, and expiry. Authorization remains a service/API responsibility; the frontend must not treat a browser-local project or a stored filename as proof of ownership.
+`AuthService` owns session lookup, sign-in, and sign-out. A session contains an account, role, optional creator relationship, access token, and expiry. Roles include creator, community manager, and admin; the API keeps staff review capabilities separate from admin-only controls. Authorization remains a service/API responsibility; the frontend must not treat a browser-local project or a stored filename as proof of ownership.
 
 ## Domain services
 

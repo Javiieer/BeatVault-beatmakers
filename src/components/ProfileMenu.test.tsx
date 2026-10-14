@@ -27,6 +27,13 @@ describe('profile menu', () => {
     expect(screen.queryByRole('menu')).toBeNull();
     expect(trigger).toHaveFocus();
   });
+  it('shows community review without administrator controls', () => {
+    render(<ProfileMenu user={{ ...user, role: 'community_manager' }} onLogout={vi.fn()} />);
+    open();
+    expect(screen.getByText('Community manager')).toBeVisible();
+    expect(screen.getByRole('menuitem', { name: 'Marketplace review' })).toHaveAttribute('href', '#/community-review');
+    expect(screen.queryByRole('menuitem', { name: 'Panel de administracion' })).toBeNull();
+  });
   it('closes on outside interaction', () => {
     render(<ProfileMenu user={user} onLogout={vi.fn()} />);
     open(); fireEvent.pointerDown(document.body);
