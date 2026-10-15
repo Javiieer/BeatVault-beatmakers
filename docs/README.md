@@ -1,10 +1,15 @@
 # BeatVault: current project handoff
 
-Start with [RELEASE_SCOPE.md](RELEASE_SCOPE.md), [DIAGNOSTICS.md](DIAGNOSTICS.md),
-[BUGS.md](BUGS.md), and [NEXT_STEP.md](NEXT_STEP.md).
+Start with [ROADMAP.md](ROADMAP.md) for current product direction, implementation
+status, launch blockers, and next steps. Then read [RELEASE_SCOPE.md](RELEASE_SCOPE.md),
+[BUGS.md](BUGS.md), [SECURITY_AUDIT.md](SECURITY_AUDIT.md), and the focused subsystem
+references relevant to the task. `NEXT_STEP.md`, `PROJECT_OVERVIEW.md`, `PROGRESS.md`,
+`SITE_AUDIT.md`, `SECURITY_FINDINGS.md`, and phase plans are dated historical snapshots;
+do not follow their old implementation priorities without checking the roadmap.
 
-The current product is a React frontend with a local Node API, session authentication,
-JSON/Postgres adapters, private file uploads and an admin review queue. Home has a
+The current product is a React frontend with a local Node API, durable session support,
+JSON/Postgres adapters, private file uploads, moderation, a seller-review workflow, and
+test-mode Stripe Connect/one-time Beat checkout. Home has a
 browser-local post composer mirrored to the author's own profile; Amigos supports
 opt-in public creator discovery and persisted friend requests in the local API.
 Creator profiles include persisted metadata, bundled cover/avatar choices, project
@@ -17,14 +22,18 @@ their statements that there is no backend, authentication or test suite no longe
 - Product decisions: [RELEASE_SCOPE.md](RELEASE_SCOPE.md)
 - Repeatable checks and security probes: [DIAGNOSTICS.md](DIAGNOSTICS.md)
 - Confirmed issues: [BUGS.md](BUGS.md)
-- Security finding register: [SECURITY_FINDINGS.md](SECURITY_FINDINGS.md)
+- Current security audit and launch limitations: [SECURITY_AUDIT.md](SECURITY_AUDIT.md)
+- Historical security finding register: [SECURITY_FINDINGS.md](SECURITY_FINDINGS.md)
 - Local user/admin QA accounts: [LOCAL_QA_ACCOUNTS.md](LOCAL_QA_ACCOUNTS.md)
 - Automated two-role browser QA: [QA_BOTS.md](QA_BOTS.md)
 - Live PostgreSQL integration QA: [POSTGRES_QA.md](POSTGRES_QA.md)
 - Package quota assumptions and virtual-user load model: [PLAN_CAPACITY_MODEL.md](PLAN_CAPACITY_MODEL.md)
 - Dated route and release audit: [SITE_AUDIT.md](SITE_AUDIT.md)
 - Architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
-- Release sequence: [ROADMAP.md](ROADMAP.md)
-- Next implementation: [NEXT_STEP.md](NEXT_STEP.md)
+- Current release sequence and next implementation: [ROADMAP.md](ROADMAP.md)
+- Historical milestone snapshot: [NEXT_STEP.md](NEXT_STEP.md)
+- Marketplace seller intake rules (draft, not legal terms): [MARKETPLACE_SELLER_RULES.md](MARKETPLACE_SELLER_RULES.md)
+- Beat artwork requirements, thumbnails and backfill: [ARTWORK_PIPELINE.md](ARTWORK_PIPELINE.md)
+- Stripe test-mode setup and limitations: [STRIPE_CONNECT_TESTING.md](STRIPE_CONNECT_TESTING.md)
 - History: [CHANGELOG.md](CHANGELOG.md)
 - Oracle VPS deployment scaffold and go-live blockers: [DEPLOY_ORACLE_VPS.md](DEPLOY_ORACLE_VPS.md)

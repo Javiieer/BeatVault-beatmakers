@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 function wav() {
   const buffer = Buffer.alloc(32044);
@@ -26,10 +28,11 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await page.goto('/#/upload');
     await register(page, email);
     const file = { name: 'Persistent beat.wav', mimeType: 'audio/wav', buffer: wav() };
+    const artwork = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover.jpg'));
     await page.locator('#upload-file').setInputFiles(file);
     await page.getByRole('combobox', { name: 'Tipo', exact: true }).selectOption('Beat');
     await page.getByLabel('Tags', { exact: true }).fill('trap, private');
-    await page.getByRole('button', { name: 'Portada Lo-fi' }).click();
+    await page.locator('#upload-artwork').setInputFiles({ name: 'cover.jpg', mimeType: 'image/jpeg', buffer: artwork });
     // Lose the response after the server commits: retry must not duplicate the file or record.
     await page.route('**/api/catalog', async route => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -51,15 +54,20 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
       item.creatorId === currentUser.data.id && item.title === 'Persistent beat');
     expect(ownedEntries).toHaveLength(1);
     const entry = ownedEntries[0];
-    expect(entry.coverId).toBe('lo-fi');
+    expect(entry.artworkUrl).toBe(`/api/catalog/${entry.contentId}/artwork/thumbnail`);
     expect(entry.audio.sizeBytes).toBe(file.buffer.length);
     expect(entry.audio).not.toHaveProperty('storageKey');
+    const thumbnail = await page.request.get(entry.artworkUrl);
+    expect(thumbnail.status()).toBe(200);
+    expect(thumbnail.headers()['content-type']).toContain('image/webp');
+    expect((await thumbnail.body()).length).toBeLessThan(artwork.length);
     await page.evaluate(() => localStorage.clear());
     await page.reload();
-    await expect(page.getByRole('region', { name: 'Uso de almacenamiento' })).toContainText('31 KB usados');
+    await expect(page.getByRole('region', { name: 'Uso de almacenamiento' })).toContainText('MB usados');
     await expect(page.getByRole('region', { name: 'Uso de almacenamiento' })).toContainText('cuota del paquete se definirá más adelante');
     const card = page.locator('.creator-upload-card').filter({ hasText: 'Persistent beat' });
     await expect(card).toBeVisible();
+    await expect(card.locator('img')).toHaveAttribute('src', entry.artworkUrl);
     if (entry.audio.previewReady) {
       await expect(card).not.toContainText('Preview público pendiente');
       await expect(card.getByRole('button', { name: 'Generar preview' })).toHaveCount(0);
@@ -69,7 +77,6 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
       await expect(page.getByRole('alert')).toContainText('Verifica FFmpeg');
       await expect(card.getByRole('button', { name: 'Generar preview' })).toBeEnabled();
     }
-    await expect(card.locator('img')).toHaveAttribute('src', '/assets/demo/chill-lo-fi.png');
     await expect.poll(() => card.locator('img').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
     const preview = page.waitForResponse(response => response.url().includes(`/api/assets/${entry.assetId}/preview`) && response.ok());
     await card.getByRole('button', { name: 'Escuchar Persistent beat' }).click();

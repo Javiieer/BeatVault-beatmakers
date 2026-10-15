@@ -2,7 +2,7 @@
 
 ## Purpose and scope
 
-This document is product discovery for the plans page and account control panel. It does not define final pricing or authorize payment processing in the current local-only prototype.
+This document is product discovery for the plans page and account control panel. It does not define final pricing or authorize recurring billing. The separate one-time Beat marketplace checkout is available only in Stripe test mode; see `docs/STRIPE_CONNECT_TESTING.md`.
 
 ## User types
 
@@ -47,9 +47,9 @@ The trial should have a stated duration, eligible user rule, payment-method requ
 
 Upgrades should state when increased limits become available and how proration is handled. Downgrades should state whether they apply immediately or at period end, what happens when usage exceeds the new limit, and whether existing files remain readable. Cancellation should normally preserve access through the paid period, stop renewal, and provide export/deletion guidance. Past-due, payment-failed, grace-period, suspension, and data-retention states require explicit product decisions.
 
-## Provider selection: Stripe Connect for seller onboarding
+## Provider selection: Stripe Connect for test-only marketplace commerce
 
-Stripe Connect is selected for a first, test-only seller-onboarding slice. The API creates Mexican Express connected accounts, redirects creators to Stripe-hosted onboarding, verifies webhook signatures using the raw body, ignores live-mode events, and persists account capabilities plus processed event IDs. Setup is documented in `docs/STRIPE_CONNECT_TESTING.md`. This is not the final checkout or subscription architecture: no customer charges, subscriptions, transfers, or marketplace payouts are active, and production Stripe keys are explicitly rejected. Before money movement, decide seller and buyer jurisdiction, legal classification, payout timing, refunds/disputes, taxes, invoicing, fee policy and account liability. Subscription entitlements remain provider-neutral and must only change after authenticated, replay-safe payment events.
+Stripe Connect Express is used for test-only seller onboarding and the first one-time Beat Checkout flow. The API verifies raw-body webhook signatures, ignores live-mode events, persists seller capabilities, deduplicates event IDs, records buyer orders, gates original downloads on verified payment, and supports admin refund requests/dispute flags. This is not subscription billing or production commerce. Live keys are rejected. Before live money movement, decide seller/buyer jurisdictions, legal classification, payout timing, refunds/disputes, taxes, invoicing, final fee policy, and account liability. Subscription entitlements remain provider-neutral and must only change after authenticated, replay-safe billing events.
 
 ## Local pricing proposal (2026-10-12)
 
@@ -71,8 +71,8 @@ initial candidate. A monthly-sales calculator in the UI subtracts only the
 proposed marketplace fee and explicitly excludes payment processing, subscription
 cost, taxes, refunds, and chargebacks.
 
-The local checkout preview summarizes the selected interval and fee but cannot
-collect payment details or activate a plan. A future purchase must follow:
+The Plans checkout preview summarizes a proposed interval and fee but cannot collect
+payment details or activate a subscription. Any future subscription purchase must follow:
 authenticated account -> provider-hosted checkout -> verified, replay-safe provider
 webhook -> persisted subscription and entitlement -> audited profile badge. Never
 record a purchase badge from a client confirmation screen or admin test assignment.
@@ -112,8 +112,9 @@ Future implementation should include authenticated sessions, least-privilege wor
 
 ## Current boundary
 
-The proposal above is not approved commercial pricing. No payment flow or billing
-provider is implemented. Free, Creator, and Studio can be assigned by Admin for
+The proposal above is not approved commercial pricing. Recurring subscription billing
+is not implemented. The separate one-time Beat checkout is test-mode only and does not
+activate Creator/Studio plans. Free, Creator, and Studio can be assigned by Admin for
 local tests; new accounts default to Free. Storage enforcement resolves an admin
 test override, a configured plan capacity, and then a technical server fallback.
 Plan capacities are unset unless `BEATVAULT_PLAN_*_STORAGE_BYTES` is explicitly

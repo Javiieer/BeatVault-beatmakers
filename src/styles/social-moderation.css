@@ -1,0 +1,14 @@
+.admin-social-queues { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 18px; }
+.admin-social-queues > section { min-width: 0; }
+.admin-social-queues .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.admin-social-queues .section-heading h3 { margin: 0; font-size: 15px; }
+.admin-social-item { min-width: 0; }
+.admin-social-copy, .admin-social-reported-post p { margin: 8px 0; color: var(--text); font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.admin-social-media { display: block; width: min(100%, 520px); max-height: 420px; margin: 10px 0; border-radius: 5px; background: var(--bg-elevated); object-fit: contain; }
+.admin-social-actions > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.admin-social-actions .button { white-space: normal; }
+@media (max-width: 767px) {
+  .admin-social-queues { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .admin-social-actions > div { display: flex; justify-content: stretch; }
+  .admin-social-actions .button { flex: 1 1 140px; }
+}

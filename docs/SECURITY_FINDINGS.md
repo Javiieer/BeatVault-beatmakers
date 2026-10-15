@@ -1,5 +1,9 @@
 # Security findings
 
+> Historical finding register reviewed 2026-10-09. Session persistence, proxy
+> throttling, payment scope, and current launch blockers have changed; use
+> `SECURITY_AUDIT.md` and `ROADMAP.md` as the current references.
+
 Reviewed 2026-10-09 against the local working tree. Resolved entries below have
 regression coverage in targeted HTTP or unit tests. This register is
 not a penetration-test certification.

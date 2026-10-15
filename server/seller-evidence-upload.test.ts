@@ -48,6 +48,8 @@ describe('private seller evidence upload', () => {
     const record = await receiveSellerEvidence(makeRequest('application/pdf', Buffer.from('%PDF-1.7\nproof'), 'proof.pdf') as never, 'beat-1', 'owner-1')
     const repository = {
       listAssets: async () => [],
+      listCatalogArtwork: async () => [],
+      listAccounts: async () => [],
       listAllBeatListingDrafts: async () => [{ contentId: 'beat-1', ownerId: 'owner-1' }],
       listSellerEvidence: async () => [record],
     }

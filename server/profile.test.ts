@@ -1,5 +1,8 @@
 // @vitest-environment node
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { auth, server } from './index';
 import { emptyProfile } from '../src/domains/profile';
 import { validateProfile } from './profile';
@@ -9,7 +12,7 @@ describe('creator profile privacy and persistence', () => {
   let base = '';
   let owner: Record<string, string>, other: Record<string, string>, ownerId = '';
   const { accountId: _id, ...input } = emptyProfile('');
-  const data = { ...input, displayName: 'Studio Seven', bio: 'Original beats', website: 'https://example.com', instagram: '@studio.seven', genres: ['Trap', 'Trap'] };
+  const data = { ...input, displayName: 'Studio Seven', bio: 'Original beats', location: 'Ciudad de Mexico', website: 'https://example.com', instagram: '@studio.seven', genres: ['Trap', 'Trap'] };
   const call = (path: string, init?: RequestInit) => fetch(base + path, init);
   beforeAll(async () => {
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -59,6 +62,73 @@ describe('creator profile privacy and persistence', () => {
     for (const key of ['email', 'role', 'passwordHash', 'verificationState']) expect(profile).not.toHaveProperty(key);
     await call('/api/profile', { method: 'PUT', headers: owner, body: JSON.stringify(data) });
     expect((await call(`/api/profiles/${ownerId}`)).status).toBe(404);
+  });
+  it('uploads optimized profile images and serves them only to profile visitors after opt-in', async () => {
+    const bytes = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover.jpg'));
+    const privateImage = `/api/profile/images/avatar`;
+    expect((await call(privateImage, { method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: new Uint8Array(bytes) })).status).toBe(401);
+    expect((await call(privateImage, { method: 'POST', headers: { ...owner, 'x-csrf-token': '', 'content-type': 'image/jpeg' }, body: new Uint8Array(bytes) })).status).toBe(403);
+    expect((await call(`/api/profiles/${ownerId}/images/avatar`, { method: 'POST', headers: { ...other, 'content-type': 'image/jpeg' }, body: new Uint8Array(bytes) })).status).toBe(404);
+    const invalid = await call(privateImage, { method: 'POST', headers: { ...owner, 'content-type': 'image/png' }, body: new Uint8Array(bytes) });
+    expect(invalid.status).toBe(400);
+
+    const uploaded = await call(privateImage, { method: 'POST', headers: { ...owner, 'content-type': 'image/jpeg' }, body: new Uint8Array(bytes) });
+    expect(uploaded.status, await uploaded.clone().text()).toBe(200);
+    const uploadedProfile = (await uploaded.json()).data;
+    expect(uploadedProfile).toMatchObject({ avatarId: 'custom', avatarUrl: `/api/profiles/${ownerId}/images/avatar/thumbnail` });
+    expect(uploadedProfile).not.toHaveProperty('avatarImage');
+    const privateThumb = await call(uploadedProfile.avatarUrl, { headers: owner });
+    expect(privateThumb.status).toBe(200);
+    expect(privateThumb.headers.get('content-type')).toBe('image/webp');
+    expect((await call(uploadedProfile.avatarUrl, { headers: { cookie: other.cookie } })).status).toBe(404);
+    expect((await call(uploadedProfile.avatarUrl)).status).toBe(404);
+
+    const uploadedCover = await call('/api/profile/images/cover', { method: 'POST', headers: { ...owner, 'content-type': 'image/jpeg' }, body: new Uint8Array(bytes) });
+    expect(uploadedCover.status, await uploadedCover.clone().text()).toBe(200);
+    expect((await uploadedCover.json()).data).toMatchObject({ coverId: 'custom', coverUrl: `/api/profiles/${ownerId}/images/cover/thumbnail` });
+
+    await call('/api/profile', { method: 'PUT', headers: owner, body: JSON.stringify({ ...data, avatarId: 'custom', coverId: 'custom', publicProfile: true }) });
+    const publicProfileResponse = await call(`/api/profiles/${ownerId}`);
+    expect(publicProfileResponse.status).toBe(200);
+    const publicProfile = (await publicProfileResponse.json()).data;
+    expect(publicProfile.avatarUrl).toBe(uploadedProfile.avatarUrl);
+    expect(publicProfile.coverUrl).toBe(`/api/profiles/${ownerId}/images/cover/thumbnail`);
+    expect(publicProfile).not.toHaveProperty('avatarImage');
+    expect((await call(publicProfile.avatarUrl)).status).toBe(200);
+    expect((await call(publicProfile.avatarUrl.replace('/thumbnail', ''))).headers.get('content-type')).toBe('image/jpeg');
+
+    const friendEmail = `profile-friend-${randomUUID()}@test.local`;
+    const friendAccount = await auth.register(friendEmail, 'temporary-test-password');
+    const friendSession = await auth.login(friendEmail, 'temporary-test-password');
+    expect(friendSession).toBeTruthy();
+    const friendHeaders = { cookie: `beatvault_session=${friendSession!.token}` };
+    const friendships = new LocalRepository();
+    const relation = await friendships.createFriendship({ id: randomUUID(), requesterId: ownerId, recipientId: friendAccount.id, status: 'pending', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    await friendships.updateFriendship(relation.id, friendAccount.id, 'accepted');
+    await call('/api/profile', { method: 'PUT', headers: owner, body: JSON.stringify({ ...data, avatarId: 'custom', coverId: 'custom', publicProfile: false }) });
+    const privateOwnerProfile = (await (await call('/api/profile', { headers: owner })).json()).data;
+    expect(privateOwnerProfile).toMatchObject({ location: 'Ciudad de Mexico', website: 'https://example.com', instagram: 'studio.seven', publicProfile: false });
+    const friendProfileResponse = await call(`/api/profiles/${ownerId}`, { headers: friendHeaders });
+    expect(friendProfileResponse.status).toBe(200);
+    const friendProfile = (await friendProfileResponse.json()).data;
+    expect(friendProfile).toMatchObject({ accountId: ownerId, displayName: 'Studio Seven', bio: 'Original beats', genres: ['Trap'], avatarUrl: `/api/profiles/${ownerId}/images/avatar/thumbnail`, coverUrl: `/api/profiles/${ownerId}/images/cover/thumbnail`, location: '', website: '', instagram: '', publicProfile: false });
+    expect(friendProfile).not.toHaveProperty('packageBadges');
+    for (const key of ['email', 'role', 'passwordHash', 'verificationState', 'avatarImage', 'coverImage']) expect(friendProfile).not.toHaveProperty(key);
+    expect((await call(`/api/profiles/${ownerId}`, { headers: other })).status).toBe(404);
+    expect((await call(friendProfile.avatarUrl, { headers: friendHeaders })).status).toBe(200);
+    expect((await call(friendProfile.coverUrl, { headers: friendHeaders })).status).toBe(200);
+    expect((await call(friendProfile.avatarUrl.replace('/thumbnail', ''), { headers: friendHeaders })).status).toBe(404);
+    expect((await call(friendProfile.coverUrl.replace('/thumbnail', ''), { headers: friendHeaders })).status).toBe(404);
+    expect((await call(friendProfile.avatarUrl, { headers: other })).status).toBe(404);
+    expect((await call(publicProfile.avatarUrl.replace('/thumbnail', ''), { headers: owner })).status).toBe(200);
+    await friendships.deleteFriendship(relation.id, friendAccount.id, 'accepted');
+    expect((await call(`/api/profiles/${ownerId}`, { headers: friendHeaders })).status).toBe(404);
+    expect((await call(friendProfile.avatarUrl, { headers: friendHeaders })).status).toBe(404);
+    expect((await call(friendProfile.coverUrl, { headers: friendHeaders })).status).toBe(404);
+
+    await call('/api/profile', { method: 'PUT', headers: owner, body: JSON.stringify(data) });
+    expect((await call(publicProfile.avatarUrl)).status).toBe(404);
+    expect((await new LocalRepository().findProfile(ownerId))?.avatarImage).toBeUndefined();
   });
   it('validates lengths, genres and boolean visibility', () => {
     expect(_id).toBe('');

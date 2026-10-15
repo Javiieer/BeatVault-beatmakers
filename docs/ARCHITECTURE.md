@@ -15,20 +15,29 @@ JSON records use per-file serialized read-modify-write operations within the ser
 process and atomic file replacement. This prevents lost updates between concurrent
 requests in one process, but is not a multi-process or production database guarantee.
 PostgreSQL uses creator_profiles from migration 005 (apply after 001-004). SQL adapter
-tests are mocked, not live database integration. Profile cover presets are bundled
-images; avatar choices are presets or initials, not user uploads.
+tests are mocked, not live database integration. Custom avatar and cover images are
+uploaded through owner-scoped storage and served as thumbnails. Private profile
+metadata and images are visible to the owner or to everyone only when the profile is
+public; accepted friends can read eligible friend posts but currently cannot open
+that private profile or its custom images. This is a known privacy/UX inconsistency
+for a future access-matrix change.
 
 ### Home posts and friends (2026-10-09)
 
-Home text/photo/video posts live in account-scoped IndexedDB on one browser and are
-read by the owner's Publications tab on their profile. They are not server posts,
-public profile content, or cross-device sync. Friends uses authenticated local API
-routes (`GET /api/creators`, `GET /api/friends`, `POST/DELETE /api/friend-requests`,
+Authenticated Home and CreatorProfile now use server-backed text/photo/video posts
+through JSON and PostgreSQL repositories (migration 025); comments and reactions use
+migration 026. Posts publish immediately. Public posts require an opted-in public
+profile, friends-only posts require an accepted friendship, and private posts are
+owner-only; media access is rechecked on each request. Existing IndexedDB posts remain
+device-local and are not automatically imported. Stories/Shorts and some feed examples
+remain demo/local flows. Friends uses authenticated API routes (`GET /api/creators`,
+`GET /api/friends`, `POST/DELETE /api/friend-requests`,
 `POST /api/friend-requests/:id/accept`, and `DELETE /api/friends/:id`). Creator search
 and friend lists return an allowlisted profile DTO without email or credentials.
 Search is limited to opted-in public profiles. Mutations require the existing session
 and CSRF checks. Friend rows persist in `friendships.json`; Postgres uses migration
-006. Home posts remain browser-local and are not public or cross-device.
+006. Feed/profile posts synchronize through the server, but there is no live push
+refresh for social post changes yet.
 
 ### Direct chat (2026-10-10)
 
@@ -42,17 +51,23 @@ streams per account. Presence is visible only to accepted friends and remains on
 while at least one stream for the account is connected.
 Events are process-local, so a multi-instance deployment needs a shared pub/sub
 adapter. No attachments, group chats, blocking, reporting, or end-to-end encryption
-are implemented. Apply migrations 001-013 and validate live PostgreSQL before hosting.
+are implemented. Apply migrations 001-027 and validate live PostgreSQL before hosting.
 
-### Catalog social activity (2026-10-11)
+### Social activity and notifications (2026-10-15)
 
 Published catalog Beats and One-shots expose authenticated comments and reactions.
-Activity is stored separately from the current reaction state so removing a reaction
-does not erase its notification event. The notification center combines social
-activity with friend requests, unread messages and local review-state changes. The
-JSON adapter persists this data locally; PostgreSQL uses migration 009. Connected
-clients receive activity refreshes over the existing process-local SSE channel;
-notifications are in-app, not push notifications.
+Catalog activity is stored separately from the current reaction state so removing a
+reaction does not erase its notification event. Home-post comments/reactions and friend
+request/acceptance events now also create durable notification records. PostgreSQL
+writes each domain action and notification in one data-modifying statement using
+migration 027. The local JSON adapter uses a recoverable write-ahead notification
+journal across its separate action and notification files. The center combines these
+records with legacy catalog activity, unread chat messages and local catalog
+review-state changes. Persistent notifications support recipient-scoped read state,
+cursor pagination, and a sanitized actor identity for private profiles. The existing
+process-local SSE stream sends post-persistence refresh signals; polling remains the
+cross-process fallback. SSE is volatile; the database row or local journal is the
+durable record. Notifications are in-app only, with no email or operating-system push.
 
 ### Marketplace discovery (2026-10-12)
 
@@ -63,6 +78,11 @@ generic creator label. Response projection removes original asset IDs and audio
 metadata, and delegates playable media to the existing published-preview route.
 Moderation remains exclusively in the admin catalog workflow. This endpoint does not
 create offers, orders, entitlements or payment records.
+
+Marketplace seller links open a public creator-store view (`#/store?id=...`) backed by
+the same filtered marketplace endpoint. It lists only public offers and uses a generic
+seller label when the seller's social profile is private; it does not expose that
+profile's posts, avatar, cover, or private metadata.
 
 ### Themes and route QA (2026-10-11)
 
@@ -176,7 +196,7 @@ BeatVault Cloud will own authentication, metadata/index records, permissions, an
 
 OAuth must be handled server-side. Provider credentials and refresh tokens must never be exposed to the browser. The frontend will receive authenticated API results, file references, preview references, and explicit sync states such as `queued`, `syncing`, `synced`, `conflict`, and `error`.
 
-Original files may remain in a connected external provider. BeatVault should index searchable metadata without copying originals by default, create controlled temporary preview URLs or proxy streams with expiry, and persist durable file references separately from derived previews. This direction is architectural only: no backend, OAuth, provider integration, or cloud sync is implemented in the local frontend.
+Original files may remain in a connected external provider. BeatVault should index searchable metadata without copying originals by default, create controlled temporary preview URLs or proxy streams with expiry, and persist durable file references separately from derived previews. This direction is architectural only: external cloud-provider OAuth and sync are not implemented. The existing local API handles account, catalog, social, and marketplace persistence separately.
 
 The initial typed boundary is defined in `src/domains/storage/types.ts`. It separates provider accounts, file references, derived previews, provider capabilities, and sync states so future VPS adapters can support MediaFire, BeatVault Cloud, or S3-compatible storage without coupling provider response shapes to Library components.
 

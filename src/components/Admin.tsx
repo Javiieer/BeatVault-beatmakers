@@ -5,6 +5,8 @@ import { adminMetrics } from '../data/admin'
 import { marketplaceBaseCurrency } from '../domains/marketplace/currency'
 import { promotionScopes, type PromotionInput, type PromotionScope } from '../domains/marketplace/promotions'
 import { AdminMarketplaceReview } from './AdminMarketplaceReview'
+import { readSocialModerationPosts, readSocialModerationReports, reviewSocialPost, reviewSocialPostReport, type SocialPostReportView, type SocialPostView } from '../data/socialPostRepository'
+import '../styles/social-moderation.css'
 
 const promotionLabels: Record<PromotionScope, string> = { all: 'Todo el marketplace', beat: 'Beats', loop: 'Loops', 'one-shot': 'One-shots', 'sample-pack': 'Sample packs' }
 
@@ -26,8 +28,37 @@ export function Admin({ onReviewed }: { onReviewed?: () => Promise<void> }) {
   const [promotionDraft, setPromotionDraft] = useState({ name: 'Lanzamiento BeatVault', scope: 'beat' as PromotionScope, percentOff: '10', startsAt: '', endsAt: '', enabled: true })
   const [promotionError, setPromotionError] = useState('')
   const [error, setError] = useState('')
+  const [socialPosts, setSocialPosts] = useState<SocialPostView[]>([])
+  const [socialReports, setSocialReports] = useState<SocialPostReportView[]>([])
+  const [socialError, setSocialError] = useState('')
+  const [socialNotes, setSocialNotes] = useState<Record<string, string>>({})
   const reload = useCallback(async () => setResult(await defaultAdminRepository.load()), [])
   useEffect(() => { void reload() }, [reload])
+  const reloadSocialModeration = useCallback(async () => {
+    const [postsResult, reportsResult] = await Promise.all([readSocialModerationPosts(), readSocialModerationReports()])
+    const errors: string[] = []
+    if (postsResult.ok) setSocialPosts(postsResult.data.posts); else errors.push(postsResult.error.message)
+    if (reportsResult.ok) setSocialReports(reportsResult.data.reports); else errors.push(reportsResult.error.message)
+    setSocialError(errors.join(' '))
+  }, [])
+  useEffect(() => { void reloadSocialModeration() }, [reloadSocialModeration])
+  const decideSocialPost = async (postId: string, status: 'published' | 'rejected' | 'removed') => {
+    if (busyId) return
+    if (status === 'removed' && !window.confirm('¿Retirar esta publicación? Dejará de ser visible para todos.')) return
+    setBusyId(postId); setSocialError('')
+    const result = await reviewSocialPost(postId, status, socialNotes[postId] || '')
+    if (result.ok) { setSocialNotes(current => ({ ...current, [postId]: '' })); await reloadSocialModeration() }
+    else setSocialError(result.error.message)
+    setBusyId('')
+  }
+  const decideSocialReport = async (reportId: string, status: 'reviewed' | 'dismissed') => {
+    if (busyId) return
+    setBusyId(reportId); setSocialError('')
+    const result = await reviewSocialPostReport(reportId, status)
+    if (result.ok) await reloadSocialModeration()
+    else setSocialError(result.error.message)
+    setBusyId('')
+  }
   const review = async (contentId: string, decision: 'approve' | 'reject') => {
     if (busyId) return
     setBusyId(contentId); setError('')
@@ -132,12 +163,42 @@ export function Admin({ onReviewed }: { onReviewed?: () => Promise<void> }) {
       {data?.source === 'api' && data.promotions.length === 0 && <p className="empty-state">Todavía no hay descuentos configurados.</p>}
     </section>
     <section className="panel admin-review"><div className="section-heading"><div><p className="eyebrow">Publicación</p><h2>Cola de revisión</h2></div><small>{data?.source === 'api' ? `${data.catalog.length} pendientes` : 'Sin conexión'}</small></div>
+      <div className="admin-guard"><ShieldCheck size={18} /><span>Un Community Manager o un administrador puede aprobar y publicar un Beat. Basta una decisión; el audio necesita preview procesado. Los demás tipos conservan la revisión administrativa actual.</span></div>
       {error && <p className="upload-error" role="alert">{error}</p>}
       {data?.source === 'api' && data.catalog.length === 0 && <p className="empty-state">No hay Beats ni One-shots pendientes de revisión.</p>}
       {data?.source === 'api' && data.catalog.map(item => <article className="admin-review-row" key={item.contentId}>
         <div className="admin-row"><div><strong>{item.title}</strong><span>{item.type} · Creador {item.creatorId}</span></div><span className="badge pending">En revisión</span></div>
         <div className="admin-review-actions"><label className="short-upload-field">{`Motivo si se rechaza ${item.title}`}<input maxLength={160} value={reason[item.contentId] || ''} onChange={event => setReason(current => ({ ...current, [item.contentId]: event.target.value }))} placeholder="Describe qué debe corregirse" /></label><div><button className="button ghost" type="button" disabled={Boolean(busyId) || !reason[item.contentId]?.trim()} onClick={() => void review(item.contentId, 'reject')}><ThumbsDown size={16} /> Rechazar</button><button className="button" type="button" disabled={Boolean(busyId)} onClick={() => void review(item.contentId, 'approve')}><ThumbsUp size={16} /> {busyId === item.contentId ? 'Guardando…' : 'Aprobar'}</button></div></div>
       </article>)}
+    </section>
+    <section className="panel admin-review" aria-label="Moderación de publicaciones sociales">
+      <div className="section-heading"><div><p className="eyebrow">Comunidad</p><h2>Moderación social</h2></div><small>{socialPosts.length} pendientes heredados · {socialReports.length} reportes abiertos</small></div>
+      <p className="description">Las publicaciones aparecen de inmediato. Atiende reportes de la comunidad y retira contenido que incumpla las reglas; cada decisión queda registrada.</p>
+      {socialError && <p className="upload-error" role="alert">No se pudo actualizar la moderación social: {socialError}</p>}
+      <div className="admin-social-queues">
+        <section aria-labelledby="social-post-queue-title">
+          <div className="section-heading"><h3 id="social-post-queue-title">Pendientes heredados</h3><small>{socialPosts.length}</small></div>
+          {socialPosts.length === 0 && !socialError && <p className="empty-state">No hay publicaciones heredadas en espera.</p>}
+          {socialPosts.map(post => <article className="admin-review-row admin-social-item" key={post.id}>
+            <div className="admin-row"><div><strong>{post.author.displayName} · {post.kind === 'status' ? 'Estado' : post.kind === 'photo' ? 'Foto' : 'Video'}</strong><span>{post.audience === 'public' ? 'Público' : post.audience === 'friends' ? 'Amigos' : 'Solo autor'} · {new Date(post.createdAt).toLocaleString('es-MX')}</span></div><span className="badge pending">Pendiente</span></div>
+            <p className="admin-social-copy">{post.body}</p>
+            {post.media?.mimeType.startsWith('image/') && <img className="admin-social-media" src={post.media.url} alt={`Adjunto del post de ${post.author.displayName}`} loading="lazy" />}
+            {post.media?.mimeType.startsWith('video/') && <video className="admin-social-media" src={post.media.url} controls preload="metadata" aria-label={`Video de ${post.author.displayName}`} />}
+            <label className="short-upload-field">Nota de moderación<input maxLength={500} value={socialNotes[post.id] || ''} onChange={event => setSocialNotes(current => ({ ...current, [post.id]: event.target.value }))} placeholder="Motivo o contexto para el registro" /></label>
+            <div className="admin-review-actions admin-social-actions"><div><button className="button" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialPost(post.id, 'published')}>{busyId === post.id ? 'Guardando…' : 'Aprobar'}</button><button className="button ghost" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialPost(post.id, 'rejected')}>Rechazar</button><button className="button ghost" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialPost(post.id, 'removed')}>Retirar</button></div></div>
+          </article>)}
+        </section>
+        <section aria-labelledby="social-report-queue-title">
+          <div className="section-heading"><h3 id="social-report-queue-title">Reportes abiertos</h3><small>{socialReports.length}</small></div>
+          {socialReports.length === 0 && !socialError && <p className="empty-state">No hay reportes abiertos.</p>}
+          {socialReports.map(report => <article className="admin-review-row admin-social-item" key={report.id}>
+            <div className="admin-row"><div><strong>{report.reason} · publicación {report.post?.author.displayName || 'no disponible'}</strong><span>Reportó {report.reporterId} · {new Date(report.createdAt).toLocaleString('es-MX')}</span></div><span className="badge reported">Abierto</span></div>
+            {report.details && <p className="admin-social-copy">{report.details}</p>}
+            {report.post && <div className="admin-social-reported-post"><p>{report.post.body}</p>{report.post.media?.mimeType.startsWith('image/') && <img className="admin-social-media" src={report.post.media.url} alt="Adjunto reportado" loading="lazy" />}{report.post.media?.mimeType.startsWith('video/') && <video className="admin-social-media" src={report.post.media.url} controls preload="metadata" aria-label="Video reportado" />}</div>}
+            <div className="admin-review-actions admin-social-actions"><div><button className="button" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialReport(report.id, 'reviewed')}>{busyId === report.id ? 'Guardando…' : 'Marcar revisado'}</button><button className="button ghost" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialReport(report.id, 'dismissed')}>Descartar reporte</button>{report.post && <button className="button ghost" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialPost(report.post!.id, 'removed')}>Retirar publicación</button>}</div></div>
+          </article>)}
+        </section>
+      </div>
     </section>
     <section className="panel admin-review"><div className="section-heading"><div><p className="eyebrow">Pagos</p><h2>Órdenes, reembolsos y disputas</h2></div><small>{data?.source === 'api' ? `${data.beatOrders.length} órdenes` : 'Sin conexión'}</small></div>
       <p className="description">Los reembolsos son totales y se confirman únicamente al recibir el webhook de Stripe. Las disputas requieren revisión y respuesta manual en Stripe.</p>
@@ -151,7 +212,7 @@ export function Admin({ onReviewed }: { onReviewed?: () => Promise<void> }) {
     <section className="panel admin-storage"><div className="section-heading"><div><p className="eyebrow">Uso de almacenamiento</p><h2>Almacenamiento por cuenta</h2></div><small>{data?.source === 'api' ? `${data.storage.length} cuentas · ${formatStorage(data.storage.reduce((total, item) => total + item.storedBytes, 0))} registrados` : 'Sin conexión'}</small></div>
       <p className="description">Separa originales sujetos a cuota y previews procesados. Son bytes registrados en metadatos, no una inspección del disco. Los límites individuales son solo para pruebas; no representan paquetes ni precios.</p>
       {data?.source === 'api' && data.storage.length === 0 && <p className="empty-state">Aún no hay cuentas registradas.</p>}
-      {data?.source === 'api' && data.storage.map(item => <div className="admin-storage-row" key={item.id}><div><strong>{item.email}</strong><span>{item.role === 'admin' ? 'Administración' : 'Creador'} · originales: {formatStorage(item.usedBytes)} ({item.originalCount}) · previews: {formatStorage(item.previewBytes)} ({item.previewCount}) · total registrado: {formatStorage(item.storedBytes)} · {item.customQuotaBytes === null ? 'sin límite individual' : `límite ${formatStorage(item.customQuotaBytes)}`}</span></div><div className="admin-quota-controls"><label>{`Límite de prueba en MB para ${item.email}`}<input aria-label={`Límite de prueba en MB para ${item.email}`} type="number" min="1" step="1" inputMode="numeric" value={quotaDraft[item.id] ?? (item.customQuotaBytes === null ? '' : String(Math.ceil(item.customQuotaBytes / (1024 * 1024))))} onChange={event => setQuotaDraft(current => ({ ...current, [item.id]: event.target.value }))} placeholder="Sin límite" /></label><button className="button" type="button" disabled={Boolean(busyId) || !quotaDraft[item.id]?.trim()} onClick={() => void setQuota(item.id)}>{busyId === item.id ? 'Guardando…' : 'Asignar'}</button>{item.customQuotaBytes !== null && <button className="button ghost" type="button" disabled={Boolean(busyId)} onClick={() => void setQuota(item.id, true)}>Quitar</button>}</div></div>)}
+      {data?.source === 'api' && data.storage.map(item => <div className="admin-storage-row" key={item.id}><div><strong>{item.email}</strong><span>{item.role === 'admin' ? 'Administración' : 'Creador'} · originales: {formatStorage(item.usedBytes - item.artworkBytes)} ({item.originalCount}) · artwork: {formatStorage(item.artworkBytes)} ({item.artworkCount}) · previews: {formatStorage(item.previewBytes)} ({item.previewCount}) · total registrado: {formatStorage(item.storedBytes)} · {item.customQuotaBytes === null ? 'sin límite individual' : `límite ${formatStorage(item.customQuotaBytes)}`}</span></div><div className="admin-quota-controls"><label>{`Límite de prueba en MB para ${item.email}`}<input aria-label={`Límite de prueba en MB para ${item.email}`} type="number" min="1" step="1" inputMode="numeric" value={quotaDraft[item.id] ?? (item.customQuotaBytes === null ? '' : String(Math.ceil(item.customQuotaBytes / (1024 * 1024))))} onChange={event => setQuotaDraft(current => ({ ...current, [item.id]: event.target.value }))} placeholder="Sin límite" /></label><button className="button" type="button" disabled={Boolean(busyId) || !quotaDraft[item.id]?.trim()} onClick={() => void setQuota(item.id)}>{busyId === item.id ? 'Guardando…' : 'Asignar'}</button>{item.customQuotaBytes !== null && <button className="button ghost" type="button" disabled={Boolean(busyId)} onClick={() => void setQuota(item.id, true)}>Quitar</button>}</div></div>)}
     </section>
     <section className="panel"><div className="section-heading"><div><p className="eyebrow">Cuentas</p><h2>Acceso de usuarios</h2></div><small>{data?.source === 'api' ? `${data.accounts.length} cuentas` : 'Solo lectura'}</small></div>{data?.source === 'api' ? data.accounts.map(account => <div className="admin-row" key={account.id}><div><strong>{account.email}</strong><span>{account.id} · {account.verificationState} · paquete {account.planId}</span></div><div className="admin-plan-controls"><span className={`badge ${account.role === 'admin' ? 'active' : account.role === 'community_manager' ? 'violet' : 'pending'}`}>{account.role}</span>{account.role !== 'admin' && <select aria-label={`Rol para ${account.email}`} value={account.role} disabled={Boolean(busyId)} onChange={event => void setStaffRole(account.id, event.target.value as 'creator' | 'community_manager')}><option value="creator">Creador</option><option value="community_manager">Community manager</option></select>}<select aria-label={`Paquete para ${account.email}`} value={planDraft[account.id] ?? account.planId} onChange={event => setPlanDraft(current => ({ ...current, [account.id]: event.target.value as 'free' | 'creator' | 'studio' }))}><option value="free">Free</option><option value="creator">Creator</option><option value="studio">Studio</option></select><button className="button" type="button" disabled={Boolean(busyId) || (planDraft[account.id] ?? account.planId) === account.planId} onClick={() => void setPlan(account.id)}>{busyId === account.id ? 'Guardando…' : 'Asignar paquete'}</button></div></div>) : data?.rows.map(row => <div className="admin-row" key={row.id}><div><strong>{row.title}</strong><span>{row.detail}</span></div><span className={`badge ${row.state}`}>{row.state}</span></div>)}</section>
   </div>

@@ -5,12 +5,14 @@ import { emptyUploadDraft, formatDuration, readUploadDraft, writeUploadDraft, ty
 import { createImportQueue, metadataFromFile, validateImportItem, type ImportQueueItem } from "../data/localLibraryEngine";
 import { creatorType, creatorTypes, uploadCovers } from "../data/creatorUploads";
 import type { CatalogAsset } from "../data/localCatalog";
-import type { AssetRecord } from "../api/client";
+import type { ArtworkUploadResult, AssetRecord } from "../api/client";
+import type { ApiResult } from "../domains/core/contracts";
 
-export function Upload({ onPublish, onRemoteUpload, scope }: {
+export function Upload({ onPublish, onRemoteUpload, onRemoteArtworkUpload, scope }: {
   scope?: string;
   onPublish: (asset: CatalogAsset, previewUrl?: string, artwork?: File) => Promise<boolean | string>;
   onRemoteUpload?: (file: File) => Promise<{ ok: true; data: AssetRecord } | { ok: false; error: { message: string } }>;
+  onRemoteArtworkUpload?: (assetId: string, file: File) => Promise<ApiResult<ArtworkUploadResult>>;
 }) {
   const [draft, setDraft] = useState<UploadDraft>(() => {
     const restored = readUploadDraft(scope);
@@ -93,6 +95,13 @@ export function Upload({ onPublish, onRemoteUpload, scope }: {
             if (!uploaded.ok) { failures.push(`${item.file.name}: ${uploaded.error.message}`); continue; }
             remoteFiles.current.set(item.id, uploaded.data);
           }
+          let artworkForPublish = artwork;
+          const remoteAssetId = remoteFiles.current.get(item.id)?.id;
+          if (artwork && remoteAssetId && onRemoteArtworkUpload) {
+            const uploadedArtwork = await onRemoteArtworkUpload(remoteAssetId, artwork);
+            if (!uploadedArtwork.ok) { failures.push(`${item.file.name}: artwork: ${uploadedArtwork.error.message}`); continue; }
+            artworkForPublish = undefined;
+          }
           previewUrl = URL.createObjectURL(item.file);
           const metadata = item.metadata || metadataFromFile(item.file, null);
           const accepted = await onPublish({
@@ -105,7 +114,7 @@ export function Upload({ onPublish, onRemoteUpload, scope }: {
             metadata: { duration: formatDuration(metadata.durationSeconds), size: metadata.size, format: item.file.name.split(".").pop()?.toUpperCase() || "AUDIO" },
             tags: draft.tags.map(label => ({ label })), color: "#35d0ba", favorite: false, waveform: [],
             publicationStatus: "pending-review", localAvailability: "session-preview",
-          }, previewUrl, artwork);
+          }, previewUrl, artworkForPublish);
           if (!accepted) { URL.revokeObjectURL(previewUrl); failures.push(`${item.file.name}: no se guardo en el catalogo.`); continue; }
           submittedRef.current.add(item.id);
           setSubmitted(new Set(submittedRef.current));
@@ -151,7 +160,7 @@ export function Upload({ onPublish, onRemoteUpload, scope }: {
             {artwork && <button type="button" className="button ghost" onClick={() => setArtwork(undefined)}>Quitar artwork</button>}
             {!artwork && uploadCovers.map(cover => <button type="button" key={cover.url} title={cover.name} aria-label={`Portada ${cover.name}`} aria-pressed={draft.cover === cover.url} onClick={() => setDraft({ ...draft, cover: cover.url })}><img src={cover.url} alt="" /></button>)}
           </fieldset>
-          <p className="draft-status">Recomendado: 3000 × 3000 px, sRGB. JPG de alta calidad para fotos; PNG para texto o transparencia. No amplíes una imagen pequeña.</p>
+          <p className="draft-status">Mejor compatibilidad: portada cuadrada de 4000 × 4000 px, sRGB, exportada a tamaño nativo. JPG de alta calidad para fotos; PNG para texto o transparencia. No amplíes una imagen pequeña.</p>
           <div className="upload-actions">
             <button className="button ghost" type="button" onClick={() => setSaved(writeUploadDraft(draft, scope))}><Save size={16} /> Guardar borrador</button>
             <button className="button" type="button" disabled={!valid || busy} onClick={() => void submit()}><Send size={16} /> {busy ? "Enviando..." : "Enviar a revision"}</button>

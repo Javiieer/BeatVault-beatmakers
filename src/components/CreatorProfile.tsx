@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, AtSign, Check, Disc3, ExternalLink, Grid2X2, Image as ImageIcon, List, LockKeyhole, MapPin, MessageSquareText, Music2, Pencil, Play, Share2, SlidersHorizontal, Upload, Video, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { ArrowLeft, AtSign, Check, Disc3, ExternalLink, Flag, Grid2X2, Heart, Image as ImageIcon, List, LockKeyhole, MapPin, MessageCircle, MessageSquareText, Music2, Pencil, Play, Send, Share2, ShoppingBag, SlidersHorizontal, Trash2, Upload, Video, X } from 'lucide-react';
 import type { AuthUser } from '../api/client';
 import type { AudioAsset } from '../types';
 import type { CatalogAsset } from '../data/localCatalog';
 import { CatalogRepository } from '../data/catalogRepository';
 import { creatorType, uploadCovers, uploadStatusLabels } from '../data/creatorUploads';
 import { emptyProfile, type CreatorProfile, type ProfileInput } from '../domains/profile';
-import { readProfile, saveProfile } from '../data/profileRepository';
+import { readProfile, saveProfile, uploadProfileImage } from '../data/profileRepository';
 import { profileCovers, profileCoverUrl } from '../data/profileArtwork';
-import { readLocalHomePosts, subscribeToLocalHomePosts, type LocalHomePost } from '../data/homePosts';
+import { readLocalHomePosts, subscribeToLocalHomePosts } from '../data/homePosts';
 import '../styles/creator-profile.css';
 import { authClient, getCurrencyRates, isAuthUser, isNull } from '../api/client';
 import { readUserSettings, saveUserSettings, type UserSettings } from '../data/userSettings';
@@ -16,21 +16,71 @@ import { Globe2, Bell, Shield, UserRound, Palette, Languages } from 'lucide-reac
 import { toRgb } from '../app/theme';
 import { tx } from '../i18n';
 import { exchangeRate, type ExchangeRates } from '../domains/marketplace/currency';
+import { createBeatCheckout } from '../data/beatPurchases';
+import { createSocialPostComment, deleteSocialPost, readProfileSocialPosts, readSocialPostInteractions, reportSocialPost, toggleSocialPostReaction, type SocialPostInteraction, type SocialPostReportReason } from '../data/socialPostRepository';
 
 const artwork = (id: string) => uploadCovers.find(cover => cover.id === id)?.url || uploadCovers[2].url;
+type CreatorPost = { id: string; kind: 'status' | 'photo' | 'video'; text: string; createdAt: string; mediaUrl?: string; mediaName?: string; localOnly?: boolean; audience?: string; visibility?: string; socialPostId?: string };
 function Avatar({ profile }: { profile: CreatorProfile }) {
-  return <div className="producer-avatar">{profile.avatarId === 'initials'
-    ? <span>{profile.displayName.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase() || 'BV'}</span>
-    : <img src={artwork(profile.avatarId)} alt="" />}</div>;
+  const src = profile.avatarId === 'custom' ? profile.avatarUrl : profile.avatarId === 'initials' ? undefined : artwork(profile.avatarId);
+  return <div className="producer-avatar">{src ? <img src={src} alt="" /> : <span>{profile.displayName.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase() || 'BV'}</span>}</div>;
+}
+function ProfilePostInteractions({ postId }: { postId: string }) {
+  const [interaction, setInteraction] = useState<SocialPostInteraction>({ comments: [], reactionCount: 0, reactedByMe: false });
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    void readSocialPostInteractions(postId).then(result => {
+      if (!active) return;
+      if (result.ok) setInteraction(result.data);
+      else setError(result.error.message);
+    });
+    return () => { active = false; };
+  }, [postId]);
+  const react = async () => {
+    setBusy(true); setError('');
+    const result = await toggleSocialPostReaction(postId);
+    if (result.ok) setInteraction(current => ({ ...current, reactedByMe: result.data.reacted, reactionCount: result.data.reactionCount }));
+    else setError(result.error.message);
+    setBusy(false);
+  };
+  const comment = async (event: FormEvent) => {
+    event.preventDefault();
+    const body = text.trim();
+    if (!body || busy) return;
+    setBusy(true); setError('');
+    const result = await createSocialPostComment(postId, body);
+    if (result.ok) { setInteraction(result.data); setText(''); }
+    else setError(result.error.message);
+    setBusy(false);
+  };
+  return <section className="producer-post-social" aria-label="Interacciones de la publicación">
+    <div className="producer-post-social-actions"><button type="button" className={interaction.reactedByMe ? 'is-active' : ''} aria-pressed={interaction.reactedByMe} disabled={busy} onClick={() => void react()}><Heart size={16} fill={interaction.reactedByMe ? 'currentColor' : 'none'} />Me gusta · {interaction.reactionCount}</button><span><MessageCircle size={16} />{interaction.comments.length} comentarios</span></div>
+    {interaction.comments.slice(-3).map(item => <p className="producer-post-social-comment" key={item.id}><strong>{item.authorName}</strong><span>{item.body}</span></p>)}
+    <form onSubmit={event => void comment(event)}><label className="sr-only" htmlFor={`profile-comment-${postId}`}>Escribe un comentario</label><input id={`profile-comment-${postId}`} maxLength={500} value={text} onChange={event => setText(event.target.value)} placeholder="Escribe un comentario..." /><button type="submit" aria-label="Publicar comentario" disabled={busy || !text.trim()}><Send size={15} /></button></form>
+    {error && <p className="producer-post-social-error" role="alert">{error}</p>}
+  </section>;
 }
 function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; user: AuthUser; onSaved: (profile: CreatorProfile) => void }) {
-  const initial: ProfileInput = { displayName: profile.displayName, bio: profile.bio, location: profile.location, website: profile.website, instagram: profile.instagram, genres: profile.genres, coverId: profile.coverId, avatarId: profile.avatarId, publicProfile: profile.publicProfile };
+  const initial: ProfileInput = useMemo(() => ({ displayName: profile.displayName, bio: profile.bio, location: profile.location, website: profile.website, instagram: profile.instagram, genres: profile.genres, coverId: profile.coverId, avatarId: profile.avatarId, publicProfile: profile.publicProfile }), [profile]);
   const [draft, setDraft] = useState<ProfileInput>(initial);
   const [genres, setGenres] = useState(initial.genres.join(', '));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
+  const [avatarFile, setAvatarFile] = useState<File>();
+  const [coverFile, setCoverFile] = useState<File>();
+  const [avatarPreview, setAvatarPreview] = useState('');
+  const [coverPreview, setCoverPreview] = useState('');
+  const [imageBusy, setImageBusy] = useState<'' | 'avatar' | 'cover'>('');
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
+  useEffect(() => {
+    setDraft(initial);
+    setGenres(initial.genres.join(', '));
+  }, [initial]);
+  useEffect(() => () => { if (avatarPreview) URL.revokeObjectURL(avatarPreview); if (coverPreview) URL.revokeObjectURL(coverPreview); }, [avatarPreview, coverPreview]);
   useEffect(() => {
     if (!dirty) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
@@ -47,6 +97,27 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
       else setError(result.error.message);
     } finally { setBusy(false); }
   };
+  const chooseImage = (kind: 'avatar' | 'cover', file?: File) => {
+    if (!file) return;
+    if (!['image/jpeg', 'image/png'].includes(file.type) || file.size > 8 * 1024 * 1024) { setError('Elige un archivo JPG o PNG de hasta 8 MB.'); return; }
+    setError(''); setSavedMessage('');
+    const preview = URL.createObjectURL(file);
+    if (kind === 'avatar') { if (avatarPreview) URL.revokeObjectURL(avatarPreview); setAvatarFile(file); setAvatarPreview(preview); }
+    else { if (coverPreview) URL.revokeObjectURL(coverPreview); setCoverFile(file); setCoverPreview(preview); }
+  };
+  const uploadImage = async (kind: 'avatar' | 'cover') => {
+    const file = kind === 'avatar' ? avatarFile : coverFile;
+    if (!file || imageBusy) return;
+    setImageBusy(kind); setError(''); setSavedMessage('');
+    const result = await uploadProfileImage(kind, file);
+    setImageBusy('');
+    if (!result.ok) { setError(result.error.message); return; }
+    onSaved(result.data);
+    setDraft(current => ({ ...current, ...(kind === 'avatar' ? { avatarId: 'custom' as const } : { coverId: 'custom' as const }) }));
+    if (kind === 'avatar') { setAvatarFile(undefined); setAvatarPreview(''); }
+    else { setCoverFile(undefined); setCoverPreview(''); }
+    setSavedMessage(kind === 'avatar' ? 'Foto de perfil guardada.' : 'Portada guardada.');
+  };
   return <div className="producer-settings">
     <header className="producer-settings-heading"><div><p className="eyebrow">Mi cuenta</p><h1>Editar perfil</h1></div><button className="button ghost" onClick={cancel} disabled={busy}><ArrowLeft size={16} />Volver al perfil</button></header>
     <div className="producer-settings-layout">
@@ -58,9 +129,11 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
           </div><label>Biografia<textarea rows={4} maxLength={320} value={draft.bio} onChange={e => setDraft({ ...draft, bio: e.target.value })} /><small>{draft.bio.length}/320</small></label>
           <label>Generos<input value={genres} maxLength={220} placeholder="Trap, R&B, Lo-fi" onChange={e => { setGenres(e.target.value); setDraft({ ...draft, genres: e.target.value.split(',').map(g => g.trim()).filter(Boolean) }); }} /></label></section>
           <section><h2>Imagen del perfil</h2><fieldset className="producer-image-picker"><legend>Avatar</legend>
-            <button type="button" className="producer-initials-option" aria-label="Avatar con iniciales" aria-pressed={draft.avatarId === 'initials'} onClick={() => setDraft({ ...draft, avatarId: 'initials' })}>Aa</button>
-            {uploadCovers.map(cover => <button key={cover.id} type="button" aria-label={`Avatar ${cover.name}`} aria-pressed={draft.avatarId === cover.id} onClick={() => setDraft({ ...draft, avatarId: cover.id })}><img src={cover.url} alt="" /></button>)}
-          </fieldset><fieldset className="producer-image-picker producer-cover-picker"><legend>Portada</legend>{profileCovers.map(cover => <button type="button" key={cover.id} aria-label={`Portada ${cover.name}`} aria-pressed={draft.coverId === cover.id} onClick={() => setDraft({ ...draft, coverId: cover.id })}><img src={cover.url} alt="" /></button>)}</fieldset></section>
+            <button type="button" className="producer-initials-option" aria-label="Avatar con iniciales" aria-pressed={draft.avatarId === 'initials'} onClick={() => { setAvatarFile(undefined); setAvatarPreview(''); setDraft({ ...draft, avatarId: 'initials' }); }}>Aa</button>
+            {uploadCovers.map(cover => <button key={cover.id} type="button" aria-label={`Avatar ${cover.name}`} aria-pressed={draft.avatarId === cover.id} onClick={() => { setAvatarFile(undefined); setAvatarPreview(''); setDraft({ ...draft, avatarId: cover.id }); }}><img src={cover.url} alt="" /></button>)}
+          </fieldset><div className="profile-image-upload"><label>Subir foto de perfil<input aria-label="Subir foto de perfil" type="file" accept="image/jpeg,image/png" onChange={event => chooseImage('avatar', event.currentTarget.files?.[0])} /><small>JPG o PNG, cuadrada, minimo 256 x 256 px, maximo 8 MB.</small></label><button type="button" className="button ghost" disabled={!avatarFile || Boolean(imageBusy)} onClick={() => void uploadImage('avatar')}><Upload size={15} />{imageBusy === 'avatar' ? 'Procesando...' : 'Guardar foto'}</button></div>
+          <fieldset className="producer-image-picker producer-cover-picker"><legend>Portada</legend>{profileCovers.map(cover => <button type="button" key={cover.id} aria-label={`Portada ${cover.name}`} aria-pressed={draft.coverId === cover.id} onClick={() => { setCoverFile(undefined); setCoverPreview(''); setDraft({ ...draft, coverId: cover.id }); }}><img src={cover.url} alt="" /></button>)}</fieldset>
+          <div className="profile-image-upload"><label>Subir portada personalizada<input aria-label="Subir portada personalizada" type="file" accept="image/jpeg,image/png" onChange={event => chooseImage('cover', event.currentTarget.files?.[0])} /><small>JPG o PNG, minimo 256 x 256 px, maximo 8 MB. Se adapta al espacio de portada.</small></label><button type="button" className="button ghost" disabled={!coverFile || Boolean(imageBusy)} onClick={() => void uploadImage('cover')}><Upload size={15} />{imageBusy === 'cover' ? 'Procesando...' : 'Guardar portada'}</button></div></section>
           <section><h2>Enlaces</h2><div className="producer-form-grid"><label>Sitio web<input type="url" maxLength={200} placeholder="https://" value={draft.website} onChange={e => setDraft({ ...draft, website: e.target.value })} /></label><label>Instagram<input maxLength={31} placeholder="@usuario" value={draft.instagram} onChange={e => setDraft({ ...draft, instagram: e.target.value })} /></label></div></section>
           <section><h2>Visibilidad</h2><label className="producer-visibility"><input type="checkbox" checked={draft.publicProfile} onChange={e => setDraft({ ...draft, publicProfile: e.target.checked })} />Perfil publico</label></section>
           {error && <p role="alert" className="form-error">{error}</p>}
@@ -68,7 +141,7 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
           <div className="producer-save"><button type="button" className="button ghost" onClick={cancel}>Cancelar</button><button className="button" disabled={!draft.displayName.trim()}><Check size={16} />{busy ? 'Guardando...' : 'Guardar cambios'}</button></div>
         </fieldset>
       </form>
-      <aside className="producer-settings-preview"><p className="eyebrow">Vista previa</p><img className="producer-preview-cover" src={profileCoverUrl(draft.coverId)} alt="Portada seleccionada" /><Avatar profile={{ ...draft, accountId: profile.accountId }} /><h2>{draft.displayName || 'Tu nombre'}</h2><p>{draft.bio || 'Sin biografia'}</p><dl className="producer-private-account"><dt>Correo de acceso</dt><dd>{user.email}</dd><dt>Permisos</dt><dd>{user.role === 'admin' ? 'Administrador' : user.role === 'community_manager' ? 'Community manager' : 'Creador'}</dd></dl></aside>
+      <aside className="producer-settings-preview"><p className="eyebrow">Vista previa</p><img className="producer-preview-cover" src={coverPreview || (draft.coverId === 'custom' ? profile.coverUrl || profileCoverUrl(profile.coverId as 'lo-fi') : profileCoverUrl(draft.coverId))} alt="Portada seleccionada" /><Avatar profile={{ ...draft, accountId: profile.accountId, avatarUrl: avatarPreview || (draft.avatarId === 'custom' ? profile.avatarUrl : undefined) }} /><h2>{draft.displayName || 'Tu nombre'}</h2><p>{draft.bio || 'Sin biografia'}</p><dl className="producer-private-account"><dt>Correo de acceso</dt><dd>{user.email}</dd><dt>Permisos</dt><dd>{user.role === 'admin' ? 'Administrador' : user.role === 'community_manager' ? 'Community manager' : 'Creador'}</dd></dl></aside>
     </div>
   </div>;
 }
@@ -141,9 +214,20 @@ export function CreatorProfilePage({ user, uploads, uploadsLoading = false, onPl
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [remoteUploads, setRemoteUploads] = useState<CatalogAsset[]>([]);
+  const [saleBeats, setSaleBeats] = useState<CatalogAsset[]>([]);
+  const [saleLoading, setSaleLoading] = useState(false);
+  const [saleError, setSaleError] = useState('');
+  const [activeOffer, setActiveOffer] = useState<string>();
+  const [purchaseError, setPurchaseError] = useState('');
+  const checkoutKeys = useRef(new Map<string, string>());
   const [publicView, setPublicView] = useState(Boolean(targetId));
   const [tab, setTab] = useState(user && (!targetId || targetId === user.id) ? 'posts' : 'projects');
-  const [profilePosts, setProfilePosts] = useState<Array<LocalHomePost & { mediaUrl?: string }>>([]);
+  const [profilePosts, setProfilePosts] = useState<CreatorPost[]>([]);
+  const [postsLoading, setPostsLoading] = useState(false);
+  const [postsPageBusy, setPostsPageBusy] = useState(false);
+  const [postsCursor, setPostsCursor] = useState<string>();
+  const [postsError, setPostsError] = useState('');
+  const [postsNotice, setPostsNotice] = useState('');
   const postUrls = useRef<string[]>([]);
   const [type, setType] = useState('all');
   const [layout, setLayout] = useState('grid');
@@ -172,26 +256,45 @@ export function CreatorProfilePage({ user, uploads, uploadsLoading = false, onPl
     return () => { cancelled = true; };
   }, [uploads]);
   useEffect(() => {
-    if (!profile || user?.id !== profile.accountId) return;
+    if (!profile?.publicProfile) { setSaleBeats([]); setSaleError(''); setSaleLoading(false); return; }
+    let cancelled = false;
+    setSaleLoading(true);
+    void new CatalogRepository(undefined, 'public').marketplacePage({ type: 'beat', creatorId: profile.accountId, limit: 48 }).then(result => {
+      if (cancelled) return;
+      setSaleBeats(result.assets.filter(asset => asset.ownerId === profile.accountId && asset.publicationStatus === 'published' && Boolean(asset.purchaseOffers?.length)));
+      setSaleError(result.error || '');
+    }).finally(() => { if (!cancelled) setSaleLoading(false); });
+    return () => { cancelled = true; };
+  }, [profile?.accountId, profile?.publicProfile]);
+  useEffect(() => {
+    if (!profile) { setProfilePosts([]); return; }
     let cancelled = false;
     const loadPosts = async () => {
-      try {
-        const posts = await readLocalHomePosts(profile.accountId);
-        if (cancelled) return;
-        postUrls.current.forEach(url => URL.revokeObjectURL(url));
-        postUrls.current = [];
-        setProfilePosts(posts.map(post => {
-          if (!post.media) return post;
-          const mediaUrl = URL.createObjectURL(post.media);
-          postUrls.current.push(mediaUrl);
-          return { ...post, mediaUrl };
-        }));
-      } catch {
-        if (!cancelled) setError('No se pudieron cargar tus publicaciones locales.');
+      setPostsLoading(true); setPostsError('');
+      const remoteResult = await readProfileSocialPosts(profile.accountId);
+      if (cancelled) return;
+      if (!remoteResult.ok) { setPostsError(remoteResult.error.message); setProfilePosts([]); }
+      setPostsCursor(remoteResult.ok ? remoteResult.data.nextCursor : undefined);
+      const remote: CreatorPost[] = remoteResult.ok ? remoteResult.data.posts.map(post => ({ id: post.id, socialPostId: post.id, kind: post.kind, text: post.body, createdAt: post.createdAt, mediaUrl: post.media?.url, audience: post.audience, visibility: post.visibility })) : [];
+      let local: CreatorPost[] = [];
+      if (user?.id === profile.accountId) {
+        try {
+          const posts = await readLocalHomePosts(profile.accountId);
+          if (cancelled) return;
+          postUrls.current.forEach(url => URL.revokeObjectURL(url)); postUrls.current = [];
+          local = posts.map(post => {
+            const base = { id: `local-${post.id}`, kind: post.kind, text: post.text, createdAt: post.createdAt, mediaName: post.mediaName, localOnly: true } as const;
+            if (!post.media) return base;
+            const mediaUrl = URL.createObjectURL(post.media); postUrls.current.push(mediaUrl);
+            return { ...base, mediaUrl };
+          });
+        } catch { setPostsError(current => current || 'No se pudieron cargar las publicaciones guardadas en este equipo.'); }
       }
+      setProfilePosts([...remote, ...local].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+      setPostsLoading(false);
     };
     void loadPosts();
-    const unsubscribe = subscribeToLocalHomePosts(profile.accountId, () => void loadPosts());
+    const unsubscribe = user?.id === profile.accountId ? subscribeToLocalHomePosts(profile.accountId, () => void loadPosts()) : () => undefined;
     return () => {
       cancelled = true;
       unsubscribe();
@@ -205,37 +308,82 @@ export function CreatorProfilePage({ user, uploads, uploadsLoading = false, onPl
   if (!profile) return <section className="producer-message"><h1>Perfil no disponible</h1><p role="alert">{error}</p></section>;
   if (editing) return user ? <SettingsCenter profile={profile} user={user} onProfileSaved={setProfile} /> : <section className="producer-message"><h1>Configuracion de perfil</h1><p>Inicia sesion para editar tu perfil.</p></section>;
   const isOwner = user?.id === profile.accountId;
+  const isPrivateFriend = !isOwner && !profile.publicProfile;
+  const activeTab = isPrivateFriend ? 'posts' : tab;
   const showPrivate = isOwner && !publicView;
+  const displayedPosts = isOwner && publicView
+    ? profilePosts.filter(post => !post.localOnly && post.audience === 'public' && post.visibility === 'published')
+    : profilePosts;
   const projects = (uploads || remoteUploads).filter(asset => asset.ownerId === profile.accountId && creatorType(asset.type) && (showPrivate ? asset.publicationStatus !== 'archived' : asset.publicationStatus === 'published'));
   const filtered = projects.filter(asset => type === 'all' || creatorType(asset.type) === type);
   const share = async () => {
     try { await navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}#/profile?id=${encodeURIComponent(profile.accountId)}`); setShareMessage('Enlace copiado'); }
     catch { setShareMessage('No se pudo copiar el enlace'); }
   };
+  const buyOffer = async (contentId: string, offerId: string) => {
+    const key = `${contentId}:${offerId}`;
+    const idempotencyKey = checkoutKeys.current.get(key) || window.crypto.randomUUID();
+    checkoutKeys.current.set(key, idempotencyKey);
+    setActiveOffer(key); setPurchaseError('');
+    const result = await createBeatCheckout(contentId, offerId, idempotencyKey);
+    if (result.ok) { checkoutKeys.current.delete(key); window.location.assign(result.data.url); }
+    else {
+      if (result.error.code !== 'NETWORK_ERROR' && result.error.code !== 'TIMEOUT') checkoutKeys.current.delete(key);
+      setPurchaseError(result.error.message);
+    }
+    setActiveOffer(undefined);
+  };
+  const loadMoreProfilePosts = async () => {
+    if (!profile || !postsCursor || postsPageBusy) return;
+    setPostsPageBusy(true);
+    const result = await readProfileSocialPosts(profile.accountId, 30, postsCursor);
+    if (result.ok) {
+      const additional: CreatorPost[] = result.data.posts.map(post => ({ id: post.id, socialPostId: post.id, kind: post.kind, text: post.body, createdAt: post.createdAt, mediaUrl: post.media?.url, audience: post.audience, visibility: post.visibility }));
+      setProfilePosts(current => {
+        const merged = new Map(current.map(post => [post.id, post]));
+        additional.forEach(post => merged.set(post.id, post));
+        return [...merged.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      });
+      setPostsCursor(result.data.nextCursor);
+    } else setPostsError(result.error.message);
+    setPostsPageBusy(false);
+  };
   return <div className="producer-profile">
-    <div className="producer-banner"><img src={profileCoverUrl(profile.coverId)} alt="Portada del perfil" />{isOwner && <a className="producer-cover-edit" href="#/settings" title="Editar portada" aria-label="Editar portada"><Pencil size={18} /></a>}</div>
+    <div className="producer-banner"><img src={profile.coverId === 'custom' ? profile.coverUrl || profileCovers[2].url : profileCoverUrl(profile.coverId)} alt="Portada del perfil" />{isOwner && <a className="producer-cover-edit" href="#/settings" title="Editar portada" aria-label="Editar portada"><Pencil size={18} /></a>}</div>
     <section className="producer-identity-band">
       <Avatar profile={profile} />
       <div className="producer-name"><p className="eyebrow">BeatVault Creator</p><h1>{profile.displayName}</h1>{profile.packageBadges?.length ? <div className="package-badges" aria-label="Paquetes adquiridos">{profile.packageBadges.map(packageId => <span key={packageId} className={`package-badge ${packageId}`} title={`Paquete ${packageId} adquirido`}>{packageId === 'creator' ? 'Creator' : 'Studio'}</span>)}</div> : null}<div className="producer-meta">{profile.location && <span><MapPin size={14} />{profile.location}</span>}{isOwner && !profile.publicProfile && <span><LockKeyhole size={14} />Perfil privado</span>}</div></div>
       <div className="producer-profile-actions">{isOwner && <><a className="button ghost" href="#/settings"><Pencil size={16} />Editar perfil</a><button className="button ghost" aria-pressed={publicView} onClick={() => { setPublicView(value => !value); setSelected(undefined); }}>{publicView ? 'Mi vista' : 'Vista publica'}</button></>}{profile.publicProfile && <button className="button ghost" onClick={() => void share()}><Share2 size={16} />Compartir</button>}</div>
     </section>
-    <div className="producer-summary"><div><p className="producer-bio">{profile.bio || 'Sin biografia'}</p><div className="producer-genres">{profile.genres.map(genre => <span key={genre}>{genre}</span>)}</div></div><div className="producer-count"><strong>{uploadsLoading ? '…' : projects.length}</strong><span>proyectos</span></div></div>
+    <div className="producer-summary"><div><p className="producer-bio">{profile.bio || 'Sin biografia'}</p><div className="producer-genres">{profile.genres.map(genre => <span key={genre}>{genre}</span>)}</div></div>{!isPrivateFriend && <div className="producer-count"><strong>{uploadsLoading ? '…' : projects.length}</strong><span>proyectos</span></div>}</div>
     {shareMessage && <p role="status">{shareMessage}</p>}{error && <p role="alert" className="form-error">{error}</p>}
-    <div className="producer-tabs" role="tablist" aria-label="Contenido del perfil">{[...(isOwner ? [['posts', 'Publicaciones']] : []), ['projects', 'Proyectos'], ['about', 'Acerca de']].map(([value, name]) => <button id={`profile-tab-${value}`} role="tab" key={value} aria-selected={tab === value} aria-controls={`profile-panel-${value}`} onClick={() => setTab(value)}>{value === 'posts' ? <MessageSquareText size={17} /> : value === 'projects' ? <Disc3 size={17} /> : <Music2 size={17} />}{name}</button>)}</div>
-    {tab === 'about' ? <section id="profile-panel-about" role="tabpanel" aria-labelledby="profile-tab-about" className="producer-about"><h2>Acerca de {profile.displayName}</h2><p>{profile.bio || 'Sin biografia'}</p>{profile.location && <p><MapPin size={16} />{profile.location}</p>}<div className="producer-links">{profile.website && <a href={profile.website} target="_blank" rel="noopener noreferrer"><ExternalLink size={16} />Sitio web</a>}{profile.instagram && <a href={`https://www.instagram.com/${encodeURIComponent(profile.instagram)}/`} target="_blank" rel="noopener noreferrer"><AtSign size={16} />@{profile.instagram}</a>}</div></section> : tab === 'posts' && isOwner ? <section id="profile-panel-posts" role="tabpanel" aria-labelledby="profile-tab-posts" className="producer-posts">
-      {publicView ? <div className="producer-message"><LockKeyhole size={25} /><h2>Publicaciones solo en este dispositivo</h2><p>Aun no se publican en perfiles visibles para otros usuarios.</p></div> : <>
-        <div className="producer-posts-heading"><h2>Tus publicaciones</h2><a className="button ghost" href="#/home">Crear publicacion</a></div>
-        {profilePosts.length ? profilePosts.map(post => <article className="producer-post" key={post.id}>
-          <div className="producer-post-meta"><span>{post.kind === 'photo' ? <ImageIcon size={15} /> : post.kind === 'video' ? <Video size={15} /> : <MessageSquareText size={15} />}{post.kind === 'photo' ? 'Foto' : post.kind === 'video' ? 'Video' : 'Estado'}</span><time dateTime={post.createdAt}>{new Intl.DateTimeFormat('es-MX', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(post.createdAt))}</time></div>
+    <div className="producer-tabs" role="tablist" aria-label="Contenido del perfil">{(isPrivateFriend ? [['posts', 'Publicaciones']] : [...(isOwner || profile.publicProfile ? [['posts', 'Publicaciones']] : []), ['projects', 'Proyectos'], ['sale', 'En venta'], ['about', 'Acerca de']]).map(([value, name]) => <button id={`profile-tab-${value}`} role="tab" key={value} aria-selected={activeTab === value} aria-controls={`profile-panel-${value}`} onClick={() => setTab(value)}>{value === 'posts' ? <MessageSquareText size={17} /> : value === 'projects' ? <Disc3 size={17} /> : value === 'sale' ? <ShoppingBag size={17} /> : <Music2 size={17} />}{name}</button>)}</div>
+    {activeTab === 'about' ? <section id="profile-panel-about" role="tabpanel" aria-labelledby="profile-tab-about" className="producer-about"><h2>Acerca de {profile.displayName}</h2><p>{profile.bio || 'Sin biografia'}</p>{profile.location && <p><MapPin size={16} />{profile.location}</p>}<div className="producer-links">{profile.website && <a href={profile.website} target="_blank" rel="noopener noreferrer"><ExternalLink size={16} />Sitio web</a>}{profile.instagram && <a href={`https://www.instagram.com/${encodeURIComponent(profile.instagram)}/`} target="_blank" rel="noopener noreferrer"><AtSign size={16} />@{profile.instagram}</a>}</div></section> : activeTab === 'sale' ? <section id="profile-panel-sale" role="tabpanel" aria-labelledby="profile-tab-sale" className="producer-sale">
+      {purchaseError && <p className="form-error" role="alert">{purchaseError}</p>}
+      {saleError && <p className="form-error" role="alert">No se pudieron cargar las ofertas aprobadas. {saleError}</p>}
+      {saleLoading ? <div className="producer-message" role="status">Cargando beats en venta...</div> : saleBeats.length ? <div className="producer-sale-grid">{saleBeats.map(beat => <article className="producer-sale-card" key={beat.id}>
+        <img src={beat.cover || artwork('808')} alt={`Artwork de ${beat.name}`} loading="lazy" decoding="async" />
+        <div className="producer-sale-copy"><h2>{beat.name}</h2><p>{beat.tags.map(tag => `#${tag.label}`).join(' ')}</p>
+          {beat.purchaseOffers?.map(offer => <button className="button producer-sale-offer" type="button" key={offer.id} disabled={Boolean(activeOffer)} onClick={() => void buyOffer(beat.id, offer.id)}><ShoppingBag size={15} />{activeOffer === `${beat.id}:${offer.id}` ? 'Abriendo pago...' : `${offer.label} · ${new Intl.NumberFormat('es-MX', { style: 'currency', currency: offer.currency }).format(offer.amountMinor / 100)}`}</button>)}
+        </div>
+      </article>)}</div> : <div className="producer-message"><ShoppingBag size={27} /><h2>{isOwner ? 'Aún no tienes beats aprobados en venta' : 'Este creador aún no tiene beats en venta'}</h2>{isOwner && <p>Solo aparecerán beats publicados con oferta aprobada y pagos habilitados.</p>}</div>}
+    </section> : activeTab === 'posts' && (isOwner || profile.publicProfile || isPrivateFriend) ? <section id="profile-panel-posts" role="tabpanel" aria-labelledby="profile-tab-posts" className="producer-posts">
+        <div className="producer-posts-heading"><h2>{isOwner ? 'Tus publicaciones' : `Publicaciones de ${profile.displayName}`}</h2>{isOwner && <a className="button ghost" href="#/home">Crear publicacion</a>}</div>
+        {postsNotice && <p className="settings-notice" role="status">{postsNotice}</p>}{postsError && <p className="form-error" role="alert">{postsError}</p>}
+        {postsLoading ? <div className="producer-message" role="status">Cargando publicaciones…</div> : null}
+        {!postsLoading && displayedPosts.length ? displayedPosts.map(post => <article className="producer-post" key={post.id}>
+          <div className="producer-post-meta"><span>{post.kind === 'photo' ? <ImageIcon size={15} /> : post.kind === 'video' ? <Video size={15} /> : <MessageSquareText size={15} />}{post.kind === 'photo' ? 'Foto' : post.kind === 'video' ? 'Video' : 'Estado'}{post.localOnly && <em className="producer-local-post-label">Solo este equipo</em>}{post.audience && <em>{post.audience === 'private' ? 'Solo yo' : post.audience === 'friends' ? 'Amigos' : 'Público'}</em>}{post.visibility === 'pending-review' && <em className="producer-pending-post-label">Pendiente de revisión</em>}</span><time dateTime={post.createdAt}>{new Intl.DateTimeFormat('es-MX', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(post.createdAt))}</time></div>
           {post.text && <p className="producer-post-text">{post.text}</p>}
           {post.mediaUrl && (post.kind === 'video' ? <video controls preload="metadata" src={post.mediaUrl} aria-label={post.mediaName || 'Video publicado'} /> : <img src={post.mediaUrl} alt={post.mediaName || 'Imagen publicada'} />)}
-        </article>) : <div className="producer-message"><MessageSquareText size={26} /><h2>Aun no tienes publicaciones</h2><p>Lo que compartas en Inicio aparecera aqui.</p><a className="button" href="#/home">Ir a Inicio</a></div>}
-      </>}
+          {user && post.socialPostId && <ProfilePostInteractions postId={post.socialPostId} />}
+          <div className="producer-post-controls">{isOwner && post.socialPostId && <button type="button" className="button ghost" onClick={async () => { if (!window.confirm('¿Eliminar esta publicación? Esta acción no se puede deshacer.')) return; const result = await deleteSocialPost(post.socialPostId!); if (result.ok) setProfilePosts(current => current.filter(item => item.socialPostId !== post.socialPostId)); else setPostsError(result.error.message); }}><Trash2 size={15} />Eliminar</button>}{!isOwner && post.socialPostId && <button type="button" className="button ghost" onClick={async () => { const details = window.prompt('Describe brevemente por qué reportas esta publicación (opcional).'); if (details === null) return; const value = window.prompt('Motivo: spam, harassment, copyright, nudity, violence u other', 'other') || 'other'; const reasons: SocialPostReportReason[] = ['spam', 'harassment', 'copyright', 'nudity', 'violence', 'other']; const reason = reasons.includes(value as SocialPostReportReason) ? value as SocialPostReportReason : 'other'; const result = await reportSocialPost(post.socialPostId!, reason, details); setPostsNotice(result.ok ? 'Reporte enviado al equipo de moderación.' : 'No se pudo enviar el reporte: ' + result.error.message); }}><Flag size={15} />Reportar</button>}</div>
+        </article>) : !postsLoading ? <div className="producer-message"><MessageSquareText size={26} /><h2>{isOwner ? 'Aun no tienes publicaciones' : 'Aún no hay publicaciones públicas'}</h2>{isOwner && <><p>Las publicaciones locales se conservan en este equipo y no se transfieren automáticamente.</p><a className="button" href="#/home">Ir a Inicio</a></>}</div> : null}
+        {postsCursor && <button type="button" className="button ghost producer-posts-more" disabled={postsPageBusy} onClick={() => void loadMoreProfilePosts()}>{postsPageBusy ? 'Cargando…' : 'Cargar más publicaciones'}</button>}
     </section> :
       <section id="profile-panel-projects" role="tabpanel" aria-labelledby="profile-tab-projects">
         <div className="producer-project-toolbar"><div className="filter-chips" aria-label="Tipo de proyecto">{['all', 'Beat', 'One-shot'].map(value => <button key={value} className={type === value ? 'active' : ''} aria-pressed={type === value} onClick={() => setType(value)}>{value === 'all' ? 'Todos' : value === 'Beat' ? 'Beats' : 'One-shots'}</button>)}</div><div className="producer-layout-controls"><button aria-label="Vista cuadricula" title="Cuadricula" aria-pressed={layout === 'grid'} onClick={() => setLayout('grid')}><Grid2X2 size={18} /></button><button aria-label="Vista lista" title="Lista" aria-pressed={layout === 'list'} onClick={() => setLayout('list')}><List size={18} /></button>{showPrivate && <a href="#/studio" aria-label="Gestionar mis subidas" title="Gestionar mis subidas"><SlidersHorizontal size={18} /></a>}</div></div>
         {uploadsLoading ? <div className="producer-message" role="status">Cargando proyectos...</div> : filtered.length ? <div className={`producer-projects ${layout}`}>{filtered.map(asset => <article key={asset.id} className="producer-project">
-          <button className="producer-project-art" onClick={() => setSelected(asset)} aria-label={`Ver proyecto ${asset.name}`}><img src={asset.cover || artwork('808')} alt="" /></button>
+          <button className="producer-project-art" onClick={() => setSelected(asset)} aria-label={`Ver proyecto ${asset.name}`}><img src={asset.cover || artwork('808')} alt="" loading="lazy" decoding="async" /></button>
           <div className="producer-project-copy"><span className="eyebrow">{creatorType(asset.type)}</span><h2><button onClick={() => setSelected(asset)}>{asset.name}</button></h2><p>{asset.tags.map(tag => `#${tag.label}`).join(' ')}</p>{showPrivate && <span className={`publication-pill ${asset.publicationStatus}`}>{uploadStatusLabels[asset.publicationStatus]}</span>}</div>
           {showPrivate && <button className="producer-project-play" aria-label={`Escuchar ${asset.name}`} title={asset.previewUrl ? 'Escuchar' : 'Audio no disponible'} disabled={!asset.previewUrl} onClick={() => onPlay(asset)}><Play size={18} /></button>}
         </article>)}</div> : <div className="producer-message"><Music2 size={28} /><h2>{showPrivate ? 'Tu siguiente proyecto empieza aqui' : 'Sin proyectos publicados'}</h2>{showPrivate && <a className="button" href="#/upload"><Upload size={16} />Subir audio</a>}</div>}

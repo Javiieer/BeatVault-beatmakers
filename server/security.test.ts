@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { AuditLog, clientAddress, csrfMatches, RateLimiter } from './security'
+import { AuditLog, clientAddress, ConcurrencyLimiter, csrfMatches, RateLimiter } from './security'
 describe('security primitives', () => {
   it('limits requests and can be cleared', () => { const limiter = new RateLimiter(1, 60000); expect(limiter.allow('x')).toBe(true); expect(limiter.allow('x')).toBe(false); limiter.clear(); expect(limiter.allow('x')).toBe(true) })
+  it('bounds concurrent work per account and releases capacity once', () => { const limiter = new ConcurrencyLimiter(2); const first = limiter.acquire('owner'); const second = limiter.acquire('owner'); expect(first).toBeTypeOf('function'); expect(second).toBeTypeOf('function'); expect(limiter.acquire('owner')).toBeUndefined(); expect(limiter.acquire('other')).toBeTypeOf('function'); first?.(); first?.(); expect(limiter.acquire('owner')).toBeTypeOf('function'); second?.() })
   it('uses proxy client IP only when trusted and valid', () => {
     const request = { headers: { 'x-beatvault-client-ip': '203.0.113.7' }, socket: { remoteAddress: '172.20.0.5' } } as unknown as Parameters<typeof clientAddress>[0]
     expect(clientAddress(request, false)).toBe('172.20.0.5')

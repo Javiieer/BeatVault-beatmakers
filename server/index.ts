@@ -1,10 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { AuthService, csrfCookie, sessionCookie, sessionMaxAgeSeconds } from './auth'
-import { AuditLog, clientAddress, RateLimiter } from './security'
+import { AuditLog, clientAddress, ConcurrencyLimiter, RateLimiter } from './security'
 import { config, isAllowedOrigin } from './config'
 import { createRepository } from './repository'
-import type { Friendship } from './store'
+import { StorageQuotaExceededError, type Friendship } from './store'
 import { ValidationError, validateBeatListingInput, validateCatalogId, validateCreateCatalog, validateCreateProject, validateEmail, validateProjectId, validateRegister, validateToken, validateTokenPassword, validateUpdateCatalog, validateUpdateProject } from './validation'
 import type { ProjectRecord } from '../src/domains/core/contracts'
 import { adminData } from './admin'
@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import { HttpInputError, parseByteRange, readJson, readRawBody } from './http'
 import type { CatalogEntry } from '../src/domains/catalog/types'
-import { emptyProfile } from '../src/domains/profile'
+import { emptyProfile, type CreatorProfile, type ProfileImageKind, type ProfileImageRecord } from '../src/domains/profile'
 import { validateProfile } from './profile'
 import { closeChatStreams, isChatOnline, publishChatEvent, subscribeToChat } from './chat'
 import { getEffectiveStorageLimit, getPlanCatalog, isPlanId } from './plans'
@@ -28,18 +28,39 @@ import { receiveSellerEvidence, removeSellerEvidenceFile, sellerEvidencePath } f
 import Stripe from 'stripe'
 import { StripeConnectService } from './stripe-connect'
 import { StripePaymentsService } from './stripe-payments'
+import { artworkExists, artworkPath, maxArtworkBytes, persistArtwork, persistArtworkThumbnail, removeArtwork, validateArtwork, type ArtworkRecord } from './artwork'
+import { persistProfileImage, profileImageMaxAccountBytes, profileImageMaxBytes, readProfileImage, removeProfileImage, validateProfileImageUpload } from './profile-images'
+import { socialPostView, type SocialAudience, type SocialPost, type SocialPostCursor, type SocialPostInteractionSnapshot, type SocialPostReactionResult, type SocialPostReport } from './social-posts'
+import { readSocialPostMedia, reconcileSocialPostMedia, receiveSocialPostMedia, removeSocialPostMedia, socialMediaAccountMaxBytes } from './social-post-media'
+import { isNotificationCursor, type NotificationCursor, type NotificationRecord, type NotificationSeed, type NotificationType } from './notifications'
 const chatMessageLimiter = new RateLimiter(30, 60000)
 const socialInteractionLimiter = new RateLimiter(60, 60000)
+const notificationLimiter = new RateLimiter(120, 60000)
 const previewRetryLimiter = new RateLimiter(3, 60000)
+const uploadConcurrencyLimiter = new ConcurrencyLimiter(2)
+const profileImageConcurrencyLimiter = new ConcurrencyLimiter(1)
+const socialPostLimiter = new RateLimiter(30, 60000)
+const socialPostInteractionLimiter = new RateLimiter(60, 60000)
+const socialReportLimiter = new RateLimiter(10, 60000)
+const socialMediaConcurrency = new ConcurrencyLimiter(2)
+const socialMediaAccountConcurrency = new ConcurrencyLimiter(1)
 const runtime = createRepository(); const repo = runtime.repository; export const auth = new AuthService(repo); export const audit = new AuditLog(runtime.auditStore); const limiter = new RateLimiter(config); const creatorSearchLimiter = new RateLimiter(30, 60000)
+const publishNotifications = (items: NotificationRecord[]) => { for (const item of items) publishChatEvent(item.recipientId, { type: 'notification', notificationId: item.id }) }
+const flushNotificationOutbox = async () => publishNotifications(await repo.drainNotificationOutbox())
+const notificationSeed = (type: NotificationType, resourceType: NotificationRecord['resourceType'], resourceId: string, sourceId: string): NotificationSeed => ({ id: randomUUID(), type, resourceType, resourceId, sourceId, eventKey: `${type}:${sourceId}`, createdAt: new Date().toISOString() })
 const stripeClient = config.stripe.enabled ? new Stripe(config.stripe.secretKey!) : undefined
 const stripeConnect = stripeClient ? new StripeConnectService(stripeClient, repo, config.stripe.publicUrl) : undefined
 const stripePayments = stripeClient && config.stripe.paymentsEnabled ? new StripePaymentsService(stripeClient, repo, config.stripe.publicUrl, { commissionBps: config.stripe.commissionBps, processingRateBps: config.stripe.processingRateBps!, processingFixedMinor: config.stripe.processingFixedMinor }) : undefined
-const catalogForAccount = async (entry: CatalogEntry, ownerId?: string): Promise<CatalogEntry> => {
+const catalogForAccount = async (entry: CatalogEntry, ownerId?: string, canReviewPrivate = false): Promise<CatalogEntry> => {
   const { assetId, ...publicEntry } = entry
   delete publicEntry.audio
   if (!assetId) return publicEntry
   const asset = await repo.findAsset(assetId)
+  const artwork = await repo.findCatalogArtwork(assetId)
+  if (artwork && (entry.publicationStatus === 'published' || entry.creatorId === ownerId || canReviewPrivate) && await artworkExists(artwork.storageKey)) {
+    const thumbnailAvailable = Boolean(artwork.thumbnailStorageKey && await artworkExists(artwork.thumbnailStorageKey))
+    publicEntry.artworkUrl = `/api/catalog/${encodeURIComponent(entry.contentId)}/artwork${thumbnailAvailable ? '/thumbnail' : ''}`
+  }
   const previewReady = Boolean(asset?.previewStorageKey && await stat(previewArtifactPath(config.uploadDirectory, asset.previewStorageKey)).then(info => info.isFile() && info.size > 0, () => false))
   if (entry.publicationStatus === 'published' && asset && previewReady) {
     return { ...publicEntry, previewUrl: `/api/catalog/${encodeURIComponent(entry.contentId)}/preview`, ...(entry.creatorId === ownerId ? { assetId, audio: { originalName: asset.originalName, mimeType: asset.mimeType, sizeBytes: asset.sizeBytes, state: asset.state, previewReady: true } } : {}) }
@@ -50,10 +71,50 @@ const catalogForAccount = async (entry: CatalogEntry, ownerId?: string): Promise
 const cookie = (req: IncomingMessage, name: string) => req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(`${name}=`))?.slice(name.length + 1)
 const json = (res: ServerResponse, status: number, value: unknown, id: string, origin: string | undefined, cookies: string[] = []) => { const headers: Record<string, string | string[] | number> = { 'Content-Type': 'application/json; charset=utf-8', ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}), 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, X-Request-Id, X-CSRF-Token, Idempotency-Key', 'Vary': 'Origin', 'X-Request-Id': id, 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer' }; if (cookies.length) headers['Set-Cookie'] = cookies; res.writeHead(status, headers); res.end(status === 204 ? undefined : JSON.stringify(value)) }
 const body = readJson
-const directoryProfile = (profile: NonNullable<Awaited<ReturnType<typeof repo.findProfile>>>) => ({ accountId: profile.accountId, displayName: profile.displayName, bio: profile.bio, genres: profile.genres, avatarId: profile.avatarId, coverId: profile.coverId })
+const profileImageUrl = (accountId: string, kind: ProfileImageKind, image?: ProfileImageRecord) => image ? `/api/profiles/${encodeURIComponent(accountId)}/images/${kind}/thumbnail` : undefined
+const profileForClient = (profile: CreatorProfile, packageBadges?: Array<'creator' | 'studio'>) => {
+  const { avatarImage, coverImage, ...safe } = profile
+  delete safe.avatarUrl
+  delete safe.coverUrl
+  return { ...safe, avatarUrl: profileImageUrl(profile.accountId, 'avatar', avatarImage), coverUrl: profileImageUrl(profile.accountId, 'cover', coverImage), ...(packageBadges ? { packageBadges } : {}) }
+}
+const privateFriendProfileForClient = (profile: CreatorProfile) => ({
+  accountId: profile.accountId,
+  displayName: profile.displayName,
+  bio: profile.bio,
+  location: '',
+  website: '',
+  instagram: '',
+  genres: profile.genres,
+  coverId: profile.coverId,
+  avatarId: profile.avatarId,
+  avatarUrl: profileImageUrl(profile.accountId, 'avatar', profile.avatarImage),
+  coverUrl: profileImageUrl(profile.accountId, 'cover', profile.coverImage),
+  publicProfile: false,
+})
+const directoryProfile = (profile: NonNullable<Awaited<ReturnType<typeof repo.findProfile>>>) => ({ accountId: profile.accountId, displayName: profile.displayName, bio: profile.bio, genres: profile.genres, avatarId: profile.avatarId, coverId: profile.coverId, avatarUrl: profileImageUrl(profile.accountId, 'avatar', profile.avatarImage), coverUrl: profileImageUrl(profile.accountId, 'cover', profile.coverImage) })
 const unauthorized = (res: ServerResponse, id: string, origin?: string) => json(res, 401, { ok: false, error: { code: 'UNAUTHORIZED', message: 'Autenticación requerida.' }, requestId: id }, id, origin)
 const adminOnly = (account: Awaited<ReturnType<typeof auth.accountFor>>, res: ServerResponse, id: string, origin?: string): boolean => { if (!account) { unauthorized(res, id, origin); return false }; if (account.role !== 'admin') { json(res, 403, { ok: false, error: { code: 'FORBIDDEN', message: 'Acceso no autorizado.' }, requestId: id }, id, origin); return false }; return true }
 const staffOnly = (account: Awaited<ReturnType<typeof auth.accountFor>>, res: ServerResponse, id: string, origin?: string): boolean => { if (!account) { unauthorized(res, id, origin); return false }; if (account.role !== 'admin' && account.role !== 'community_manager') { json(res, 403, { ok: false, error: { code: 'FORBIDDEN', message: 'Acceso no autorizado.' }, requestId: id }, id, origin); return false }; return true }
+const socialCursor = (value: string | null): SocialPostCursor | undefined => {
+  if (!value) return undefined
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<SocialPostCursor>
+    if (typeof parsed.createdAt !== 'string' || !Number.isFinite(Date.parse(parsed.createdAt)) || typeof parsed.id !== 'string' || !/^[a-f0-9-]{36}$/i.test(parsed.id)) throw new Error()
+    return { createdAt: parsed.createdAt, id: parsed.id }
+  } catch { throw new ValidationError('cursor', 'Cursor de publicaciones inválido.') }
+}
+const encodeSocialCursor = (cursor: SocialPostCursor) => Buffer.from(JSON.stringify(cursor)).toString('base64url')
+const notificationCursor = (value: string | null): NotificationCursor | undefined => {
+  if (!value) return undefined
+  if (value.length > 512) throw new ValidationError('cursor', 'Cursor de notificaciones inválido.')
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'))
+    if (!isNotificationCursor(parsed)) throw new Error()
+    return parsed
+  } catch { throw new ValidationError('cursor', 'Cursor de notificaciones inválido.') }
+}
+const encodeNotificationCursor = (cursor: NotificationCursor) => Buffer.from(JSON.stringify(cursor)).toString('base64url')
 const limited = (res: ServerResponse, id: string, origin?: string) => json(res, 429, { ok: false, error: { code: 'RATE_LIMITED', message: 'Demasiadas solicitudes. Inténtalo más tarde.' }, requestId: id }, id, origin)
 const sellerListingRevisionAt = (contentId: string, updatedAt: string) => audit.entries
   .filter(event => event.metadata.resource === 'marketplace-seller-evidence' && event.metadata.contentId === contentId)
@@ -146,6 +207,236 @@ export const server = createServer(async (req, res) => { const id = req.headers[
    if (req.method === 'POST' && path === '/api/auth/password-reset/confirm') { const input = validateTokenPassword(await body(req)); const changed = await auth.resetPassword(input.token, input.password); return changed ? json(res, 200, { ok: true, data: null, requestId: id }, id, requestOrigin) : json(res, 400, { ok: false, error: { code: 'INVALID_OR_EXPIRED_TOKEN', message: 'Token inválido o expirado.' }, requestId: id }, id, requestOrigin) }
    if (req.method === 'POST' && path === '/api/auth/login') { if (!limiter.allow(`login:${clientAddress(req, config.trustProxyHeaders)}`)) return limited(res, id, requestOrigin); const value = await body(req); const input = value && typeof value === 'object' ? value as Record<string, unknown> : {}; if (typeof input.email !== 'string' || typeof input.password !== 'string') throw new ValidationError('credentials', 'Credenciales inválidas.'); const result = await auth.login(input.email, input.password); if (!result) { audit.record('login_failure', id); return json(res, 401, { ok: false, error: { code: 'INVALID_CREDENTIALS', message: 'Credenciales inválidas.' }, requestId: id }, id, requestOrigin) }; audit.record('login_success', id, result.id); const secure = config.cookie.secure ? '; Secure' : ''; const attributes = `SameSite=${config.cookie.sameSite}; Path=/; Max-Age=${sessionMaxAgeSeconds}${secure}`; return json(res, 200, { ok: true, data: { id: result.id, email: result.email, role: result.role, verificationState: result.verificationState }, requestId: id }, id, requestOrigin, [`${sessionCookie}=${result.token}; HttpOnly; ${attributes}`, `${csrfCookie}=${result.csrfToken}; ${attributes}`]) }
   const session = cookie(req, sessionCookie); const account = await auth.accountFor(session)
+  const isAcceptedFriend = async (viewerId: string | undefined, authorId: string) => Boolean(viewerId && (await repo.listFriendships(viewerId)).some(item => item.status === 'accepted' && (item.requesterId === viewerId && item.recipientId === authorId || item.recipientId === viewerId && item.requesterId === authorId)))
+  const canViewProfile = async (profile: CreatorProfile, viewerId?: string) => profile.publicProfile || profile.accountId === viewerId || await isAcceptedFriend(viewerId, profile.accountId)
+  const socialCanRead = async (post: SocialPost, viewerId?: string, viewerRole?: string) => {
+    if (post.visibility === 'pending-review') return viewerId === post.authorId || viewerRole === 'admin' || viewerRole === 'community_manager'
+    if (post.visibility !== 'published') return viewerId === post.authorId || viewerRole === 'admin'
+    if (viewerId === post.authorId) return true
+    if (post.audience === 'private') return viewerId === post.authorId
+    if (post.audience === 'friends') return isAcceptedFriend(viewerId, post.authorId)
+    const author = await repo.findProfile(post.authorId)
+    return Boolean(author?.publicProfile) || isAcceptedFriend(viewerId, post.authorId)
+  }
+  const socialPostInteractions = async (postId: string, actorId: string): Promise<SocialPostInteractionSnapshot> => {
+    const [comments, reactions] = await Promise.all([repo.listSocialPostComments(postId), repo.listSocialPostReactions(postId)])
+    const visibleComments = await Promise.all(comments.map(async comment => {
+      const profile = await repo.findProfile(comment.authorId)
+      const canIdentifyAuthor = comment.authorId === actorId || Boolean(profile?.publicProfile) || await isAcceptedFriend(actorId, comment.authorId)
+      return {
+        id: comment.id,
+        authorId: canIdentifyAuthor ? comment.authorId : 'private-creator',
+        authorName: canIdentifyAuthor ? profile?.displayName || 'BeatVault creator' : 'BeatVault creator',
+        body: comment.body,
+        createdAt: comment.createdAt,
+      }
+    }))
+    return { comments: visibleComments, reactionCount: reactions.length, reactedByMe: reactions.includes(actorId) }
+  }
+  const socialPostPage = async (posts: SocialPost[], viewerId?: string, viewerRole?: string) => {
+    const visible = []
+    for (const post of posts) if (await socialCanRead(post, viewerId, viewerRole)) visible.push(socialPostView(post, await repo.findProfile(post.authorId)))
+    return visible
+  }
+  const collectSocialPage = async (options: { authorId?: string; cursor?: SocialPostCursor; limit: number; viewerId?: string; viewerRole?: string }) => {
+    const pageSize = 100
+    const scanCap = 1000
+    let scanned = 0
+    let cursor = options.cursor
+    let hasMore = false
+    const posts: ReturnType<typeof socialPostView>[] = []
+    while (scanned < scanCap && posts.length <= options.limit) {
+      const take = Math.min(pageSize, scanCap - scanned)
+      const batch = await repo.listSocialPosts({ authorId: options.authorId, cursor, limit: take })
+      if (!batch.length) break
+      for (const post of batch) {
+        if (post.visibility === 'published' && await socialCanRead(post, options.viewerId, options.viewerRole)) {
+          if (posts.length === options.limit) { hasMore = true; break }
+          posts.push(socialPostView(post, await repo.findProfile(post.authorId)))
+        }
+        cursor = { createdAt: post.createdAt, id: post.id }
+        scanned += 1
+        if (scanned >= scanCap) { hasMore = true; break }
+      }
+      if (hasMore) break
+      if (batch.length < take) break
+    }
+    return { posts: posts.slice(0, options.limit), ...(hasMore && cursor ? { nextCursor: encodeSocialCursor(cursor) } : {}) }
+  }
+  if ((path === '/api/feed' || path === '/api/posts') && req.method === 'GET') {
+    const params = new URL(req.url || '/', 'http://localhost').searchParams
+    const limit = Number(params.get('limit') || 20)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new ValidationError('limit', 'El límite debe estar entre 1 y 50.')
+    const cursor = socialCursor(params.get('cursor'))
+    const data = await collectSocialPage({ limit, cursor, viewerId: account?.id, viewerRole: account?.role })
+    return json(res, 200, { ok: true, data, requestId: id }, id, requestOrigin)
+  }
+  const profilePostsMatch = path?.match(/^\/api\/profiles\/([a-zA-Z0-9_-]{1,80})\/posts$/)
+  if (profilePostsMatch && req.method === 'GET') {
+    const authorId = profilePostsMatch[1]
+    const profile = await repo.findProfile(authorId)
+    if (!profile || !(await canViewProfile(profile, account?.id))) return json(res, 404, { ok: false, error: { code: 'PROFILE_NOT_FOUND', message: 'Perfil no disponible.' }, requestId: id }, id, requestOrigin)
+    const params = new URL(req.url || '/', 'http://localhost').searchParams
+    const limit = Number(params.get('limit') || 20)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new ValidationError('limit', 'El límite debe estar entre 1 y 50.')
+    const data = await collectSocialPage({ authorId, cursor: socialCursor(params.get('cursor')), limit, viewerId: account?.id, viewerRole: account?.role })
+    return json(res, 200, { ok: true, data, requestId: id }, id, requestOrigin)
+  }
+  if (req.method === 'POST' && path === '/api/posts') {
+    if (!account) return unauthorized(res, id, requestOrigin)
+    if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+    if (!socialPostLimiter.allow(account.id)) return limited(res, id, requestOrigin)
+    let kind: SocialPost['kind']
+    let bodyText: string
+    let audience: SocialAudience
+    let media: SocialPost['media']
+    if (req.headers['content-type']?.split(';')[0]?.toLowerCase() === 'multipart/form-data') {
+      const existingMedia = (await repo.listSocialPosts({ authorId: account.id, limit: 100000 })).reduce((sum, post) => sum + (post.media?.sizeBytes || 0), 0)
+      if (existingMedia >= socialMediaAccountMaxBytes) return json(res, 409, { ok: false, error: { code: 'SOCIAL_MEDIA_QUOTA_EXCEEDED', message: 'Alcanzaste el límite de almacenamiento social de 512 MB.' }, requestId: id }, id, requestOrigin)
+      const accountRelease = socialMediaAccountConcurrency.acquire(account.id)
+      if (!accountRelease) return json(res, 429, { ok: false, error: { code: 'SOCIAL_MEDIA_ACCOUNT_BUSY', message: 'Ya hay un archivo social procesándose para esta cuenta.' }, requestId: id }, id, requestOrigin)
+      const globalRelease = socialMediaConcurrency.acquire('global')
+      if (!globalRelease) { accountRelease(); return json(res, 429, { ok: false, error: { code: 'SOCIAL_MEDIA_BUSY', message: 'El procesamiento multimedia está ocupado.' }, requestId: id }, id, requestOrigin) }
+      let received: Awaited<ReturnType<typeof receiveSocialPostMedia>> | undefined
+      try {
+        const probeKind = req.headers['x-social-post-kind']
+        if (probeKind !== 'photo' && probeKind !== 'video') throw new HttpInputError(400, 'SOCIAL_POST_KIND_INVALID', 'Indica photo o video en X-Social-Post-Kind.')
+        kind = probeKind
+        const result = await receiveSocialPostMedia(req, account.id, kind)
+        received = result
+        media = result.media
+        bodyText = result.body
+        audience = result.audience
+      } finally { globalRelease(); accountRelease() }
+      if (!received) throw new HttpInputError(400, 'SOCIAL_MEDIA_REQUIRED', 'No se recibió el archivo social.')
+    } else {
+      const value = await body(req)
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ValidationError('body', 'Datos de publicación inválidos.')
+      const input = value as Record<string, unknown>
+      if (Object.keys(input).some(key => !['kind', 'body', 'audience'].includes(key))) throw new ValidationError('body', 'Campos de publicación no admitidos.')
+      if (input.kind !== 'status' || typeof input.body !== 'string' || typeof input.audience !== 'string') throw new ValidationError('post', 'Por ahora los estados requieren texto y audiencia válidos.')
+      kind = input.kind
+      bodyText = input.body.trim()
+      audience = input.audience as SocialAudience
+    }
+    if (kind !== 'status' && kind !== 'photo' && kind !== 'video' || !['public', 'friends', 'private'].includes(audience) || !bodyText.trim() || bodyText.trim().length > 600) {
+      if (media) await removeSocialPostMedia({ media })
+      throw new ValidationError('post', 'La publicación requiere texto de hasta 600 caracteres y una audiencia válida.')
+    }
+    const profile = await repo.findProfile(account.id) || emptyProfile(account.id)
+    const now = new Date().toISOString()
+    const post: SocialPost = { id: randomUUID(), authorId: account.id, kind, body: bodyText.trim(), audience, visibility: 'published', ...(media ? { media } : {}), createdAt: now, updatedAt: now }
+    try {
+      await repo.createSocialPost(post, socialMediaAccountMaxBytes)
+      await audit.recordAndWait('create', id, account.id, post.id, true, { resource: 'social-post', audience, visibility: post.visibility })
+    } catch (error) { await repo.deleteSocialPost(post.id, account.id); if (media) await removeSocialPostMedia({ media }); throw error }
+    return json(res, 201, { ok: true, data: socialPostView(post, profile), requestId: id }, id, requestOrigin)
+  }
+  const socialPostInteractionMatch = path?.match(/^\/api\/posts\/([a-f0-9-]{36})\/(social|comments|reaction)$/i)
+  if (socialPostInteractionMatch && (req.method === 'GET' && socialPostInteractionMatch[2] === 'social' || req.method === 'POST' && ['comments', 'reaction'].includes(socialPostInteractionMatch[2]))) {
+    if (!account) return unauthorized(res, id, requestOrigin)
+    if (!socialPostInteractionLimiter.allow(account.id)) return limited(res, id, requestOrigin)
+    const post = await repo.findSocialPost(socialPostInteractionMatch[1])
+    if (!post || post.visibility !== 'published' || !(await socialCanRead(post, account.id, account.role))) {
+      return json(res, 404, { ok: false, error: { code: 'POST_NOT_FOUND', message: 'Publicación no disponible.' }, requestId: id }, id, requestOrigin)
+    }
+    if (req.method === 'GET') {
+      const data = await socialPostInteractions(post.id, account.id)
+      return json(res, 200, { ok: true, data, requestId: id }, id, requestOrigin)
+    }
+    if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id, }, id, requestOrigin)
+    if (socialPostInteractionMatch[2] === 'comments') {
+      const input = await body(req)
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'body') || typeof (input as Record<string, unknown>).body !== 'string') throw new ValidationError('comment', 'El comentario debe ser texto de 1 a 500 caracteres.')
+      const commentBody = ((input as Record<string, string>).body).trim()
+      if (!commentBody || commentBody.length > 500) throw new ValidationError('comment', 'El comentario debe ser texto de 1 a 500 caracteres.')
+      const commentInput = { id: randomUUID(), postId: post.id, authorId: account.id, body: commentBody, createdAt: new Date().toISOString() }
+      const result = await repo.createSocialPostCommentWithNotification(commentInput, notificationSeed('social_post_comment', 'post', post.id, commentInput.id))
+      const comment = result.value
+      await audit.recordAndWait('create', id, account.id, post.id, true, { resource: 'social-post-comment', commentId: comment.id })
+      publishNotifications(result.notifications)
+      const data = await socialPostInteractions(post.id, account.id)
+      return json(res, 201, { ok: true, data, requestId: id }, id, requestOrigin)
+    }
+    const input = await body(req)
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input as Record<string, unknown>).length !== 0) throw new ValidationError('reaction', 'La reacción no admite campos adicionales.')
+    const result = await repo.toggleSocialPostReactionWithNotification(post.id, account.id, notificationSeed('social_post_reaction', 'post', post.id, `${post.id}:${account.id}`))
+    const reacted = result.value
+    await audit.recordAndWait('update', id, account.id, post.id, true, { resource: 'social-post-reaction', reacted })
+    publishNotifications(result.notifications)
+    const reactions = await repo.listSocialPostReactions(post.id)
+    const data: SocialPostReactionResult = { reacted, reactionCount: reactions.length }
+    return json(res, 200, { ok: true, data, requestId: id }, id, requestOrigin)
+  }
+  const socialMediaMatch = path?.match(/^\/api\/posts\/([a-f0-9-]{36})\/media$/i)
+  if (socialMediaMatch && (req.method === 'GET' || req.method === 'HEAD')) {
+    const post = await repo.findSocialPost(socialMediaMatch[1])
+    if (!post?.media || !(await socialCanRead(post, account?.id, account?.role))) return json(res, 404, { ok: false, error: { code: 'POST_MEDIA_NOT_FOUND', message: 'Contenido no disponible.' }, requestId: id }, id, requestOrigin)
+    const media = await readSocialPostMedia(post)
+    if (!media) return json(res, 404, { ok: false, error: { code: 'POST_MEDIA_NOT_FOUND', message: 'Contenido no disponible.' }, requestId: id }, id, requestOrigin)
+    res.writeHead(200, { 'Content-Type': media.mimeType, 'Content-Length': media.size, 'Content-Disposition': 'inline', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox" })
+    if (req.method === 'HEAD') return res.end()
+    const stream = createReadStream(media.path); stream.on('error', () => res.destroy()); res.once('close', () => stream.destroy()); return stream.pipe(res)
+  }
+  const socialPostMatch = path?.match(/^\/api\/posts\/([a-f0-9-]{36})$/i)
+  if (socialPostMatch && req.method === 'DELETE') {
+    if (!account) return unauthorized(res, id, requestOrigin)
+    if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+    const deleted = await repo.deleteSocialPost(socialPostMatch[1], account.id)
+    if (!deleted) return json(res, 404, { ok: false, error: { code: 'POST_NOT_FOUND', message: 'Publicación no disponible.' }, requestId: id }, id, requestOrigin)
+    await removeSocialPostMedia(deleted)
+    await audit.recordAndWait('delete', id, account.id, deleted.id, true, { resource: 'social-post' })
+    return json(res, 200, { ok: true, data: { id: deleted.id }, requestId: id }, id, requestOrigin)
+  }
+  const socialPostReportMatch = path?.match(/^\/api\/posts\/([a-f0-9-]{36})\/reports$/i)
+  if (socialPostReportMatch && req.method === 'POST') {
+    if (!account) return unauthorized(res, id, requestOrigin)
+    if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+    if (!socialReportLimiter.allow(account.id)) return limited(res, id, requestOrigin)
+    const post = await repo.findSocialPost(socialPostReportMatch[1])
+    if (!post || post.authorId === account.id || post.visibility !== 'published' || !(await socialCanRead(post, account.id, account.role))) return json(res, 404, { ok: false, error: { code: 'POST_NOT_FOUND', message: 'Publicación no disponible para reportar.' }, requestId: id }, id, requestOrigin)
+    const value = await body(req) as Record<string, unknown>
+    const reasons = ['spam', 'harassment', 'copyright', 'nudity', 'violence', 'other']
+    if (!value || !reasons.includes(String(value.reason)) || typeof value.details !== 'string' || value.details.trim().length > 500) throw new ValidationError('report', 'Motivo o detalle del reporte inválido.')
+    const report: SocialPostReport = { id: randomUUID(), postId: post.id, reporterId: account.id, reason: value.reason as SocialPostReport['reason'], details: value.details.trim(), status: 'open', createdAt: new Date().toISOString() }
+    const created = await repo.createSocialPostReport(report)
+    try { await audit.recordAndWait('create', id, account.id, post.id, true, { resource: 'social-post-report', reportId: created.id, reason: created.reason }) }
+    catch (error) { await repo.deleteSocialPostReport(created.id, account.id); throw error }
+    return json(res, 201, { ok: true, data: { id: created.id, status: created.status }, requestId: id }, id, requestOrigin)
+  }
+  if (path === '/api/social-moderation/posts' && req.method === 'GET') {
+    if (!staffOnly(account, res, id, requestOrigin)) return
+    const posts = await repo.listSocialPosts({ limit: 100, moderationOnly: true })
+    return json(res, 200, { ok: true, data: { posts: await socialPostPage(posts, account!.id, account!.role) }, requestId: id }, id, requestOrigin)
+  }
+  const socialModerationPostMatch = path?.match(/^\/api\/social-moderation\/posts\/([a-f0-9-]{36})$/i)
+  if (socialModerationPostMatch && req.method === 'PATCH') {
+    if (!staffOnly(account, res, id, requestOrigin)) return
+    if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+    const input = await body(req) as Record<string, unknown>
+    if (!input || !['published', 'rejected', 'removed'].includes(String(input.status)) || (input.note !== undefined && (typeof input.note !== 'string' || input.note.length > 500))) throw new ValidationError('moderation', 'Decisión de moderación inválida.')
+    const updated = await repo.reviewSocialPost(socialModerationPostMatch[1], input.status as 'published' | 'rejected' | 'removed', account!.id, typeof input.note === 'string' ? input.note.trim() : undefined)
+    if (!updated) return json(res, 404, { ok: false, error: { code: 'POST_NOT_REVIEWABLE', message: 'Publicación no disponible para moderación.' }, requestId: id }, id, requestOrigin)
+    await audit.recordAndWait('update', id, account!.id, updated.id, true, { resource: 'social-post-moderation', decision: updated.visibility, note: updated.reviewNote || '' })
+    return json(res, 200, { ok: true, data: socialPostView(updated, await repo.findProfile(updated.authorId)), requestId: id }, id, requestOrigin)
+  }
+  if (path === '/api/social-moderation/reports' && req.method === 'GET') {
+    if (!staffOnly(account, res, id, requestOrigin)) return
+    const reports = await repo.listSocialPostReports('open')
+    const data = await Promise.all(reports.map(async report => { const post = await repo.findSocialPost(report.postId); return { ...report, post: post ? socialPostView(post, await repo.findProfile(post.authorId)) : undefined } }))
+    return json(res, 200, { ok: true, data: { reports: data }, requestId: id }, id, requestOrigin)
+  }
+  const socialReportReviewMatch = path?.match(/^\/api\/social-moderation\/reports\/([a-f0-9-]{36})$/i)
+  if (socialReportReviewMatch && req.method === 'PATCH') {
+    if (!staffOnly(account, res, id, requestOrigin)) return
+    if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+    const input = await body(req) as Record<string, unknown>
+    if (!input || !['reviewed', 'dismissed'].includes(String(input.status))) throw new ValidationError('report', 'Decisión de reporte inválida.')
+    const updated = await repo.reviewSocialPostReport(socialReportReviewMatch[1], input.status as 'reviewed' | 'dismissed', account!.id)
+    if (!updated) return json(res, 404, { ok: false, error: { code: 'REPORT_NOT_OPEN', message: 'Reporte no disponible.' }, requestId: id }, id, requestOrigin)
+    await audit.recordAndWait('update', id, account!.id, updated.postId, true, { resource: 'social-post-report-review', reportId: updated.id, decision: updated.status })
+    return json(res, 200, { ok: true, data: updated, requestId: id }, id, requestOrigin)
+  }
   if (path === '/api/connect/account' && req.method === 'GET') {
     if (!account) return unauthorized(res, id, requestOrigin)
     const connected = await stripeConnect?.status(account.id)
@@ -216,6 +507,76 @@ export const server = createServer(async (req, res) => { const id = req.headers[
    if (req.method === 'GET' && path === '/api/auth/me') return account ? json(res, 200, { ok: true, data: { id: account.id, email: account.email, role: account.role, verificationState: account.verificationState, planId: account.planId || 'free' }, requestId: id }, id, requestOrigin) : unauthorized(res, id, requestOrigin)
    if (req.method === 'GET' && path === '/api/account/plan') { if (!account) return unauthorized(res, id, requestOrigin); const planId = account.planId || 'free'; const plan = getPlanCatalog(config).find(item => item.id === planId)!; return json(res, 200, { ok: true, data: { planId, status: 'local', plan, plans: getPlanCatalog(config), pricing: 'undecided', billing: 'disabled' }, requestId: id }, id, requestOrigin) }
    if (req.method === 'GET' && path === '/api/account/storage') { if (!account) return unauthorized(res, id, requestOrigin); const usedBytes = await repo.getStorageUsage(account.id); const accountLimit = await repo.getStorageQuota(account.id); const planId = account.planId || 'free'; const planLimit = getPlanCatalog(config).find(item => item.id === planId)?.storageLimitBytes; const effective = getEffectiveStorageLimit({ accountLimit, planLimit, serverLimit: config.storageQuotaBytes }); return json(res, 200, { ok: true, data: { usedBytes, limitBytes: effective.limitBytes, availableBytes: effective.limitBytes === null ? null : Math.max(0, effective.limitBytes - usedBytes), quotaSource: effective.source, planId }, requestId: id }, id, requestOrigin) }
+   if (path === '/api/staff/catalog-review' || path?.startsWith('/api/staff/catalog-review/')) {
+     if (!staffOnly(account, res, id, requestOrigin)) return
+     if (account!.role !== 'community_manager') return json(res, 403, { ok: false, error: { code: 'COMMUNITY_MANAGER_REQUIRED', message: 'Solo una cuenta Community Manager puede usar esta ruta de revisión.' }, requestId: id }, id, requestOrigin)
+     if (req.method === 'GET' && path === '/api/staff/catalog-review') {
+       const entries = (await repo.listCatalog()).filter(item => item.type === 'beat' && item.publicationStatus === 'pending-review' && item.creatorId !== account!.id)
+       const data = await Promise.all(entries.map(async entry => {
+         const asset = entry.assetId ? await repo.findAsset(entry.assetId, entry.creatorId) : undefined
+         const previewAvailable = Boolean(asset?.previewStorageKey && await stat(previewArtifactPath(config.uploadDirectory, asset.previewStorageKey)).then(info => info.isFile() && info.size > 0, () => false))
+         const artwork = entry.assetId ? await repo.findCatalogArtwork(entry.assetId, entry.creatorId) : undefined
+          const artworkAvailable = Boolean(artwork && await artworkExists(artwork.storageKey))
+          const thumbnailAvailable = Boolean(artwork?.thumbnailStorageKey && await artworkExists(artwork.thumbnailStorageKey))
+          return { contentId: entry.contentId, title: entry.title, type: entry.type, creatorId: entry.creatorId, previewAvailable, previewUrl: previewAvailable ? `/api/staff/catalog-review/${encodeURIComponent(entry.contentId)}/preview` : undefined, artworkUrl: artworkAvailable ? `/api/staff/catalog-review/${encodeURIComponent(entry.contentId)}/artwork${thumbnailAvailable ? '/thumbnail' : ''}` : undefined }
+       }))
+       return json(res, 200, { ok: true, data, requestId: id }, id, requestOrigin)
+     }
+     const previewMatch = path?.match(/^\/api\/staff\/catalog-review\/([a-zA-Z0-9_-]{1,80})\/preview$/)
+     if ((req.method === 'GET' || req.method === 'HEAD') && previewMatch) {
+       const entry = (await repo.listCatalog()).find(item => item.contentId === previewMatch[1] && item.type === 'beat' && item.publicationStatus === 'pending-review')
+       const asset = entry?.assetId ? await repo.findAsset(entry.assetId, entry.creatorId) : undefined
+       if (!entry || !asset?.previewStorageKey || asset.state !== 'available') return json(res, 404, { ok: false, error: { code: 'PREVIEW_NOT_FOUND', message: 'El preview de revisión no está disponible.' }, requestId: id }, id, requestOrigin)
+       const previewPath = previewArtifactPath(config.uploadDirectory, asset.previewStorageKey)
+       let info
+       try { info = await stat(previewPath); if (!info.isFile() || info.size <= 0) throw new Error('Preview artifact unavailable') }
+       catch { return json(res, 404, { ok: false, error: { code: 'PREVIEW_NOT_FOUND', message: 'El preview de revisión no está disponible.' }, requestId: id }, id, requestOrigin) }
+       const range = req.headers.range ? parseByteRange(req.headers.range, info.size) : undefined
+       if (req.headers.range && !range) { res.setHeader('Content-Range', `bytes */${info.size}`); return json(res, 416, { ok: false, error: { code: 'INVALID_RANGE', message: 'Rango inválido.' }, requestId: id }, id, requestOrigin) }
+       const start = range?.start ?? 0; const end = range?.end ?? info.size - 1
+       res.writeHead(range ? 206 : 200, { 'Content-Type': 'audio/mp4', 'Content-Length': Math.max(0, end - start + 1), 'Accept-Ranges': 'bytes', 'Content-Disposition': 'inline', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', ...(range ? { 'Content-Range': `bytes ${start}-${end}/${info.size}` } : {}), ...(requestOrigin ? { 'Access-Control-Allow-Origin': requestOrigin, 'Access-Control-Allow-Credentials': 'true' } : {}) })
+       if (req.method === 'HEAD') return res.end()
+       const stream = createReadStream(previewPath, { start, end })
+       stream.on('error', () => res.destroy()); res.once('close', () => stream.destroy()); return stream.pipe(res)
+     }
+      const artworkMatch = path?.match(/^\/api\/staff\/catalog-review\/([a-zA-Z0-9_-]{1,80})\/artwork(\/thumbnail)?$/)
+     if ((req.method === 'GET' || req.method === 'HEAD') && artworkMatch) {
+       const entry = (await repo.listCatalog()).find(item => item.contentId === artworkMatch[1] && item.type === 'beat' && item.publicationStatus === 'pending-review' && item.creatorId !== account!.id)
+       const artwork = entry?.assetId ? await repo.findCatalogArtwork(entry.assetId, entry.creatorId) : undefined
+       if (!entry || !artwork) return json(res, 404, { ok: false, error: { code: 'ARTWORK_NOT_FOUND', message: 'Artwork no disponible para esta revisión.' }, requestId: id }, id, requestOrigin)
+        const useThumbnail = artworkMatch[2] === '/thumbnail' && Boolean(artwork.thumbnailStorageKey)
+        const storageKey = useThumbnail ? artwork.thumbnailStorageKey! : artwork.storageKey
+        const expectedSize = useThumbnail ? artwork.thumbnailSizeBytes : artwork.sizeBytes
+        const filePath = artworkPath(config.uploadDirectory, storageKey)
+       let info
+        try { info = await stat(filePath); if (!info.isFile() || info.size !== expectedSize) throw new Error('Artwork unavailable') }
+       catch { return json(res, 404, { ok: false, error: { code: 'ARTWORK_NOT_FOUND', message: 'Artwork no disponible para esta revisión.' }, requestId: id }, id, requestOrigin) }
+        res.writeHead(200, { 'Content-Type': useThumbnail ? 'image/webp' : artwork.mimeType, 'Content-Length': info.size, 'Content-Disposition': 'inline', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', ...(requestOrigin ? { 'Access-Control-Allow-Origin': requestOrigin, 'Access-Control-Allow-Credentials': 'true' } : {}) })
+       if (req.method === 'HEAD') return res.end()
+       const stream = createReadStream(filePath); stream.on('error', () => res.destroy()); res.once('close', () => stream.destroy()); return stream.pipe(res)
+     }
+     const decisionMatch = path?.match(/^\/api\/staff\/catalog-review\/([a-zA-Z0-9_-]{1,80})$/)
+     if (req.method === 'POST' && decisionMatch) {
+       if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+       const payload = await body(req) as Record<string, unknown>
+       const decision = payload?.decision
+       const note = typeof payload?.note === 'string' ? payload.note.trim() : ''
+       if ((decision !== 'approve' && decision !== 'reject') || note.length < 8 || note.length > 160) throw new ValidationError('decision', 'Elige aprobar o rechazar y escribe una nota de 8 a 160 caracteres.')
+       const entry = (await repo.listCatalog()).find(item => item.contentId === decisionMatch[1] && item.type === 'beat' && item.publicationStatus === 'pending-review')
+       if (!entry) return json(res, 409, { ok: false, error: { code: 'REVIEW_NOT_PENDING', message: 'El Beat no está pendiente de revisión.' }, requestId: id }, id, requestOrigin)
+       if (entry.creatorId === account!.id) return json(res, 403, { ok: false, error: { code: 'SELF_REVIEW_FORBIDDEN', message: 'No puedes revisar tu propia subida.' }, requestId: id }, id, requestOrigin)
+       if (decision === 'approve') {
+         const audio = entry.assetId ? await repo.findAsset(entry.assetId, entry.creatorId) : undefined
+         const ready = audio?.previewStorageKey && await stat(previewArtifactPath(config.uploadDirectory, audio.previewStorageKey)).then(info => info.isFile() && info.size > 0, () => false)
+         if (!ready) return json(res, 409, { ok: false, error: { code: 'PROCESSED_PREVIEW_REQUIRED', message: 'No se puede aprobar sin un preview procesado disponible.' }, requestId: id }, id, requestOrigin)
+       }
+       const updated = await repo.reviewCatalog(entry.contentId, decision === 'approve' ? 'published' : 'rejected', note)
+       if (!updated) return json(res, 409, { ok: false, error: { code: 'REVIEW_NOT_PENDING', message: 'El Beat ya fue revisado o no está pendiente.' }, requestId: id }, id, requestOrigin)
+       await audit.recordAndWait('catalog_community_decision', id, account!.id, entry.contentId, true, { resource: 'catalog-review', decision, reason: note })
+       return json(res, 200, { ok: true, data: updated, requestId: id }, id, requestOrigin)
+     }
+     return json(res, 405, { ok: false, error: { code: 'METHOD_NOT_ALLOWED', message: 'Método no permitido.' }, requestId: id }, id, requestOrigin)
+   }
    if (path === '/api/staff/marketplace-review' || path?.startsWith('/api/staff/marketplace-review/')) {
      if (!staffOnly(account, res, id, requestOrigin)) return
      if (req.method === 'GET' && path === '/api/staff/marketplace-review') {
@@ -256,7 +617,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
        const evidence = await repo.listSellerEvidence(listing.contentId, listing.ownerId)
        const listingWithEvidence = { ...listing, rights: { ...listing.rights, sampleProofAvailable: listing.rights.sampleDisclosure === 'licensed' && evidence.length > 0 } }
        if (decision === 'recommend' && !isBeatListingReady(listingWithEvidence)) return json(res, 409, { ok: false, error: { code: 'LISTING_INCOMPLETE', message: 'La ficha no cumple los requisitos mínimos para recomendarla a revisión final.' }, requestId: id }, id, requestOrigin)
-       audit.record('marketplace_review_recommendation', id, account!.id, listing.contentId, true, { resource: 'marketplace-beat-review', decision, note })
+       await audit.recordAndWait('marketplace_review_recommendation', id, account!.id, listing.contentId, true, { resource: 'marketplace-beat-review', decision, note })
        return json(res, 200, { ok: true, data: { contentId: listing.contentId, decision, note, reviewerId: account!.id, createdAt: new Date().toISOString() }, requestId: id }, id, requestOrigin)
      }
      return json(res, 405, { ok: false, error: { code: 'METHOD_NOT_ALLOWED', message: 'Método no permitido.' }, requestId: id }, id, requestOrigin)
@@ -313,7 +674,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
           if (!freshRecommendation) return json(res, 409, { ok: false, error: { code: 'COMMUNITY_RECOMMENDATION_REQUIRED', message: 'Se requiere una recomendación vigente del equipo Community Manager antes de aprobar.' }, requestId: id }, id, requestOrigin)
         }
         const createdAt = new Date().toISOString()
-        audit.record('marketplace_admin_decision', id, account!.id, contentId, true, { resource: 'marketplace-beat-listing', decision: finalDecision, note })
+        await audit.recordAndWait('marketplace_admin_decision', id, account!.id, contentId, true, { resource: 'marketplace-beat-listing', decision: finalDecision, note })
         return json(res, 200, { ok: true, data: { contentId, decision: finalDecision, note, reviewerId: account!.id, createdAt }, requestId: id }, id, requestOrigin)
       }
       if (path === '/api/admin/promotions' && req.method === 'POST') {
@@ -361,8 +722,10 @@ export const server = createServer(async (req, res) => { const id = req.headers[
         const reason = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).reason : undefined
         if (!match || (decision !== 'approve' && decision !== 'reject') || (decision === 'reject' && (typeof reason !== 'string' || !reason.trim() || reason.length > 160))) throw new ValidationError('decision', 'Selecciona una decisión y agrega un motivo de rechazo de hasta 160 caracteres.')
         const note = decision === 'reject' && typeof reason === 'string' ? reason.trim() : undefined
+        const pending = (await repo.listCatalog()).find(item => item.contentId === match[1] && item.publicationStatus === 'pending-review')
+        if (pending?.creatorId === account!.id) return json(res, 403, { ok: false, error: { code: 'SELF_REVIEW_FORBIDDEN', message: 'No puedes aprobar tu propia subida.' }, requestId: id }, id, requestOrigin)
         if (decision === 'approve') {
-          const pending = (await repo.listCatalog()).find(item => item.contentId === match[1])
+          if (pending?.type === 'beat' && !pending.assetId) return json(res, 409, { ok: false, error: { code: 'PROCESSED_PREVIEW_REQUIRED', message: 'No se puede aprobar un Beat sin audio procesado.' }, requestId: id }, id, requestOrigin)
           if (pending?.assetId) {
             const audio = await repo.findAsset(pending.assetId, pending.creatorId)
             const ready = audio?.previewStorageKey && await stat(previewArtifactPath(config.uploadDirectory, audio.previewStorageKey)).then(info => info.isFile() && info.size > 0, () => false)
@@ -371,7 +734,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
         }
         const updated = await repo.reviewCatalog(match[1], decision === 'approve' ? 'published' : 'rejected', note)
         if (!updated) return json(res, 409, { ok: false, error: { code: 'REVIEW_NOT_PENDING', message: 'La subida ya fue revisada o no existe.' }, requestId: id }, id, requestOrigin)
-        audit.record('update', id, account!.id, updated.contentId, true, { resource: 'catalog-review', decision, reason: typeof reason === 'string' ? reason.trim() : '' })
+        await audit.recordAndWait(updated.type === 'beat' ? 'catalog_admin_decision' : 'update', id, account!.id, updated.contentId, true, { resource: 'catalog-review', decision, reason: typeof reason === 'string' ? reason.trim() : '' })
         return json(res, 200, { ok: true, data: updated, requestId: id }, id, requestOrigin)
       }
       const planAssignmentMatch = path?.match(/^\/api\/admin\/accounts\/([a-zA-Z0-9_-]{1,100})\/plan$/)
@@ -403,7 +766,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
         const [accounts, usage, quotas] = await Promise.all([repo.listAccounts(), repo.listStorageUsage(), repo.listStorageQuotas()])
         const usageByAccount = new Map(usage.map(({ ownerId, ...metrics }) => [ownerId, metrics]))
         const quotaByAccount = new Map(quotas.map(item => [item.ownerId, item.limitBytes]))
-        const storage = accounts.map(item => ({ id: item.id, email: item.email, role: item.role, ...(usageByAccount.get(item.id) ?? { usedBytes: 0, originalCount: 0, previewBytes: 0, previewCount: 0, storedBytes: 0 }), customQuotaBytes: quotaByAccount.get(item.id) ?? null }))
+        const storage = accounts.map(item => ({ id: item.id, email: item.email, role: item.role, ...(usageByAccount.get(item.id) ?? { usedBytes: 0, originalCount: 0, artworkBytes: 0, artworkCount: 0, previewBytes: 0, previewCount: 0, storedBytes: 0 }), customQuotaBytes: quotaByAccount.get(item.id) ?? null }))
         storage.sort((left, right) => right.usedBytes - left.usedBytes || left.email.localeCompare(right.email))
         return json(res, 200, { ok: true, data: storage, requestId: id }, id, requestOrigin)
       }
@@ -411,7 +774,10 @@ export const server = createServer(async (req, res) => { const id = req.headers[
       if (path === '/api/admin/overview') return json(res, 200, { ok: true, data: data.overview, requestId: id }, id, requestOrigin)
       if (path === '/api/admin/accounts') return json(res, 200, { ok: true, data: data.accounts, requestId: id }, id, requestOrigin)
       if (path === '/api/admin/audit') { const query = new URL(req.url || '/', 'http://localhost').searchParams; const limit = Math.min(Number(query.get('limit') || 100), 500); const page = Math.max(Number(query.get('page') || 1), 1); const events = data.audit.slice().reverse(); return json(res, 200, { ok: true, data: events.slice((page - 1) * limit, page * limit), pagination: { page, limit, total: events.length }, requestId: id }, id, requestOrigin) }
-      if (path === '/api/admin/catalog-review') return json(res, 200, { ok: true, data: data.catalog.filter(entry => entry.publicationStatus === 'pending-review'), requestId: id }, id, requestOrigin)
+      if (path === '/api/admin/catalog-review') {
+        const pending = data.catalog.filter(entry => entry.publicationStatus === 'pending-review')
+        return json(res, 200, { ok: true, data: pending, requestId: id }, id, requestOrigin)
+      }
       return json(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'Ruta no encontrada.' }, requestId: id }, id, requestOrigin)
     }
    const sellerEvidenceMatch = path?.match(/^\/api\/seller\/beat-listings\/([a-f0-9-]{36})\/evidence(?:\/([a-f0-9-]{36}))?$/i)
@@ -432,7 +798,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
        if ((await repo.listSellerEvidence(contentId, account.id)).length >= sellerEvidenceMaxFiles) return json(res, 409, { ok: false, error: { code: 'EVIDENCE_LIMIT', message: 'Se permiten hasta tres documentos por beat.' }, requestId: id }, id, requestOrigin)
        const evidence = await receiveSellerEvidence(req, contentId, account.id)
        try { await repo.saveSellerEvidence(evidence) } catch (error) { await removeSellerEvidenceFile(evidence); throw error }
-       audit.record('create', id, account.id, evidence.id, true, { resource: 'marketplace-seller-evidence', contentId })
+       await audit.recordAndWait('create', id, account.id, evidence.id, true, { resource: 'marketplace-seller-evidence', contentId })
        return json(res, 201, { ok: true, data: sellerEvidenceView(evidence), requestId: id }, id, requestOrigin)
      }
      if (req.method === 'DELETE' && sellerEvidenceMatch[2]) {
@@ -441,7 +807,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
        if (!evidence || evidence.contentId !== contentId || evidence.ownerId !== account.id) return json(res, 404, { ok: false, error: { code: 'EVIDENCE_NOT_FOUND', message: 'El documento no existe.' }, requestId: id }, id, requestOrigin)
        await repo.deleteSellerEvidence(evidence.id, account.id)
        await removeSellerEvidenceFile(evidence)
-       audit.record('delete', id, account.id, evidence.id, true, { resource: 'marketplace-seller-evidence', contentId })
+       await audit.recordAndWait('delete', id, account.id, evidence.id, true, { resource: 'marketplace-seller-evidence', contentId })
        return json(res, 200, { ok: true, data: null, requestId: id }, id, requestOrigin)
      }
      return json(res, 405, { ok: false, error: { code: 'METHOD_NOT_ALLOWED', message: 'Método no permitido.' }, requestId: id }, id, requestOrigin)
@@ -583,22 +949,86 @@ export const server = createServer(async (req, res) => { const id = req.headers[
      }
      return json(res, 404, { ok: false, error: { code: 'CHAT_ROUTE_NOT_FOUND', message: 'Ruta de chat no encontrada.' }, requestId: id }, id, requestOrigin)
    }
+   const profileImageUploadMatch = path?.match(/^\/api\/profile\/images\/(avatar|cover)$/)
+   if (profileImageUploadMatch && req.method === 'POST') {
+     if (!account) return unauthorized(res, id, requestOrigin)
+     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+     if (!limiter.allow(`profile-image:${account.id}`)) return limited(res, id, requestOrigin)
+     const release = profileImageConcurrencyLimiter.acquire(account.id)
+     if (!release) return json(res, 429, { ok: false, error: { code: 'PROFILE_IMAGE_BUSY', message: 'Ya se esta procesando una imagen de perfil.' }, requestId: id }, id, requestOrigin)
+     const kind = profileImageUploadMatch[1] as ProfileImageKind
+     try {
+       if (Number(req.headers['content-length']) > profileImageMaxBytes) return json(res, 413, { ok: false, error: { code: 'PROFILE_IMAGE_TOO_LARGE', message: 'La imagen debe pesar como maximo 8 MB.' }, requestId: id }, id, requestOrigin)
+       const bytes = await readRawBody(req, profileImageMaxBytes)
+       const mimeType = req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase()
+       validateProfileImageUpload(bytes, mimeType, kind)
+       const current = await repo.findProfile(account.id) || emptyProfile(account.id)
+       const previous = kind === 'avatar' ? current.avatarImage : current.coverImage
+       const other = kind === 'avatar' ? current.coverImage : current.avatarImage
+       const usedProfileBytes = (other?.sizeBytes ?? 0) + (other?.thumbnailSizeBytes ?? 0)
+       if (usedProfileBytes + bytes.length > profileImageMaxAccountBytes) return json(res, 409, { ok: false, error: { code: 'PROFILE_IMAGE_STORAGE_LIMIT', message: 'Avatar y portada no pueden superar 15 MB en total.' }, requestId: id }, id, requestOrigin)
+       let image: ProfileImageRecord
+       try { image = await persistProfileImage(account.id, kind, bytes, mimeType) }
+       catch (error) {
+         if (error instanceof Error && error.message.startsWith('PROFILE_IMAGE_PROCESS_')) return json(res, 422, { ok: false, error: { code: 'PROFILE_IMAGE_DECODE_FAILED', message: 'No se pudo decodificar por completo la imagen. Prueba con otro archivo JPG o PNG.' }, requestId: id }, id, requestOrigin)
+         throw error
+       }
+       if (usedProfileBytes + image.sizeBytes + image.thumbnailSizeBytes > profileImageMaxAccountBytes) {
+         await removeProfileImage(image, account.id, kind)
+         return json(res, 409, { ok: false, error: { code: 'PROFILE_IMAGE_STORAGE_LIMIT', message: 'Avatar y portada no pueden superar 15 MB en total.' }, requestId: id }, id, requestOrigin)
+       }
+       let updated: CreatorProfile
+       try {
+         updated = await repo.saveProfile({ ...current, ...(kind === 'avatar' ? { avatarId: 'custom', avatarImage: image } : { coverId: 'custom', coverImage: image }) })
+       } catch (error) {
+         await removeProfileImage(image, account.id, kind)
+         throw error
+       }
+       await removeProfileImage(previous, account.id, kind)
+       const packageBadges = (account.purchasedPlanIds || []).filter((planId): planId is 'creator' | 'studio' => planId !== 'free')
+       await audit.recordAndWait('update', id, account.id, account.id, true, { resource: `profile-${kind}`, sizeBytes: image.sizeBytes, thumbnailSizeBytes: image.thumbnailSizeBytes, mimeType: image.mimeType })
+       return json(res, 200, { ok: true, data: profileForClient(updated, packageBadges), requestId: id }, id, requestOrigin)
+     } finally { release() }
+   }
+   const profileImageReadMatch = path?.match(/^\/api\/profiles\/([a-zA-Z0-9_-]{1,80})\/images\/(avatar|cover)(\/thumbnail)?$/)
+   if (profileImageReadMatch && (req.method === 'GET' || req.method === 'HEAD')) {
+     const profile = await repo.findProfile(profileImageReadMatch[1])
+     const isOwner = profile?.accountId === account?.id
+     const isFriend = profile && !profile.publicProfile && !isOwner && await isAcceptedFriend(account?.id, profile.accountId)
+     if (!profile || (!profile.publicProfile && !isOwner && !isFriend) || (!profile.publicProfile && isFriend && !profileImageReadMatch[3])) return json(res, 404, { ok: false, error: { code: 'PROFILE_NOT_FOUND', message: 'Perfil no disponible.' }, requestId: id }, id, requestOrigin)
+     const kind = profileImageReadMatch[2] as ProfileImageKind
+     const image = kind === 'avatar' ? profile.avatarImage : profile.coverImage
+     const result = image ? await readProfileImage(image, Boolean(profileImageReadMatch[3]), profile.accountId, kind) : undefined
+     if (!result) return json(res, 404, { ok: false, error: { code: 'PROFILE_IMAGE_NOT_FOUND', message: 'La imagen no esta disponible.' }, requestId: id }, id, requestOrigin)
+     res.writeHead(200, { 'Content-Type': result.mimeType, 'Content-Length': result.bytes.length, 'Content-Disposition': 'inline', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Cross-Origin-Resource-Policy': 'same-site', ...(requestOrigin ? { 'Access-Control-Allow-Origin': requestOrigin, 'Access-Control-Allow-Credentials': 'true' } : {}) })
+     return req.method === 'HEAD' ? res.end() : res.end(result.bytes)
+   }
    if (path === '/api/profile' && (req.method === 'GET' || req.method === 'PUT')) {
      if (!account) return unauthorized(res, id, requestOrigin)
-     const profile = req.method === 'PUT'
-       ? await repo.saveProfile({ ...validateProfile(await body(req)), accountId: account.id })
-       : await repo.findProfile(account.id) || emptyProfile(account.id)
+     let profile: CreatorProfile
+     if (req.method === 'PUT') {
+       const current = await repo.findProfile(account.id) || emptyProfile(account.id)
+       const input = validateProfile(await body(req))
+       if ((input.avatarId === 'custom' && !current.avatarImage) || (input.coverId === 'custom' && !current.coverImage)) throw new ValidationError('image', 'La imagen personalizada ya no esta disponible. Vuelve a subirla o elige un preset.')
+       profile = await repo.saveProfile({ ...input, accountId: account.id,
+         ...(input.avatarId === 'custom' && current.avatarImage ? { avatarImage: current.avatarImage } : {}),
+         ...(input.coverId === 'custom' && current.coverImage ? { coverImage: current.coverImage } : {}),
+       })
+       if (input.avatarId !== 'custom') await removeProfileImage(current.avatarImage, account.id, 'avatar')
+       if (input.coverId !== 'custom') await removeProfileImage(current.coverImage, account.id, 'cover')
+     } else profile = await repo.findProfile(account.id) || emptyProfile(account.id)
      const packageBadges = (account.purchasedPlanIds || []).filter((planId): planId is 'creator' | 'studio' => planId !== 'free')
      if (req.method === 'PUT') audit.record('update', id, account.id, account.id, true, { resource: 'creator-profile' })
-     return json(res, 200, { ok: true, data: { ...profile, packageBadges }, requestId: id }, id, requestOrigin)
+     return json(res, 200, { ok: true, data: profileForClient(profile, packageBadges), requestId: id }, id, requestOrigin)
    }
    const profileMatch = path?.match(/^\/api\/profiles\/([a-zA-Z0-9_-]{1,80})$/)
    if (profileMatch && req.method === 'GET') {
      const profile = await repo.findProfile(profileMatch[1])
-     if (!profile || (!profile.publicProfile && profile.accountId !== account?.id)) return json(res, 404, { ok: false, error: { code: 'PROFILE_NOT_FOUND', message: 'Perfil no disponible.' } }, id, requestOrigin)
+     if (!profile || !(await canViewProfile(profile, account?.id))) return json(res, 404, { ok: false, error: { code: 'PROFILE_NOT_FOUND', message: 'Perfil no disponible.' } }, id, requestOrigin)
+     if (!profile.publicProfile && profile.accountId !== account?.id) return json(res, 200, { ok: true, data: privateFriendProfileForClient(profile), requestId: id }, id, requestOrigin)
      const profileAccount = await repo.findAccountById(profile.accountId)
      const packageBadges = (profileAccount?.purchasedPlanIds || []).filter((planId): planId is 'creator' | 'studio' => planId !== 'free')
-     return json(res, 200, { ok: true, data: { ...profile, packageBadges }, requestId: id }, id, requestOrigin)
+     return json(res, 200, { ok: true, data: profileForClient(profile, packageBadges), requestId: id }, id, requestOrigin)
    }
    if (path === '/api/creators' && req.method === 'GET') {
      if (!account) return unauthorized(res, id, requestOrigin)
@@ -608,12 +1038,47 @@ export const server = createServer(async (req, res) => { const id = req.headers[
      const profiles = await repo.listPublicProfiles(query, account.id)
      return json(res, 200, { ok: true, data: profiles.map(directoryProfile), requestId: id }, id, requestOrigin)
    }
+   if (path === '/api/notifications' && req.method === 'GET') {
+     if (!account) return unauthorized(res, id, requestOrigin)
+     if (!notificationLimiter.allow(account.id)) return limited(res, id, requestOrigin)
+     const params = new URL(req.url || '/', 'http://localhost').searchParams
+     await flushNotificationOutbox().catch(() => undefined)
+     const rawLimit = params.get('limit')
+     const requestedLimit = rawLimit === null ? 25 : Number(rawLimit)
+     if (!Number.isInteger(requestedLimit) || requestedLimit < 1) throw new ValidationError('limit', 'El límite debe ser un entero positivo.')
+     const page = await repo.listNotifications(account.id, { limit: Math.min(50, requestedLimit), cursor: notificationCursor(params.get('cursor')) })
+     const items = await Promise.all(page.items.map(async item => {
+       const actorProfile = await repo.findProfile(item.actorId)
+       const actorVisible = Boolean(actorProfile && await canViewProfile(actorProfile, account.id))
+       return {
+         id: item.id,
+         type: item.type,
+         actor: { id: actorVisible ? item.actorId : 'private-creator', displayName: actorVisible ? actorProfile!.displayName : 'BeatVault creator' },
+         resource: { type: item.resourceType, id: item.resourceId },
+         createdAt: item.createdAt,
+         readAt: item.readAt,
+       }
+     }))
+     return json(res, 200, { ok: true, data: { items, unreadCount: page.unreadCount, ...(page.nextCursor ? { nextCursor: encodeNotificationCursor(page.nextCursor) } : {}) }, requestId: id }, id, requestOrigin)
+   }
+   const markNotificationMatch = path?.match(/^\/api\/notifications\/([a-f0-9-]{36})\/read$/i)
+   if (markNotificationMatch && req.method === 'POST') {
+     if (!account) return unauthorized(res, id, requestOrigin)
+     if (!notificationLimiter.allow(account.id)) return limited(res, id, requestOrigin)
+     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+     const input = await body(req)
+     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 0) throw new ValidationError('body', 'La solicitud no admite campos adicionales.')
+     const updated = await repo.markNotificationRead(markNotificationMatch[1], account.id, new Date().toISOString())
+     if (!updated) return json(res, 404, { ok: false, error: { code: 'NOTIFICATION_NOT_FOUND', message: 'La notificación no está disponible.' }, requestId: id }, id, requestOrigin)
+     return json(res, 200, { ok: true, data: { id: updated.id, readAt: updated.readAt }, requestId: id }, id, requestOrigin)
+   }
    if (path === '/api/notifications/social' && req.method === 'GET') {
      if (!account) return unauthorized(res, id, requestOrigin)
      const activity = await repo.listSocialActivity(account.id)
      const data = await Promise.all(activity.map(async item => {
        const profile = await repo.findProfile(item.actorId)
-       return { ...item, actorName: profile?.displayName || 'Productor' }
+       const actorVisible = Boolean(profile && await canViewProfile(profile, account.id))
+       return { id: item.id, type: item.type, contentId: item.contentId, contentTitle: item.contentTitle, actorId: actorVisible ? item.actorId : 'private-creator', actorName: actorVisible ? profile!.displayName : 'BeatVault creator', body: item.body, createdAt: item.createdAt }
      }))
      return json(res, 200, { ok: true, data, requestId: id }, id, requestOrigin)
    }
@@ -677,26 +1142,34 @@ export const server = createServer(async (req, res) => { const id = req.headers[
    }
    if (path === '/api/friend-requests' && req.method === 'POST') {
      if (!account) return unauthorized(res, id, requestOrigin)
+     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
      const value = await body(req); const targetId = value && typeof value === 'object' ? (value as Record<string, unknown>).targetId : undefined
      if (typeof targetId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(targetId) || targetId === account.id) throw new ValidationError('targetId', 'Selecciona un perfil válido.')
      const target = await repo.findProfile(targetId)
      if (!target?.publicProfile) return json(res, 404, { ok: false, error: { code: 'CREATOR_NOT_FOUND', message: 'Ese perfil no está disponible para solicitudes.' }, requestId: id }, id, requestOrigin)
      const now = new Date().toISOString()
-     const request = await repo.createFriendship({ id: randomUUID(), requesterId: account.id, recipientId: targetId, status: 'pending', createdAt: now, updatedAt: now })
+     const friendshipInput = { id: randomUUID(), requesterId: account.id, recipientId: targetId, status: 'pending' as const, createdAt: now, updatedAt: now }
+     const result = await repo.createFriendshipWithNotification(friendshipInput, notificationSeed('friend_request', 'friendship', friendshipInput.id, friendshipInput.id))
+     const request = result.value
      audit.record('create', id, account.id, targetId, true, { resource: 'friend-request' })
+     publishNotifications(result.notifications)
      return json(res, 201, { ok: true, data: request, requestId: id }, id, requestOrigin)
    }
    const acceptRequestMatch = path?.match(/^\/api\/friend-requests\/([a-zA-Z0-9_-]{1,80})\/accept$/)
    if (acceptRequestMatch && req.method === 'POST') {
      if (!account) return unauthorized(res, id, requestOrigin)
-     const updated = await repo.updateFriendship(acceptRequestMatch[1], account.id, 'accepted')
+     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+     const result = await repo.acceptFriendshipWithNotification(acceptRequestMatch[1], account.id, notificationSeed('friend_request_accepted', 'friendship', acceptRequestMatch[1], acceptRequestMatch[1]))
+     const updated = result.value
      if (!updated) return json(res, 404, { ok: false, error: { code: 'REQUEST_NOT_FOUND', message: 'La solicitud ya no está disponible.' }, requestId: id }, id, requestOrigin)
      audit.record('update', id, account.id, updated.requesterId, true, { resource: 'friend-request' })
+     publishNotifications(result.notifications)
      return json(res, 200, { ok: true, data: updated, requestId: id }, id, requestOrigin)
    }
    const requestMatch = path?.match(/^\/api\/friend-requests\/([a-zA-Z0-9_-]{1,80})$/)
    if (requestMatch && req.method === 'DELETE') {
      if (!account) return unauthorized(res, id, requestOrigin)
+     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
      const deleted = await repo.deleteFriendship(requestMatch[1], account.id, 'pending')
      if (!deleted) return json(res, 404, { ok: false, error: { code: 'REQUEST_NOT_FOUND', message: 'La solicitud ya no está disponible.' }, requestId: id }, id, requestOrigin)
      audit.record('delete', id, account.id, undefined, true, { resource: 'friend-request' })
@@ -705,10 +1178,29 @@ export const server = createServer(async (req, res) => { const id = req.headers[
    const friendMatch = path?.match(/^\/api\/friends\/([a-zA-Z0-9_-]{1,80})$/)
    if (friendMatch && req.method === 'DELETE') {
      if (!account) return unauthorized(res, id, requestOrigin)
+     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
      const deleted = await repo.deleteFriendship(friendMatch[1], account.id, 'accepted')
      if (!deleted) return json(res, 404, { ok: false, error: { code: 'FRIEND_NOT_FOUND', message: 'Esa conexión ya no está disponible.' }, requestId: id }, id, requestOrigin)
      audit.record('delete', id, account.id, undefined, true, { resource: 'friendship' })
      return json(res, 200, { ok: true, data: { id: friendMatch[1] }, requestId: id }, id, requestOrigin)
+   }
+    const artworkViewMatch = path?.match(/^\/api\/catalog\/([a-zA-Z0-9_-]{1,80})\/artwork(\/thumbnail)?$/)
+   if (artworkViewMatch && (req.method === 'GET' || req.method === 'HEAD')) {
+     const entry = (await repo.listCatalog()).find(item => item.contentId === artworkViewMatch[1])
+     const canViewPrivate = Boolean(account && (entry?.creatorId === account.id || account.role === 'admin'))
+     if (!entry || entry.publicationStatus !== 'published' && !canViewPrivate || !entry.assetId) return json(res, 404, { ok: false, error: { code: 'ARTWORK_NOT_FOUND', message: 'Artwork no disponible.' }, requestId: id }, id, requestOrigin)
+     const artwork = await repo.findCatalogArtwork(entry.assetId)
+     if (!artwork) return json(res, 404, { ok: false, error: { code: 'ARTWORK_NOT_FOUND', message: 'Artwork no disponible.' }, requestId: id }, id, requestOrigin)
+      const useThumbnail = artworkViewMatch[2] === '/thumbnail' && Boolean(artwork.thumbnailStorageKey)
+      const storageKey = useThumbnail ? artwork.thumbnailStorageKey! : artwork.storageKey
+      const expectedSize = useThumbnail ? artwork.thumbnailSizeBytes : artwork.sizeBytes
+      const filePath = artworkPath(config.uploadDirectory, storageKey)
+     let info
+      try { info = await stat(filePath); if (!info.isFile() || info.size !== expectedSize) throw new Error('Artwork unavailable') }
+     catch { return json(res, 404, { ok: false, error: { code: 'ARTWORK_NOT_FOUND', message: 'Artwork no disponible.' }, requestId: id }, id, requestOrigin) }
+      res.writeHead(200, { 'Content-Type': useThumbnail ? 'image/webp' : artwork.mimeType, 'Content-Length': info.size, 'Content-Disposition': 'inline', 'Cache-Control': entry.publicationStatus === 'published' ? 'public, max-age=3600' : 'private, no-store', 'X-Content-Type-Options': 'nosniff', ...(requestOrigin ? { 'Access-Control-Allow-Origin': requestOrigin, 'Access-Control-Allow-Credentials': 'true' } : {}) })
+     if (req.method === 'HEAD') return res.end()
+     const stream = createReadStream(filePath); stream.on('error', () => res.destroy()); res.once('close', () => stream.destroy()); return stream.pipe(res)
    }
    const publicPreviewMatch = path?.match(/^\/api\/catalog\/([a-zA-Z0-9_-]{1,80})\/preview$/)
    if (publicPreviewMatch && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -737,7 +1229,66 @@ export const server = createServer(async (req, res) => { const id = req.headers[
      audit.record('update', id, account.id, previewRetryMatch[1], true, { resource: 'processed-preview' })
      return json(res, 200, { ok: true, data: { id: previewRetryMatch[1], previewReady: true }, requestId: id }, id, requestOrigin)
    }
-   if (path === '/api/assets/upload' && req.method === 'POST') { if (!account) return unauthorized(res, id, requestOrigin); try { const accountLimit = await repo.getStorageQuota(account.id); const planId = account.planId || 'free'; const planLimit = getPlanCatalog(config).find(item => item.id === planId)?.storageLimitBytes; const limitBytes = getEffectiveStorageLimit({ accountLimit, planLimit, serverLimit: config.storageQuotaBytes }).limitBytes ?? undefined; const result = await receiveUpload(req, account.id, repo, limitBytes); return json(res, 201, { ok: true, data: result.asset, requestId: id }, id, requestOrigin) } catch (error) { if (error instanceof Error && error.message === 'UPLOAD_LIMIT') return json(res, 413, { ok: false, error: { code: 'UPLOAD_LIMIT', message: 'El archivo o la solicitud supera el límite permitido.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'STORAGE_QUOTA_EXCEEDED' && 'usedBytes' in error && 'limitBytes' in error) return json(res, 409, { ok: false, error: { code: 'STORAGE_QUOTA_EXCEEDED', message: 'Alcanzaste el almacenamiento disponible para tu cuenta.', usedBytes: error.usedBytes, limitBytes: error.limitBytes }, requestId: id }, id, requestOrigin); throw error } }
+   if (path === '/api/assets/upload' && req.method === 'POST') {
+     if (!account) return unauthorized(res, id, requestOrigin)
+     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+     const release = uploadConcurrencyLimiter.acquire(account.id)
+     if (!release) return json(res, 429, { ok: false, error: { code: 'UPLOAD_CONCURRENCY_LIMIT', message: 'Ya hay dos cargas procesándose en tu cuenta. Espera a que termine una e inténtalo de nuevo.' }, requestId: id }, id, requestOrigin)
+     try {
+       const accountLimit = await repo.getStorageQuota(account.id)
+       const planId = account.planId || 'free'
+       const planLimit = getPlanCatalog(config).find(item => item.id === planId)?.storageLimitBytes
+       const limitBytes = getEffectiveStorageLimit({ accountLimit, planLimit, serverLimit: config.storageQuotaBytes }).limitBytes ?? undefined
+       const result = await receiveUpload(req, account.id, repo, limitBytes)
+       return json(res, 201, { ok: true, data: result.asset, requestId: id }, id, requestOrigin)
+     } catch (error) {
+       if (error instanceof Error && error.message === 'UPLOAD_LIMIT') return json(res, 413, { ok: false, error: { code: 'UPLOAD_LIMIT', message: 'El archivo o la solicitud supera el límite permitido.' }, requestId: id }, id, requestOrigin)
+       if (error instanceof Error && error.message === 'STORAGE_QUOTA_EXCEEDED' && 'usedBytes' in error && 'limitBytes' in error) return json(res, 409, { ok: false, error: { code: 'STORAGE_QUOTA_EXCEEDED', message: 'Alcanzaste el almacenamiento disponible para tu cuenta.', usedBytes: error.usedBytes, limitBytes: error.limitBytes }, requestId: id }, id, requestOrigin)
+       throw error
+     } finally { release() }
+   }
+   const artworkUploadMatch = path?.match(/^\/api\/assets\/([a-zA-Z0-9_-]{1,80})\/artwork$/)
+   if (artworkUploadMatch && req.method === 'POST') {
+     if (!account) return unauthorized(res, id, requestOrigin)
+     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+     const release = uploadConcurrencyLimiter.acquire(account.id)
+     if (!release) return json(res, 429, { ok: false, error: { code: 'UPLOAD_CONCURRENCY_LIMIT', message: 'Ya hay dos cargas procesándose en tu cuenta. Espera a que termine una e inténtalo de nuevo.' }, requestId: id }, id, requestOrigin)
+     try {
+     const asset = await repo.findAsset(artworkUploadMatch[1], account.id)
+     if (!asset || asset.state !== 'available') return json(res, 404, { ok: false, error: { code: 'ASSET_NOT_FOUND', message: 'El audio no está disponible en tu cuenta.' }, requestId: id }, id, requestOrigin)
+     if (Number(req.headers['content-length']) > maxArtworkBytes) return json(res, 413, { ok: false, error: { code: 'ARTWORK_TOO_LARGE', message: 'El artwork no puede superar 10 MB.' }, requestId: id }, id, requestOrigin)
+     const bytes = await readRawBody(req, maxArtworkBytes)
+     const format = validateArtwork(bytes, req.headers['content-type'])
+     if (!format) return json(res, 400, { ok: false, error: { code: 'ARTWORK_INVALID', message: 'Usa JPG o PNG cuadrado, de 640 a 10 000 px por lado y hasta 10 MB.' }, requestId: id }, id, requestOrigin)
+     const accountLimit = await repo.getStorageQuota(account.id)
+     const planLimit = getPlanCatalog(config).find(item => item.id === (account.planId || 'free'))?.storageLimitBytes
+     const limitBytes = getEffectiveStorageLimit({ accountLimit, planLimit, serverLimit: config.storageQuotaBytes }).limitBytes ?? undefined
+     const previous = await repo.findCatalogArtwork(asset.id, account.id)
+     if (limitBytes !== undefined) {
+       const usedBytes = await repo.getStorageUsage(account.id)
+       const previousBytes = (previous?.sizeBytes ?? 0) + (previous?.thumbnailSizeBytes ?? 0)
+       if (usedBytes + bytes.length - previousBytes > limitBytes) return json(res, 409, { ok: false, error: { code: 'STORAGE_QUOTA_EXCEEDED', message: 'Alcanzaste el almacenamiento disponible para tu cuenta.', usedBytes, limitBytes }, requestId: id }, id, requestOrigin)
+     }
+     const stored = await persistArtwork(account.id, asset.id, bytes, format)
+     const thumbnailResult = await persistArtworkThumbnail(stored.storageKey)
+     if (!thumbnailResult.decoded) {
+       await removeArtwork(stored.storageKey)
+       return json(res, 422, { ok: false, error: { code: 'ARTWORK_DECODE_FAILED', message: 'No se pudo decodificar la imagen; no se guardó.' }, requestId: id }, id, requestOrigin)
+     }
+     const record: ArtworkRecord = { ...format, assetId: asset.id, ownerId: account.id, ...stored, ...thumbnailResult.thumbnail, updatedAt: new Date().toISOString() }
+     let saved: ArtworkRecord
+     try {
+       saved = await repo.saveCatalogArtwork(record, limitBytes)
+     } catch (error) {
+       await removeArtwork(stored.storageKey)
+       if (error instanceof StorageQuotaExceededError) return json(res, 409, { ok: false, error: { code: 'STORAGE_QUOTA_EXCEEDED', message: 'Alcanzaste el almacenamiento disponible para tu cuenta.', usedBytes: error.usedBytes, limitBytes: error.limitBytes }, requestId: id }, id, requestOrigin)
+       throw error
+     }
+     if (previous && previous.storageKey !== saved.storageKey) await removeArtwork(previous.storageKey)
+     await audit.recordAndWait('create', id, account.id, asset.id, true, { resource: 'catalog-artwork', sizeBytes: saved.sizeBytes, thumbnailSizeBytes: saved.thumbnailSizeBytes ?? 0, mimeType: saved.mimeType })
+     return json(res, 201, { ok: true, data: { assetId: saved.assetId, mimeType: saved.mimeType, sizeBytes: saved.sizeBytes, thumbnailSizeBytes: saved.thumbnailSizeBytes ?? 0, thumbnailAvailable: Boolean(saved.thumbnailStorageKey), width: saved.width, height: saved.height }, requestId: id }, id, requestOrigin)
+     } finally { release() }
+   }
    const assetMatch = path?.match(/^\/api\/assets\/([^/]+)\/(preview|download)$/)
    if (assetMatch && (req.method === 'GET' || req.method === 'HEAD')) {
      if (!account) return unauthorized(res, id, requestOrigin)
@@ -767,13 +1318,13 @@ export const server = createServer(async (req, res) => { const id = req.headers[
      res.once('close', () => stream.destroy())
      return stream.pipe(res)
    }
-   const deleteAssetMatch = path?.match(/^\/api\/assets\/([^/]+)$/); if (deleteAssetMatch && req.method === 'DELETE') { if (!account) return unauthorized(res, id, requestOrigin); const asset = await repo.findAsset(deleteAssetMatch[1], account.id); if (!asset) return json(res, 404, { ok: false, error: { code: 'ASSET_NOT_FOUND', message: 'Asset no encontrado.' }, requestId: id }, id, requestOrigin); await repo.deleteAsset(asset.id, account.id); try { await unlink(assetPath(asset)) } catch { /* metadata is already gone; never expose path */ }; if (asset.previewStorageKey) try { await unlink(previewArtifactPath(config.uploadDirectory, asset.previewStorageKey)) } catch { /* derivative may already be absent */ }; return json(res, 200, { ok: true, data: { id: asset.id }, requestId: id }, id, requestOrigin) }
+   const deleteAssetMatch = path?.match(/^\/api\/assets\/([^/]+)$/); if (deleteAssetMatch && req.method === 'DELETE') { if (!account) return unauthorized(res, id, requestOrigin); const asset = await repo.findAsset(deleteAssetMatch[1], account.id); if (!asset) return json(res, 404, { ok: false, error: { code: 'ASSET_NOT_FOUND', message: 'Asset no encontrado.' }, requestId: id }, id, requestOrigin); const artwork = await repo.findCatalogArtwork(asset.id, account.id); await repo.deleteAsset(asset.id, account.id); try { await unlink(assetPath(asset)) } catch { /* metadata is already gone; never expose path */ }; if (asset.previewStorageKey) try { await unlink(previewArtifactPath(config.uploadDirectory, asset.previewStorageKey)) } catch { /* derivative may already be absent */ }; if (artwork) await removeArtwork(artwork.storageKey); return json(res, 200, { ok: true, data: { id: asset.id }, requestId: id }, id, requestOrigin) }
   if (req.method === 'GET' && path === '/api/projects') return json(res, 200, { ok: true, data: await repo.listProjects(account?.id), requestId: id }, id, requestOrigin)
   if (req.method === 'POST' && path === '/api/projects') { const input = validateCreateProject(await body(req)); const project: ProjectRecord = { id: randomUUID(), ownerId: account!.id, title: input.title, status: 'draft', updatedAt: new Date().toISOString() }; const created = await repo.createProject(project); audit.record('create', id, account!.id); return json(res, 201, { ok: true, data: created, requestId: id }, id, requestOrigin) }
   const match = path?.match(/^\/api\/projects\/([^/]+)$/); if (match && (req.method === 'PUT' || req.method === 'DELETE')) { const projectId = validateProjectId(match[1]); if (req.method === 'PUT') { const updated = await repo.updateProject(projectId, validateUpdateProject(await body(req)), account!.id); audit.record('update', id, account!.id); return json(res, 200, { ok: true, data: updated, requestId: id }, id, requestOrigin) }; await repo.deleteProject(projectId, account!.id); audit.record('delete', id, account!.id); return json(res, 200, { ok: true, data: { id: projectId }, requestId: id }, id, requestOrigin) }
    if (req.method === 'GET' && path === '/api/catalog') {
      const visible = (await repo.listCatalog()).filter(entry => entry.publicationStatus === 'published' || entry.creatorId === account?.id || account?.role === 'admin')
-     const entries = await Promise.all(visible.map(async entry => ({ ...(await catalogForAccount(entry, account?.id)), creatorName: (await repo.findProfile(entry.creatorId))?.displayName || 'Productor' })))
+     const entries = await Promise.all(visible.map(async entry => ({ ...(await catalogForAccount(entry, account?.id, account?.role === 'admin')), creatorName: (await repo.findProfile(entry.creatorId))?.displayName || 'Productor' })))
      return json(res, 200, { ok: true, data: { entries, total: entries.length }, requestId: id }, id, requestOrigin)
    }
    if (req.method === 'GET' && path === '/api/marketplace') {
@@ -781,16 +1332,17 @@ export const server = createServer(async (req, res) => { const id = req.headers[
      const query = (params.get('q') || '').trim().toLocaleLowerCase('en')
      const type = params.get('type')
      const tag = (params.get('tag') || '').trim().toLocaleLowerCase('en')
+     const creatorId = params.get('creatorId')
      const limitText = params.get('limit') || '24'
      const limit = Number(limitText)
      const cursor = params.get('cursor')
-     if (query.length > 80 || tag.length > 48 || !Number.isInteger(limit) || limit < 1 || limit > 48 ||
+     if (query.length > 80 || tag.length > 48 || (creatorId !== null && !/^(?:[a-f0-9]{32}|[a-f0-9-]{36}|local-demo)$/i.test(creatorId)) || !Number.isInteger(limit) || limit < 1 || limit > 48 ||
        (type !== null && type !== 'beat' && type !== 'sample') ||
        (cursor !== null && !/^[0-9a-f-]{36}$/i.test(cursor))) {
        throw new ValidationError('query', 'Invalid marketplace filters.')
      }
      const candidates = (await repo.listCatalog())
-       .filter(entry => entry.publicationStatus === 'published' && ['beat', 'sample'].includes(entry.type) && (type === null || entry.type === type))
+       .filter(entry => entry.publicationStatus === 'published' && ['beat', 'sample'].includes(entry.type) && (type === null || entry.type === type) && (creatorId === null || entry.creatorId === creatorId))
        .filter(entry => !tag || entry.tagIds.some(item => item.toLocaleLowerCase('en') === tag))
      const searchable = await Promise.all(candidates.map(async entry => {
        const profile = await repo.findProfile(entry.creatorId)
@@ -823,7 +1375,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
        if (['published', 'rejected'].includes(input.publicationStatus)) return json(res, 403, { ok: false, error: { code: 'REVIEW_REQUIRED', message: 'La publicacion requiere revision.' }, requestId: id }, id, requestOrigin)
        if (input.assetId && (await repo.findAsset(input.assetId, account.id))?.state !== 'available') throw new ValidationError('assetId', 'Audio no disponible en tu cuenta.')
        const created = await repo.createCatalog({ contentId: randomUUID(), creatorId: account.id, previewIds: [], ...input })
-       audit.record('create', id, account.id)
+       await audit.recordAndWait('create', id, account.id, created.contentId, true, { resource: 'catalog-submission' })
        return json(res, 201, { ok: true, data: await catalogForAccount(created, account.id), requestId: id }, id, requestOrigin)
      }
      const catalogMatch = path.match(/^\/api\/catalog\/([^/]+)$/)
@@ -836,7 +1388,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
          if (!current) throw new Error('CATALOG_NOT_FOUND')
          if (input.assetId !== undefined && input.assetId !== current.assetId) throw new ValidationError('assetId', 'El audio de una subida no puede sustituirse.')
          const updated = await repo.updateCatalog(catalogId, input, account.id)
-         audit.record('update', id, account.id)
+         await audit.recordAndWait('update', id, account.id, updated.contentId, true, { resource: 'catalog-submission' })
          return json(res, 200, { ok: true, data: await catalogForAccount(updated, account.id), requestId: id }, id, requestOrigin)
        }
        await repo.deleteCatalog(catalogId, account.id); audit.record('delete', id, account.id)
@@ -844,6 +1396,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
      }
    }
    return json(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'Ruta no encontrada.' }, requestId: id }, id, requestOrigin)
-   } catch (error) { if (error instanceof HttpInputError) return json(res, error.status, { ok: false, error: { code: error.code, message: error.message }, requestId: id }, id, requestOrigin); if (error instanceof ValidationError) return json(res, 400, { ok: false, error: { code: 'VALIDATION_ERROR', message: error.message, field: error.field }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'EVIDENCE_TOO_LARGE') return json(res, 413, { ok: false, error: { code: error.message, message: 'Evidence files must not exceed 10 MB.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'EVIDENCE_LIMIT') return json(res, 409, { ok: false, error: { code: error.message, message: 'This beat already has the maximum number of evidence files.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && ['EVIDENCE_CONTENT_TYPE', 'EVIDENCE_FILE_REQUIRED', 'EVIDENCE_SIGNATURE', 'EVIDENCE_EMPTY', 'EVIDENCE_ABORTED', 'EVIDENCE_INVALID_MULTIPART', 'EVIDENCE_PARSE_FAILED'].includes(error.message)) return json(res, 400, { ok: false, error: { code: error.message, message: 'The evidence file is invalid or has an unsupported format.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && (error.message === 'FRIENDSHIP_EXISTS' || (path === '/api/friend-requests' && 'code' in error && error.code === '23505'))) return json(res, 409, { ok: false, error: { code: 'FRIENDSHIP_EXISTS', message: 'Ya hay una solicitud o conexión con ese creador.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && ['UPLOAD_LIMIT', 'UPLOAD_CONTENT_TYPE', 'UPLOAD_FILE_REQUIRED', 'UPLOAD_MIME', 'UPLOAD_SIGNATURE', 'UPLOAD_EMPTY', 'UPLOAD_ABORTED'].includes(error.message)) return json(res, 400, { ok: false, error: { code: error.message, message: 'Upload inválido o excede los límites configurados.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'DUPLICATE_ASSET') return json(res, 409, { ok: false, error: { code: 'DUPLICATE_ASSET', message: 'Este archivo ya existe en tu biblioteca.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'DUPLICATE') return json(res, 409, { ok: false, error: { code: 'DUPLICATE_PROJECT', message: 'Ya existe un proyecto con ese título.' }, requestId: id, }, id, requestOrigin); if (error instanceof Error && error.message === 'DUPLICATE_CATALOG') return json(res, 409, { ok: false, error: { code: 'DUPLICATE_CATALOG', message: 'Ya existe un asset con ese título y tipo.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'NOT_FOUND') return json(res, 404, { ok: false, error: { code: 'PROJECT_NOT_FOUND', message: 'Proyecto no encontrado.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'CATALOG_NOT_FOUND') return json(res, 404, { ok: false, error: { code: 'CATALOG_NOT_FOUND', message: 'Asset no encontrado.' }, requestId: id }, id, requestOrigin); return json(res, 500, { ok: false, error: { code: 'INTERNAL_ERROR', message: 'Error interno del servidor.' }, requestId: id }, id, requestOrigin) } })
-export const shutdown = () => { limiter.clear(); closeChatStreams(); server.close(); void runtime.close() }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) { void Promise.all([auth.initialize(), audit.initialize()]).then(async () => { await reconcileUploads(repo); server.listen(config.port, config.host, () => console.log(`BeatVault API listening on ${config.host}:${config.port}`)); process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown) }).catch(error => { console.error(error instanceof Error ? error.message : 'Configuración inválida'); process.exit(1) }) }
+   } catch (error) { if (error instanceof HttpInputError) return json(res, error.status, { ok: false, error: { code: error.code, message: error.message }, requestId: id }, id, requestOrigin); if (error instanceof ValidationError) return json(res, 400, { ok: false, error: { code: 'VALIDATION_ERROR', message: error.message, field: error.field }, requestId: id }, id, requestOrigin); if (error instanceof StorageQuotaExceededError && path === '/api/posts' || error instanceof Error && 'code' in error && error.code === '23514' && path === '/api/posts') return json(res, 409, { ok: false, error: { code: 'SOCIAL_MEDIA_QUOTA_EXCEEDED', message: 'Alcanzaste el límite de almacenamiento social de 512 MB.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && (error.message === 'SOCIAL_REPORT_EXISTS' || (path?.includes('/reports') && 'code' in error && error.code === '23505'))) return json(res, 409, { ok: false, error: { code: 'SOCIAL_REPORT_EXISTS', message: 'Ya reportaste esta publicación.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'EVIDENCE_TOO_LARGE') return json(res, 413, { ok: false, error: { code: error.message, message: 'Evidence files must not exceed 10 MB.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'EVIDENCE_LIMIT') return json(res, 409, { ok: false, error: { code: error.message, message: 'This beat already has the maximum number of evidence files.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && ['EVIDENCE_CONTENT_TYPE', 'EVIDENCE_FILE_REQUIRED', 'EVIDENCE_SIGNATURE', 'EVIDENCE_EMPTY', 'EVIDENCE_ABORTED', 'EVIDENCE_INVALID_MULTIPART', 'EVIDENCE_PARSE_FAILED'].includes(error.message)) return json(res, 400, { ok: false, error: { code: error.message, message: 'The evidence file is invalid or has an unsupported format.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && (error.message === 'FRIENDSHIP_EXISTS' || (path === '/api/friend-requests' && 'code' in error && error.code === '23505'))) return json(res, 409, { ok: false, error: { code: 'FRIENDSHIP_EXISTS', message: 'Ya hay una solicitud o conexión con ese creador.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && ['UPLOAD_LIMIT', 'UPLOAD_CONTENT_TYPE', 'UPLOAD_FILE_REQUIRED', 'UPLOAD_MIME', 'UPLOAD_SIGNATURE', 'UPLOAD_EMPTY', 'UPLOAD_ABORTED'].includes(error.message)) return json(res, 400, { ok: false, error: { code: error.message, message: 'Upload inválido o excede los límites configurados.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'DUPLICATE_ASSET') return json(res, 409, { ok: false, error: { code: 'DUPLICATE_ASSET', message: 'Este archivo ya existe en tu biblioteca.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'DUPLICATE') return json(res, 409, { ok: false, error: { code: 'DUPLICATE_PROJECT', message: 'Ya existe un proyecto con ese título.' }, requestId: id, }, id, requestOrigin); if (error instanceof Error && error.message === 'DUPLICATE_CATALOG') return json(res, 409, { ok: false, error: { code: 'DUPLICATE_CATALOG', message: 'Ya existe un asset con ese título y tipo.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'NOT_FOUND') return json(res, 404, { ok: false, error: { code: 'PROJECT_NOT_FOUND', message: 'Proyecto no encontrado.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'CATALOG_NOT_FOUND') return json(res, 404, { ok: false, error: { code: 'CATALOG_NOT_FOUND', message: 'Asset no encontrado.' }, requestId: id }, id, requestOrigin); return json(res, 500, { ok: false, error: { code: 'INTERNAL_ERROR', message: 'Error interno del servidor.' }, requestId: id }, id, requestOrigin) } })
+let notificationOutboxTimer: NodeJS.Timeout | undefined
+export const shutdown = () => { if (notificationOutboxTimer) clearInterval(notificationOutboxTimer); limiter.clear(); closeChatStreams(); server.close(); void runtime.close() }
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) { void Promise.all([auth.initialize(), audit.initialize()]).then(async () => { await reconcileUploads(repo); await reconcileSocialPostMedia(repo); await flushNotificationOutbox().catch(() => undefined); notificationOutboxTimer = setInterval(() => { void flushNotificationOutbox().catch(() => undefined) }, 5000); notificationOutboxTimer.unref(); server.listen(config.port, config.host, () => console.log(`BeatVault API listening on ${config.host}:${config.port}`)); process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown) }).catch(error => { console.error(error instanceof Error ? error.message : 'Configuración inválida'); process.exit(1) }) }

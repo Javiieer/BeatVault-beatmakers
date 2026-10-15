@@ -55,7 +55,7 @@ test('direct chat receives messages live and switches between inbox and thread o
   await expect(secondPage.getByRole('button', { name: /Producer north/ }).locator('.chat-avatar i')).toHaveClass(/is-online/);
   await expect(firstPage.getByRole('button', { name: /Producer south/ }).locator('.chat-avatar i')).toHaveClass(/is-online/, { timeout: 10000 });
   await secondPage.locator('.notification-trigger').click();
-  await expect(secondPage.getByText('Estás al día')).toBeVisible();
+  await expect(secondPage.locator('.notification-item').filter({ hasText: 'solicitud de amistad' })).toBeVisible();
   await secondPage.getByRole('button', { name: 'Cerrar notificaciones' }).click();
   await firstPage.getByLabel('Escribe un mensaje').fill('¿Listo para revisar el beat?');
   await firstPage.getByRole('button', { name: 'Enviar mensaje' }).click();
@@ -63,6 +63,8 @@ test('direct chat receives messages live and switches between inbox and thread o
   await expect(secondPage.locator('.chat-contact-meta i')).toHaveText('1');
   await expect(secondPage.getByRole('status').filter({ hasText: 'Nuevo mensaje de Producer north' })).toBeVisible({ timeout: 10000 });
   await secondPage.locator('.notification-trigger').click();
+  await expect(secondPage.getByRole('link', { name: /Producer north.*¿Listo para revisar el beat/ })).toBeVisible();
+  await secondPage.screenshot({ path: 'artifacts/visual-qa/mobile-notifications-message.png', fullPage: true });
   await secondPage.getByRole('link', { name: /Producer north.*¿Listo para revisar el beat/ }).click();
   await expect(secondPage.locator('.chat-thread-header strong')).toHaveText('Producer north');
   await expect(secondPage.getByRole('button', { name: 'Volver a conversaciones' })).toBeVisible();

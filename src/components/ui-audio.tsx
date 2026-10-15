@@ -61,6 +61,8 @@ export function AssetRow({
           <img
             src={asset.cover}
             alt={`Cover art for ${asset.name}`}
+            loading="lazy"
+            decoding="async"
             onError={(event) => {
               event.currentTarget.hidden = true;
             }}

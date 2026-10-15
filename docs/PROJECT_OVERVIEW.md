@@ -1,5 +1,8 @@
 # BeatVault BeatMakers
 
+> Historical product overview. Its browser-local-alpha and no-backend statements are
+> obsolete. The current implementation and priorities are documented in `ROADMAP.md`.
+
 ## Product overview
 
 BeatVault BeatMakers is a creator-first platform for discovering, organizing, previewing, and eventually publishing beats, samples, projects, and short-form music content. It is designed for beatmakers, producers, artists, and listeners who want one focused place for musical ideas and creator discovery.

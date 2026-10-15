@@ -36,6 +36,8 @@
 .chat-error { display: flex; align-items: center; gap: 8px; margin: 5px 12px 10px; padding: 9px 10px; border-left: 2px solid var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface)); color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
 .chat-error span { flex: 1; }
 .chat-error button { border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; white-space: nowrap; }
+.chat-thread > .chat-error { flex: 0 0 auto; margin: 8px 12px 0; }
+.chat-thread:has(.chat-error) .chat-live-notice { display: none; }
 .chat-thread { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
 .chat-thread-header { display: flex; align-items: center; gap: 11px; min-height: 69px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
 .chat-thread-header > span:nth-last-child(2) { display: grid; gap: 4px; min-width: 0; flex: 1; }

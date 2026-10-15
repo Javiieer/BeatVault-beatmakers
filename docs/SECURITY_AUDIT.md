@@ -75,12 +75,26 @@ and a live payment/tax/refund/dispute operation has not been validated. Keep sal
 and public launch disabled until these workflows, legal terms, and a real
 PostgreSQL migration/restore rehearsal are complete.
 
+### SEC-06: upload resource and image-validation controls
+
+**Severity:** Medium availability/data-integrity risk.
+**Status:** Partially mitigated; deployment hardening remains open.
+
+Audio and artwork uploads require the session CSRF token, share a per-account
+two-job concurrency cap within one API process, and perform an early quota check
+before FFmpeg plus the existing persistence-time quota check. Artwork is only retained
+after FFmpeg successfully decodes it; a valid image whose WebP derivative is not
+smaller or exceeds the derivative budget falls back to the master. These controls
+reduce accidental load and malformed-image exposure, but the concurrency cap is not
+shared across API replicas, FFmpeg is not OS-sandboxed here, and deployment still
+needs isolated media processing, monitoring and abuse controls.
+
 ### DEP-01: deployment guide lagged behind database migrations
 
 **Severity:** Medium deployment-readiness risk.
 **Status:** Fixed in documentation.
 
-The Oracle guide now reflects migration 022 for fresh database initialization.
+The Oracle guide now reflects migration 023 for fresh database initialization.
 Initialization scripts do not run again on an
 existing PostgreSQL volume; updates still need a deliberate, backed-up schema
 migration procedure.
@@ -97,15 +111,24 @@ migration procedure.
 - JSON, multipart upload, media range and Stripe webhook bodies have bounds;
   audio/evidence paths reject traversal; webhook signatures are verified and event
   IDs are persisted/deduplicated.
+- Audio/artwork uploads require CSRF, enforce a bounded per-account in-process
+  concurrency count, and avoid expensive conversion when known quota is exhausted.
+- Artwork originals remain private until the associated catalog entry is published;
+  file storage keys are resolved beneath the configured upload root.
 - SQL values use parameters. No unsafe HTML injection sink was found in the
   frontend scan performed for this review.
 
 ## Verification
 
-- `npm test`: 48 files, 236 tests passed, including security probes and durable
-  session, proxy, and seller-evidence regression cases.
-- `npm run build`: passed.
-- `npm run lint`: passed.
+- `npm test -- --pool forks --maxWorkers=2`: 51 files and 250 tests passed. The
+  default high-parallel Windows run had hit one test timeout and two transient JSON
+  temporary-file rename `EPERM` errors; the bounded-worker full run passed.
+- `npx vitest run server/artwork.test.ts server/security.test.ts server/uploads.test.ts
+  server/api.test.ts --pool forks --maxWorkers=1`: 4 files and 31 tests passed.
+- `npx playwright test tests/persistent-uploads.spec.ts --project=chromium`: 2 tests
+  passed, desktop and mobile, including upload of 4K artwork and WebP card delivery.
+- `npm run build`, `npm run lint`, `npm run typecheck`, and
+  `npm audit --audit-level=high`: passed; zero reported dependency vulnerabilities.
 - `npm audit --omit=dev --audit-level=high`: zero reported vulnerabilities.
 - `npm audit --audit-level=high`: zero reported vulnerabilities.
 

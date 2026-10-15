@@ -1,23 +1,26 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { Image as ImageIcon, LoaderCircle, Send, Type, Video, X } from "lucide-react";
 import { saveLocalHomePost, type LocalHomePost } from "../data/homePosts";
+import { createSocialPost, type SocialAudience, type SocialPostView } from "../data/socialPostRepository";
 
 type ComposerMode = "status" | "photo" | "video";
 const maxPhotoBytes = 20 * 1024 * 1024;
 const maxVideoBytes = 100 * 1024 * 1024;
 const mediaTypes: Record<string, { mode: "photo" | "video"; mime: string }> = {
   jpg: { mode: "photo", mime: "image/jpeg" }, jpeg: { mode: "photo", mime: "image/jpeg" },
-  png: { mode: "photo", mime: "image/png" }, webp: { mode: "photo", mime: "image/webp" }, gif: { mode: "photo", mime: "image/gif" },
-  mp4: { mode: "video", mime: "video/mp4" }, webm: { mode: "video", mime: "video/webm" },
+  png: { mode: "photo", mime: "image/png" },
+  mp4: { mode: "video", mime: "video/mp4" },
 };
 
-export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (post: LocalHomePost) => void }) {
+export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (post: LocalHomePost | SocialPostView) => void }) {
+  const authenticated = scope !== "demo";
   const [mode, setMode] = useState<ComposerMode>("status");
   const [text, setText] = useState("");
   const [file, setFile] = useState<File>();
   const [previewUrl, setPreviewUrl] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [audience, setAudience] = useState<SocialAudience>("private");
   const input = useRef<HTMLInputElement>(null);
   const limit = mode === "video" ? maxVideoBytes : maxPhotoBytes;
 
@@ -40,7 +43,7 @@ export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (
     const extension = selected.name.toLowerCase().split(".").pop() || "";
     const definition = mediaTypes[extension];
     if (!definition || definition.mode !== mode || (selected.type && selected.type.toLowerCase() !== definition.mime && !(extension === "jpg" && selected.type === "image/jpg"))) {
-      setError(mode === "photo" ? "Elige una imagen JPG, PNG, WebP o GIF." : "Elige un video MP4 o WebM.");
+      setError(mode === "photo" ? "Elige una imagen JPG o PNG." : "Elige un video MP4.");
       event.currentTarget.value = "";
       return;
     }
@@ -61,18 +64,25 @@ export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (
     setBusy(true);
     setError("");
     try {
-      const post = await saveLocalHomePost({
-        scope,
-        kind: mode,
-        text: body,
-        ...(file ? { media: file, mediaName: file.name, mimeType: file.type || mediaTypes[file.name.toLowerCase().split(".").pop() || ""].mime } : {}),
-      });
-      onPublish(post);
+      if (authenticated) {
+        const result = await createSocialPost({ kind: mode, body, audience, ...(file ? { file } : {}) });
+        if (!result.ok) { setError(result.error.message); return; }
+        onPublish(result.data);
+      } else {
+        const post = await saveLocalHomePost({
+          scope,
+          kind: mode,
+          text: body,
+          ...(file ? { media: file, mediaName: file.name, mimeType: file.type || mediaTypes[file.name.toLowerCase().split(".").pop() || ""].mime } : {}),
+        });
+        onPublish(post);
+      }
       setText("");
       clearMedia();
       setMode("status");
+      setAudience("private");
     } catch {
-      setError("No se pudo guardar en este navegador. Revisa el espacio disponible y vuelve a intentarlo.");
+      setError(authenticated ? "No se pudo publicar en BeatVault. Revisa tu conexión e inténtalo de nuevo." : "No se pudo guardar en este navegador. Revisa el espacio disponible y vuelve a intentarlo.");
     } finally { setBusy(false); }
   };
 
@@ -87,9 +97,9 @@ export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (
       <button type="button" className={mode === "status" ? "selected" : ""} aria-pressed={mode === "status"} onClick={() => chooseMode("status")}><Type size={16} /> Estado</button>
       <button type="button" className={mode === "photo" ? "selected" : ""} aria-pressed={mode === "photo"} onClick={() => chooseMode("photo")}><ImageIcon size={16} /> Foto</button>
       <button type="button" className={mode === "video" ? "selected" : ""} aria-pressed={mode === "video"} onClick={() => chooseMode("video")}><Video size={16} /> Video</button>
-      <input ref={input} className="sr-only" type="file" accept={mode === "photo" ? "image/jpeg,image/png,image/webp,image/gif" : "video/mp4,video/webm"} onChange={selectMedia} />
-    </div><button className="button home-composer-submit" type="submit" disabled={busy || (mode === "status" ? !text.trim() : !file)}>{busy ? <LoaderCircle size={15} className="home-composer-spinner" /> : <Send size={15} />}{busy ? "Guardando" : "Publicar"}</button></div>
+      <input ref={input} className="sr-only" type="file" accept={mode === "photo" ? "image/jpeg,image/png" : "video/mp4"} onChange={selectMedia} />
+    </div><div className="home-composer-submit-row"><label className="home-post-audience">Audiencia<select aria-label="Audiencia de la publicación" value={audience} onChange={event => setAudience(event.target.value as SocialAudience)}><option value="private">Solo yo</option><option value="friends">Amigos</option><option value="public">Público</option></select></label><button className="button home-composer-submit" type="submit" disabled={busy || (mode === "status" ? !text.trim() : !file)}>{busy ? <LoaderCircle size={15} className="home-composer-spinner" /> : <Send size={15} />}{busy ? "Publicando" : "Publicar"}</button></div></div>
     {error && <p className="home-composer-error" role="alert">{error}</p>}
-    <p className="home-composer-local">Publicación guardada solo en este equipo · Texto máx. 600 caracteres{mode === "video" ? " · Video máx. 100 MB" : " · Foto máx. 20 MB"}</p>
+    <p className="home-composer-local">{authenticated ? "La publicación se guarda en tu cuenta." : "Publicación guardada solo en este equipo."} · Texto máx. 600 caracteres{mode === "video" ? " · Video MP4 máx. 100 MB" : mode === "photo" ? " · Foto JPG/PNG máx. 20 MB" : ""}</p>
   </form>;
 }

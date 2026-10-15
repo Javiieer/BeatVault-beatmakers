@@ -1,6 +1,6 @@
 # Known issues
 
-Current record: 2026-10-12. Older claims that BeatVault has no backend,
+Current record: 2026-10-14. Older claims that BeatVault has no backend,
 authentication, ESLint or automated tests are obsolete.
 
 ## Confirmed release blockers
@@ -25,6 +25,8 @@ authentication, ESLint or automated tests are obsolete.
 - Home posts now appear in the owner's Publications tab from the same account-scoped IndexedDB store; no cross-device or public post delivery is implied.
 - Friends discovery exposes only opted-in public profile fields; request actions are session/CSRF protected and distinguish pending requests from accepted connections.
 - Friends now has an explicit API-offline state and retry action instead of presenting a misleading empty directory.
+- Marketplace includes private seller offer drafts, evidence upload, separate Community Manager/admin decisions, seller-visible current/stale review state, and a test-mode one-time Stripe checkout/order/refund slice. This is not live commerce or legal rights clearance.
+- Authentication sessions persist hashed tokens/CSRF values, expiry, and revocation in JSON/PostgreSQL repositories; password changes revoke other sessions. Rate limits remain process-local.
 - Removing the selected file selects the next available file correctly.
 - Temporary blob URLs are never written to the persistent catalog and stale legacy blob URLs are stripped on read.
 - Upload actions remain visible and usable on mobile.
@@ -38,6 +40,9 @@ authentication, ESLint or automated tests are obsolete.
 - Suffix and oversized media ranges now return valid byte bounds.
 - Private media responses receive defensive headers and consistent CORS handling.
 - API command entry detection accepts Windows filesystem paths.
+- Audio and artwork uploads require CSRF, cap concurrent upload work at two jobs per
+  account per API process, and check storage quota before costly processing. Artwork
+  is retained only after successful FFmpeg decoding; decode failures reject the upload.
 
 Security regression assertions are in server/security-probes.test.ts.
 See SECURITY_FINDINGS.md for severity and unresolved security work.
@@ -50,9 +55,9 @@ See SECURITY_FINDINGS.md for severity and unresolved security work.
 - Profile JSON writes are serialized within one repository instance only; this does not resolve global or multi-process JSON concurrency.
 - Password recovery has no email delivery provider yet. Local development can expose the one-time link only when `BEATVAULT_DEV_AUTH_TOKENS=true`; never enable this on a public deployment.
 
-- Disposable PostgreSQL 16 integration verifies migrations 001-014, social/chat authorization, moderation, account storage quota concurrency, admin-assigned package/limit policy, audit persistence, restart recovery and FFmpeg preview conversion. The optional labeled-container restore rehearsal checks database and audio round trips; a production VPS restore drill and multi-user deployment still need validation.
-- Storage usage is measured by original audio bytes. A quota is only active when the server is configured; plan-specific limits, artwork/video accounting and downgrade behavior are intentionally undecided.
-- Sessions and rate limits are process-local. Rate limits currently use the socket address; behind a reverse proxy, trusted client-IP forwarding must be designed before scaling or opening registration broadly. Email verification/reset has no delivery provider.
+- Disposable PostgreSQL 16 QA has verified the earlier core schema and workflows, including social/chat authorization, moderation, quota concurrency, admin package overrides, audit persistence, restart recovery and FFmpeg previews. Migration 023 adds persistent catalog artwork and a clean PostgreSQL QA run through it plus an existing-volume upgrade and production VPS restore drill remain to be rerun.
+- Storage usage accounts for original audio and Beat artwork; processed previews remain separately reported and outside the upload quota. Video uploads and package downgrade behavior are intentionally unsupported/undecided.
+- Session records are durable, but rate-limit buckets are process-local and therefore not shared across API instances. Oracle Caddy proxy IP forwarding is configured for the single-VM profile; do not trust forwarded client-IP headers on a directly reachable API. Email verification/reset has no delivery provider.
 - Admin reads and publication review actions are protected by server-side role/CSRF checks and passed disposable-PostgreSQL integration; the running local app still uses JSON.
 - Audio header checks are not full media decoding; malformed files with valid headers
   still need isolated media validation before public delivery.
@@ -60,5 +65,5 @@ See SECURITY_FINDINGS.md for severity and unresolved security work.
 - Desktop/mobile browser tests cover two accounts and the authenticated JSON-backed upload/reload/retry/playback workflow; real media conversion has passed with an external FFmpeg executable.
 - Browser storage can be unavailable or cleared; draft metadata is not an audio backup.
 - Shorts remains a local prototype. Selected video files cannot be restored after reload.
-- Home composer media remains local to the browser. Direct chat is limited to text between accepted friends; attachments, groups, OS push notifications, block/report workflow and public Home post moderation are not implemented. Published catalog Beats have persisted comments/reactions; notifications are in-app and have no email or OS push delivery.
-- No payments, payouts, licensing service, cloud sync or music distribution exists.
+- Home composer media remains local to the browser. Direct chat is limited to text between accepted friends; attachments, groups, OS push notifications and block/report workflow remain unimplemented. Home-post comments/reactions and friend requests/acceptances now persist their notifications atomically in PostgreSQL and recoverably in local JSON. Notifications are in-app and have no email or OS push delivery; a lost reaction response can still be toggled off by a client retry.
+- Stripe Connect onboarding, one-time Beat checkout, buyer-scoped paid download, refund requests and dispute flags exist in test mode only. No live payments/payouts, recurring billing, final license service, cloud sync or music distribution exists.

@@ -4,12 +4,13 @@ import { createServer } from 'node:net'
 import { request as httpRequest } from 'node:http'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Pool } from 'pg'
 import { PostgresRepository } from '../server/postgres'
 import { hashPassword } from '../server/auth'
 import { emptyProfile } from '../src/domains/profile'
+import { draftOfferTermsVersion, type BeatListingRecord } from '../src/domains/marketplace/sellerListings'
 import { config } from '../server/config'
 
 const databaseUrl = process.env.BEATVAULT_TEST_DATABASE_URL ?? ''
@@ -27,7 +28,10 @@ const fixturePrefix = `pgqa_${randomUUID().replaceAll('-', '').slice(0, 20)}`
 const creatorId = `${fixturePrefix}_creator`
 const adminId = `${fixturePrefix}_admin`
 const outsiderId = `${fixturePrefix}_outsider`
+const managerId = `${fixturePrefix}_manager`
 const quotaId = `${fixturePrefix}_quota`
+const orderId = randomUUID()
+const webhookEventId = `${fixturePrefix}_stripe_event`
 const password = 'Postgres-QA-Only-2026!'
 const emailFor = (kind: string) => `${fixturePrefix}-${kind}@beatvault.invalid`
 const uploadsDir = await mkdtemp(join(tmpdir(), 'beatvault-postgres-qa-'))
@@ -37,6 +41,10 @@ const apiDir = process.cwd()
 let api: ChildProcess | undefined
 let apiOutput = ''
 let apiPort = 0
+let socialPostId = ''
+let profileAvatarUrl = ''
+let profileCoverUrl = ''
+const socialPostComment = 'PostgreSQL social profile comment'
 
 function wavFixture(dataBytes = 32000, marker = 0): Buffer {
   const buffer = Buffer.alloc(44 + dataBytes)
@@ -114,7 +122,7 @@ function run(command: string, args: string[], input?: Buffer) {
   return spawnSync(command, args, { input, windowsHide: true, maxBuffer: 128 * 1024 * 1024 })
 }
 
-async function verifyBackupRestore(assetId: string, creatorContentId: string, expectedWav: Buffer): Promise<void> {
+async function verifyBackupRestore(assetId: string, creatorContentId: string, expectedWav: Buffer, expectedArtwork: Buffer, expectedThumbnail: Buffer | undefined, socialId: string): Promise<void> {
   const container = process.env.BEATVAULT_TEST_DATABASE_CONTAINER
   if (!container) {
     console.log('SKIP: PostgreSQL/media restore drill (set BEATVAULT_TEST_DATABASE_CONTAINER to a labeled disposable PostgreSQL 16 container).')
@@ -152,6 +160,20 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
     const mediaBackup = run('tar', ['-czf', mediaArchive, '-C', uploadsDir, 'uploads'])
     assert(mediaBackup.status === 0, `No se pudo respaldar el directorio de audio: ${mediaBackup.stderr.toString()}`)
     assert((await stat(mediaArchive)).size > 0, 'El archivo de respaldo de audios quedó vacío.')
+    if (profileAvatarUrl && profileCoverUrl) {
+      const profileRow = await pool.query<{ metadata: { avatarImage?: { storageKey?: string; thumbnailStorageKey?: string }; coverImage?: { storageKey?: string; thumbnailStorageKey?: string } } }>('SELECT metadata FROM creator_profiles WHERE account_id = $1', [creatorId])
+      const images = profileRow.rows[0]?.metadata
+      assert(images?.avatarImage?.storageKey && images.avatarImage.thumbnailStorageKey && images.coverImage?.storageKey && images.coverImage.thumbnailStorageKey, 'El perfil PostgreSQL no conserva las cuatro referencias de avatar/portada.')
+      const archiveList = run('tar', ['-tzf', mediaArchive])
+      assert(archiveList.status === 0, `No se pudo listar el respaldo de medios: ${archiveList.stderr.toString()}`)
+      const archivedNames = archiveList.stdout.toString().split(/\r?\n/).map(name => name.replaceAll('\\', '/').replace(/^\.\//, ''))
+      for (const storageKey of [images.avatarImage.storageKey, images.avatarImage.thumbnailStorageKey, images.coverImage.storageKey, images.coverImage.thumbnailStorageKey]) {
+        const sourceExists = await stat(join(uploadDirectory, storageKey)).then(() => true, () => false)
+        const defaultRootExists = await stat(join(config.uploadDirectory, storageKey)).then(() => true, () => false)
+        const archiveMatches = archivedNames.filter(name => name.includes(storageKey.split('/').at(-1) || ''))
+        assert(archivedNames.includes(`uploads/${storageKey}`), `El backup de medios no contiene ${storageKey}; sourceInQaRoot=${sourceExists}; sourceInDefaultRoot=${defaultRootExists}; archiveMatches=${archiveMatches.join(',')}`)
+      }
+    }
 
     const created = run('docker', ['exec', container, 'createdb', '-U', username, restoreDb])
     assert(created.status === 0, `No se pudo crear la base temporal de restauración: ${created.stderr.toString()}`)
@@ -166,6 +188,14 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
     assert(sourceAsset?.storage_key, 'No se encontró el original de audio para el ensayo de restauración.')
     const restoredPath = join(extractedMedia, sourceAsset.storage_key)
     assert((await readFile(restoredPath)).equals(expectedWav), 'El respaldo de medios no recuperó exactamente los bytes del audio original.')
+    const sourceArtwork = (await pool.query<{ storage_key: string; thumbnail_storage_key: string | null }>('SELECT storage_key, thumbnail_storage_key FROM catalog_artwork WHERE asset_id = $1', [assetId])).rows[0]
+    assert(sourceArtwork?.storage_key, 'No se encontró la portada original para el ensayo de restauración.')
+    const restoredArtworkPath = join(extractedMedia, sourceArtwork.storage_key)
+    assert((await readFile(restoredArtworkPath)).equals(expectedArtwork), 'El respaldo de medios no recuperó exactamente los bytes de la portada.')
+    if (expectedThumbnail) {
+      assert(sourceArtwork.thumbnail_storage_key, 'No se encontró la miniatura para el ensayo de restauración.')
+      assert((await readFile(join(extractedMedia, sourceArtwork.thumbnail_storage_key))).equals(expectedThumbnail), 'El respaldo de medios no recuperó exactamente los bytes de la miniatura.')
+    }
 
     restorePool = new Pool({ connectionString: restoreUrl.toString(), max: 2, connectionTimeoutMillis: 5000 })
     const sourceCounts = await Promise.all(tables.map(async table => [table, Number((await pool.query(`SELECT count(*) AS count FROM public.${table}`)).rows[0].count)] as const))
@@ -179,13 +209,27 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
     await startApi(restoreUrl.toString(), extractedMedia)
     targetApiStarted = true
     const restoredCreator = await login(emailFor('creator'))
+    const restoredSocial = (await request(restoredCreator, `/api/posts/${socialId}/social`).then(value => value.json()) as { data: { comments: Array<{ body: string }>; reactionCount: number; reactedByMe: boolean } }).data
+    assert(restoredSocial.comments.some(comment => comment.body === socialPostComment) && restoredSocial.reactionCount === 1 && !restoredSocial.reactedByMe, 'La interacción social no sobrevivió a la restauración PostgreSQL.')
+    if (profileAvatarUrl && profileCoverUrl) {
+      for (const imageUrl of [profileAvatarUrl, profileCoverUrl]) {
+        const restoredImage = await fetch(`${base()}${imageUrl}`, { headers: { cookie: restoredCreator.cookie } })
+        assert(restoredImage.status === 200 && restoredImage.headers.get('content-type') === 'image/webp' && Number(restoredImage.headers.get('content-length')) > 0, `El avatar o portada no sobrevivió al backup/restore (${imageUrl}: ${restoredImage.status}, ${restoredImage.headers.get('content-type')}).`)
+      }
+    }
     const restoredDownload = await fetch(`${base()}/api/assets/${assetId}/download`, { headers: { cookie: restoredCreator.cookie } })
     assert(restoredDownload.status === 200 && Buffer.from(await restoredDownload.arrayBuffer()).equals(expectedWav), 'La API restaurada no pudo servir el audio recuperado.')
     const restoredMessages = (await request(restoredCreator, `/api/chat/conversations/${adminId}/messages`).then(value => value.json()) as { data: Array<{ body: string }> }).data
     assert(restoredMessages.some(message => message.body === 'SSE after reconnect'), 'La API restaurada no pudo leer el chat recuperado.')
     const restoredCatalog = (await request(restoredCreator, '/api/catalog').then(value => value.json()) as { data: { entries: Array<{ contentId: string }> } }).data.entries
     assert(restoredCatalog.some(entry => entry.contentId === creatorContentId), 'La API restaurada no pudo leer el catálogo recuperado.')
-    console.log('PASS: PostgreSQL custom-format backup/restore, table row counts, package history, chat, catalog and original audio archive.')
+    const restoredArtwork = await fetch(`${base()}/api/catalog/${creatorContentId}/artwork`, { headers: { cookie: restoredCreator.cookie } })
+    assert(restoredArtwork.status === 200 && Buffer.from(await restoredArtwork.arrayBuffer()).equals(expectedArtwork), 'La API restaurada no pudo servir la portada recuperada.')
+    if (expectedThumbnail) {
+      const restoredThumbnail = await fetch(`${base()}/api/catalog/${creatorContentId}/artwork/thumbnail`, { headers: { cookie: restoredCreator.cookie } })
+      assert(restoredThumbnail.status === 200 && restoredThumbnail.headers.get('content-type') === 'image/webp' && Buffer.from(await restoredThumbnail.arrayBuffer()).equals(expectedThumbnail), 'La API restaurada no pudo servir la miniatura WebP recuperada.')
+    }
+    console.log('PASS: PostgreSQL custom-format backup/restore, table row counts, package history, chat, social post interactions, catalog, audio, original artwork and thumbnail.')
   } finally {
     if (targetApiStarted || api) await stopApi()
     await restorePool?.end()
@@ -258,7 +302,7 @@ async function waitForEvent(reader: ReadableStreamDefaultReader<Uint8Array>, tim
   throw new Error('No llegó el evento SSE esperado.')
 }
 
-const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_promotions', 'projects']
+const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'auth_sessions', 'beat_orders', 'catalog_artwork', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_beat_listing_drafts', 'marketplace_beat_listing_evidence', 'marketplace_promotions', 'notifications', 'projects', 'social_posts', 'social_post_comments', 'social_post_reactions', 'social_post_reports', 'stripe_connected_accounts', 'stripe_webhook_events']
 try {
   const schema = await pool.query<{ name: string; exists: boolean }>(
     'SELECT name, to_regclass($1 || \'.\' || name) IS NOT NULL AS exists FROM unnest($2::text[]) AS name',
@@ -279,17 +323,60 @@ try {
     await repo.saveAccount({ id, email: emailFor(kind), passwordHash: hash, role: role as 'creator' | 'admin', verificationState: 'verified' })
     await repo.saveProfile({ ...emptyProfile(id), displayName: `QA ${kind}`, publicProfile: true })
   }
+  await repo.saveAccount({ id: managerId, email: emailFor('manager'), passwordHash: hash, role: 'creator', verificationState: 'verified' })
+  await repo.saveProfile({ ...emptyProfile(managerId), displayName: 'QA manager', publicProfile: true })
   await repo.saveAccount({ ...(await repo.findAccountById(creatorId))!, planId: 'studio', purchasedPlanIds: ['creator', 'studio'] })
   assert((await repo.findAccountById(creatorId))?.purchasedPlanIds?.join(',') === 'creator,studio', 'No persistió el historial de paquetes adquiridos.')
+  const connectedAccount = { accountId: creatorId, stripeAccountId: `acct_${fixturePrefix}`, chargesEnabled: true, payoutsEnabled: true, detailsSubmitted: true, deauthorized: false, updatedAt: new Date().toISOString() }
+  await repo.saveStripeConnectAccount(connectedAccount)
+  assert((await repo.findStripeConnectAccountByStripeId(connectedAccount.stripeAccountId))?.accountId === creatorId, 'No persistió la cuenta Stripe Connect.')
+  assert(await repo.recordProcessedStripeEvent(webhookEventId, 'account.updated'), 'No registró el evento Stripe inicial.')
+  assert(!(await repo.recordProcessedStripeEvent(webhookEventId, 'account.updated')) && await repo.hasProcessedStripeEvent(webhookEventId), 'La deduplicación de eventos Stripe no es idempotente.')
+  const testOrder = { id: orderId, buyerId: outsiderId, sellerId: creatorId, contentId: randomUUID(), offerId: 'wav', title: 'PostgreSQL QA beat', amountMinor: 2000, commissionMinor: 100, processingEstimateMinor: 94, applicationFeeMinor: 194, sellerNetMinor: 1806, currency: 'usd' as const, status: 'pending' as const, createdAt: new Date().toISOString() }
+  await repo.createBeatOrder(testOrder)
+  const paidOrder = await repo.updateBeatOrder(orderId, { status: 'paid', stripePaymentIntentId: `pi_${fixturePrefix}`, paidAt: new Date().toISOString() })
+  assert(paidOrder?.status === 'paid' && (await repo.findBeatOrderByPaymentIntentId(`pi_${fixturePrefix}`))?.id === orderId, 'No persistió el estado pagado ni la búsqueda de la orden.')
   await startApi()
 
   let creator = await login(emailFor('creator'))
+  const outsider = await login(emailFor('outsider'))
   let response = await request(creator, `/api/chat/conversations/${adminId}/messages`)
   assert(response.status === 403, 'Chat permitió acceso antes de aceptar amistad.')
   response = await request(creator, '/api/friend-requests', 'POST', { targetId: adminId })
   assert(response.status === 201, 'No se creó la solicitud de amistad.')
   const friendship = (await response.json() as { data: { id: string } }).data
   const admin = await login(emailFor('admin'))
+  response = await request(admin, `/api/admin/accounts/${managerId}/role`, 'PATCH', { role: 'community_manager' })
+  assert(response.status === 200, 'Admin no pudo asignar Community Manager en PostgreSQL.')
+  const manager = await login(emailFor('manager'))
+  const approveCatalogAsManager = async (contentId: string, note = 'Reviewed the private Beat preview and upload details.') => {
+    const result = await request(manager, `/api/staff/catalog-review/${contentId}`, 'POST', { decision: 'approve', note })
+    assert(result.status === 200, `Community Manager no pudo aprobar el Beat ${contentId} (${result.status}).`)
+  }
+  if (hasFfmpeg) {
+    const profileImageBytes = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover-qa.jpg'))
+    for (const kind of ['avatar', 'cover'] as const) {
+      const savedImage = await fetch(`${base()}/api/profile/images/${kind}`, { method: 'POST', headers: { cookie: creator.cookie, 'x-csrf-token': creator.csrf, 'content-type': 'image/jpeg' }, body: new Uint8Array(profileImageBytes) })
+      assert(savedImage.status === 200, `No se pudo subir el ${kind} de perfil a PostgreSQL (${savedImage.status}).`)
+      const result = (await savedImage.json() as { data: { avatarUrl?: string; coverUrl?: string } }).data
+      if (kind === 'avatar') profileAvatarUrl = result.avatarUrl || ''
+      else profileCoverUrl = result.coverUrl || ''
+    }
+    assert(profileAvatarUrl === `/api/profiles/${creatorId}/images/avatar/thumbnail` && profileCoverUrl === `/api/profiles/${creatorId}/images/cover/thumbnail`, 'El perfil no guardó las referencias personalizadas al avatar y portada.')
+    const publicAvatar = await fetch(`${base()}${profileAvatarUrl}`, { headers: { cookie: outsider.cookie } })
+    const publicCover = await fetch(`${base()}${profileCoverUrl}`, { headers: { cookie: outsider.cookie } })
+    assert(publicAvatar.status === 200 && publicCover.status === 200, 'El visitante no pudo ver avatar y portada del perfil público.')
+    const privateProfile = await request(creator, '/api/profile', 'PUT', { displayName: 'QA creator', bio: '', location: '', website: '', instagram: '', genres: [], coverId: 'custom', avatarId: 'custom', publicProfile: false })
+    assert(privateProfile.status === 200, 'No se pudo cambiar la privacidad del perfil con medios personalizados.')
+    const hiddenAvatar = await fetch(`${base()}${profileAvatarUrl}`, { headers: { cookie: outsider.cookie } })
+    const hiddenCover = await fetch(`${base()}${profileCoverUrl}`, { headers: { cookie: outsider.cookie } })
+    const ownerAvatar = await fetch(`${base()}${profileAvatarUrl}`, { headers: { cookie: creator.cookie } })
+    assert(hiddenAvatar.status === 404 && hiddenCover.status === 404 && ownerAvatar.status === 200, 'La privacidad del perfil no protegió sus imágenes del visitante o bloqueó al dueño.')
+    const publicProfile = await request(creator, '/api/profile', 'PUT', { displayName: 'QA creator', bio: '', location: '', website: '', instagram: '', genres: [], coverId: 'custom', avatarId: 'custom', publicProfile: true })
+    assert(publicProfile.status === 200, 'No se pudo volver a publicar el perfil QA.')
+  } else {
+    console.log('SKIP: PostgreSQL avatar/cover upload and image backup/restore (FFmpeg unavailable).')
+  }
   response = await request(admin, '/api/admin/promotions', 'POST', { name: 'Postgres launch', scope: 'one-shot', percentOff: 10, enabled: true })
   assert(response.status === 201, 'Admin no pudo crear la promoción en PostgreSQL.')
   const promotion = (await response.json() as { data: { id: string; scope: string; percentOff: number } }).data
@@ -307,8 +394,61 @@ try {
   assert(response.status === 200, 'No se pudo restaurar el paquete Free de la cuenta QA.')
   response = await request(admin, `/api/friend-requests/${friendship.id}/accept`, 'POST', {})
   assert(response.status === 200, 'No se pudo aceptar la amistad.')
+  const creatorFriendNotifications = (await request(creator, '/api/notifications').then(value => value.json()) as { data: { items: Array<{ type: string }> } }).data.items
+  const adminFriendNotifications = (await request(admin, '/api/notifications').then(value => value.json()) as { data: { items: Array<{ type: string }> } }).data.items
+  assert(creatorFriendNotifications.some(item => item.type === 'friend_request_accepted') && adminFriendNotifications.some(item => item.type === 'friend_request'), 'Las notificaciones de solicitud/aceptación no se persistieron en PostgreSQL.')
   response = await request(creator, `/api/chat/conversations/${adminId}/messages`, 'POST', { body: 'PostgreSQL QA message' }, false)
   assert(response.status === 403, 'Chat permitió envío sin CSRF.')
+
+  response = await request(creator, '/api/posts', 'POST', { kind: 'status', body: 'PostgreSQL creator profile post', audience: 'public' })
+  assert(response.status === 201, `No se publicó el estado público de QA (${response.status}).`)
+  socialPostId = (await response.json() as { data: { id: string } }).data.id
+  const socialFeed = (await request(outsider, '/api/feed').then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
+  const socialProfile = (await request(outsider, `/api/profiles/${creatorId}/posts`).then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
+  assert(socialFeed.some(post => post.id === socialPostId) && socialProfile.some(post => post.id === socialPostId), 'El post público no se sincronizó entre Home/feed y el perfil del creador.')
+  await pool.query('DROP TRIGGER IF EXISTS beatvault_qa_reject_notification ON notifications')
+  await pool.query(`CREATE OR REPLACE FUNCTION beatvault_qa_reject_notification() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'QA notification write failure' USING ERRCODE = '23514'; END $$`)
+  await pool.query('CREATE TRIGGER beatvault_qa_reject_notification BEFORE INSERT ON notifications FOR EACH ROW EXECUTE FUNCTION beatvault_qa_reject_notification()')
+  try {
+    response = await request(outsider, `/api/posts/${socialPostId}/comments`, 'POST', { body: 'This comment must roll back' })
+    assert(response.status === 500, 'La inserción artificialmente fallida de una notificación no devolvió error.')
+    const rolledBackComment = await pool.query('SELECT id FROM social_post_comments WHERE post_id = $1 AND body = $2', [socialPostId, 'This comment must roll back'])
+    assert(rolledBackComment.rows.length === 0, 'El comentario sobrevivió al fallo de la inserción de su notificación PostgreSQL.')
+  } finally {
+    await pool.query('DROP TRIGGER IF EXISTS beatvault_qa_reject_notification ON notifications')
+    await pool.query('DROP FUNCTION IF EXISTS beatvault_qa_reject_notification()')
+  }
+  response = await request(outsider, `/api/posts/${socialPostId}/comments`, 'POST', { body: socialPostComment })
+  assert(response.status === 201, `La segunda cuenta no pudo comentar el post (${response.status}).`)
+  response = await request(outsider, `/api/posts/${socialPostId}/reaction`, 'POST', {})
+  assert(response.status === 200 && (await response.json() as { data: { reacted: boolean; reactionCount: number } }).data.reacted, 'La segunda cuenta no pudo reaccionar al post PostgreSQL.')
+  const creatorInteraction = (await request(creator, `/api/posts/${socialPostId}/social`).then(value => value.json()) as { data: { comments: Array<{ authorName: string; body: string }>; reactionCount: number; reactedByMe: boolean } }).data
+  assert(creatorInteraction.comments.some(comment => comment.authorName === 'QA outsider' && comment.body === socialPostComment) && creatorInteraction.reactionCount === 1 && !creatorInteraction.reactedByMe, 'La interacción no se compartió correctamente entre cuentas en PostgreSQL.')
+  const creatorSocialNotifications = (await request(creator, '/api/notifications').then(value => value.json()) as { data: { items: Array<{ type: string }> } }).data.items
+  assert(creatorSocialNotifications.some(item => item.type === 'social_post_comment') && creatorSocialNotifications.some(item => item.type === 'social_post_reaction'), 'Los comentarios/reacciones no crearon avisos persistentes en PostgreSQL.')
+  response = await request(outsider, `/api/posts/${socialPostId}/reaction`, 'POST', {})
+  assert(response.status === 200 && !(await response.json() as { data: { reacted: boolean } }).data.reacted, 'Quitar una reacción no devolvió el estado inactivo.')
+  response = await request(outsider, `/api/posts/${socialPostId}/reaction`, 'POST', {})
+  assert(response.status === 200 && (await response.json() as { data: { reacted: boolean } }).data.reacted, 'No se pudo reactivar una reacción PostgreSQL.')
+  const notificationCountAfterRetry = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM notifications WHERE recipient_id = $1 AND actor_id = $2 AND type = 'social_post_reaction' AND resource_id = $3", [creatorId, outsiderId, socialPostId])
+  assert(notificationCountAfterRetry.rows[0]?.count === 1, 'Reactivar la misma reacción duplicó la notificación PostgreSQL.')
+  response = await request(creator, '/api/posts', 'POST', { kind: 'status', body: 'Private profile post', audience: 'private' })
+  assert(response.status === 201, 'No se creó el estado privado PostgreSQL.')
+  const privateSocialPostId = (await response.json() as { data: { id: string } }).data.id
+  response = await request(outsider, `/api/posts/${privateSocialPostId}/social`)
+  assert(response.status === 404, 'Un usuario distinto pudo consultar interacciones de un post privado.')
+  response = await request(creator, '/api/posts', 'POST', { kind: 'status', body: 'PostgreSQL reported moderation post', audience: 'public' })
+  assert(response.status === 201, 'No se creó el estado reportable para moderación PostgreSQL.')
+  const moderationPostId = (await response.json() as { data: { id: string } }).data.id
+  response = await request(outsider, `/api/posts/${moderationPostId}/reports`, 'POST', { reason: 'spam', details: 'PostgreSQL moderation QA report.' })
+  assert(response.status === 201, 'La segunda cuenta no pudo reportar el post público en PostgreSQL.')
+  const openReports = (await request(manager, '/api/social-moderation/reports').then(value => value.json()) as { data: { reports: Array<{ id: string; postId: string }> } }).data.reports
+  const moderationReport = openReports.find(report => report.postId === moderationPostId)
+  assert(moderationReport, 'Community Manager no recibió el reporte PostgreSQL.')
+  response = await request(manager, `/api/social-moderation/posts/${moderationPostId}`, 'PATCH', { status: 'removed', note: 'Confirmed by PostgreSQL QA.' })
+  assert(response.status === 200, 'Community Manager no pudo retirar una publicación reportada en PostgreSQL.')
+  response = await request(manager, `/api/social-moderation/reports/${moderationReport.id}`, 'PATCH', { status: 'reviewed' })
+  assert(response.status === 200 && (await request(outsider, `/api/posts/${moderationPostId}/social`)).status === 404, 'La moderación no ocultó el post o no registró la revisión del reporte.')
 
   const streamController = new AbortController()
   let streamResponse = await fetch(`${base()}/api/chat/events`, { headers: { cookie: creator.cookie }, signal: streamController.signal })
@@ -341,6 +481,18 @@ try {
   assert(response.status === 201, `Upload real falló (${response.status}).`)
   const asset = (await response.json() as { data: { id: string; previewStorageKey?: string } }).data
   assert(asset.previewStorageKey ? true : !hasFfmpeg, 'FFmpeg está disponible, pero la subida WAV no generó un derivado de preview.')
+  const artworkBytes = await readFile(join(apiDir, 'server', 'fixtures', 'beat-upload-cover.jpg'))
+  response = await request(admin, `/api/admin/accounts/${creatorId}/storage-quota`, 'PATCH', { limitBytes: 3_000_000 })
+  assert(response.status === 200, 'No se pudo asignar cuota temporal suficiente para probar el artwork 4K y su miniatura.')
+  const usageBeforeArtwork = (await request(creator, '/api/account/storage').then(value => value.json()) as { data: { usedBytes: number } }).data.usedBytes
+  response = await fetch(`${base()}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { cookie: creator.cookie, 'x-csrf-token': creator.csrf, 'content-type': 'image/jpeg' }, body: new Uint8Array(artworkBytes) })
+  assert(response.status === 201, `No se pudo guardar el artwork antes de crear su ficha (${response.status}).`)
+  const artworkUpload = (await response.json() as { data: { assetId: string; width: number; height: number; thumbnailAvailable: boolean; thumbnailSizeBytes: number } }).data
+  assert(artworkUpload.assetId === asset.id && artworkUpload.width === 4000 && artworkUpload.height === 4000, 'La API no devolvió los metadatos correctos del artwork 4K.')
+  const usageWithArtwork = (await request(creator, '/api/account/storage').then(value => value.json()) as { data: { usedBytes: number } }).data.usedBytes
+  assert(usageWithArtwork === usageBeforeArtwork + artworkBytes.length + artworkUpload.thumbnailSizeBytes, 'El original y la miniatura no se incluyeron correctamente en el consumo de cuota PostgreSQL.')
+  response = await fetch(`${base()}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { cookie: outsider.cookie, 'x-csrf-token': outsider.csrf, 'content-type': 'image/jpeg' }, body: new Uint8Array(artworkBytes) })
+  assert(response.status === 404, 'Otra cuenta pudo agregar artwork al audio privado.')
   if (hasFfmpeg) {
     for (const [extension, codec, container, mimeType] of encodedFormats) {
       const sourcePath = join(uploadsDir, `fixture.${extension}`)
@@ -360,7 +512,7 @@ try {
       assert(published.status === 201, `No se creó publicación para ${extension}.`)
       const publishedEntry = (await published.json() as { data: { contentId: string } }).data
       const approved = await request(admin, `/api/admin/catalog-review/${publishedEntry.contentId}`, 'POST', { decision: 'approve' })
-      assert(approved.status === 200, `No se aprobó preview de ${extension}.`)
+      assert(approved.status === 200, `Admin no pudo aprobar independientemente el preview de ${extension}.`)
       const publicPreview = await fetch(`${base()}/api/catalog/${publishedEntry.contentId}/preview`)
       const derivative = Buffer.from(await publicPreview.arrayBuffer())
       assert(publicPreview.status === 200 && publicPreview.headers.get('content-type') === 'audio/mp4' && derivative.toString('ascii', 4, 8) === 'ftyp', `Preview público derivado de ${extension} es inválido.`)
@@ -390,7 +542,6 @@ try {
   assert(oversizedRequest.status === 413 && oversizedRequest.body.error?.code === 'UPLOAD_LIMIT', `El límite agregado chunked no devolvió 413 (${oversizedRequest.status}).`)
   response = await fetch(`${base()}/api/assets/${asset.id}/preview`, { headers: { cookie: creator.cookie, range: 'bytes=0-11' } })
   assert(response.status === 206 && Buffer.from(await response.arrayBuffer()).equals(wav.subarray(0, 12)), 'Preview/range de audio no coincide con los bytes originales.')
-  const outsider = await login(emailFor('outsider'))
   response = await fetch(`${base()}/api/assets/${asset.id}/preview`, { headers: { cookie: outsider.cookie } })
   assert(response.status === 404, 'Otra cuenta pudo acceder al preview privado.')
   response = await request(creator, `/api/assets/${asset.id}/preview/process`, 'POST', {}, false)
@@ -406,18 +557,98 @@ try {
 
   response = await request(creator, '/api/catalog', 'POST', { title: `${fixturePrefix} public preview`, type: 'beat', tagIds: [], assetId: asset.id, publicationStatus: 'pending-review' })
   assert(response.status === 201, 'No se creó el beat vinculado al audio de prueba.')
-  const previewCatalog = (await response.json() as { data: { contentId: string; assetId?: string; audio?: { previewReady?: boolean } } }).data
+  const previewCatalog = (await response.json() as { data: { contentId: string; assetId?: string; artworkUrl?: string; audio?: { previewReady?: boolean } } }).data
+  assert(previewCatalog.artworkUrl === `/api/catalog/${previewCatalog.contentId}/artwork${artworkUpload.thumbnailAvailable ? '/thumbnail' : ''}`, 'El artwork privado no se adjuntó a la ficha en revisión con su resolución de lista.')
+  response = await fetch(`${base()}${previewCatalog.artworkUrl}`, { headers: { cookie: creator.cookie } })
+  assert(response.status === 200 && response.headers.get('cache-control') === 'private, no-store' && (!artworkUpload.thumbnailAvailable || response.headers.get('content-type') === 'image/webp'), 'El propietario no pudo ver su artwork privado durante revisión.')
+  const staffQueue = (await request(manager, '/api/staff/catalog-review').then(value => value.json()) as { data: Array<{ contentId: string; artworkUrl?: string }> }).data
+  const staffEntry = staffQueue.find(item => item.contentId === previewCatalog.contentId)
+  assert(staffEntry?.artworkUrl === `/api/staff/catalog-review/${previewCatalog.contentId}/artwork${artworkUpload.thumbnailAvailable ? '/thumbnail' : ''}`, 'La cola CM no recibió la ruta privada de la miniatura.')
+  response = await fetch(`${base()}${staffEntry.artworkUrl}`, { headers: { cookie: manager.cookie } })
+  assert(response.status === 200 && response.headers.get('cache-control') === 'private, no-store', 'El CM no pudo consultar el artwork privado de la subida pendiente.')
+  response = await fetch(`${base()}${staffEntry.artworkUrl}`, { headers: { cookie: outsider.cookie } })
+  assert(response.status === 403, 'La ruta de artwork privado no rechazó la cuenta sin rol de revisión.')
+  response = await fetch(`${base()}${previewCatalog.artworkUrl}`, { headers: { cookie: outsider.cookie } })
+  assert(response.status === 404, 'Otra cuenta pudo ver artwork de un Beat en revisión.')
+  const listingInput = {
+    description: 'A complete PostgreSQL QA listing description.', genre: 'Hip-Hop', explicitContent: false,
+    rights: { sellerCompositionShareBps: 10000, sellerMasterShareBps: 10000, sampleDisclosure: 'licensed', sampleSource: 'Licensed QA sample', sampleProofAvailable: false, collaborators: [], declarationAccepted: true },
+    offers: [{ id: 'wav', label: 'WAV license', amountMinor: 2000, currency: 'USD', deliverables: ['wav'], usageSummary: 'Commercial use for one released track.', termsVersion: draftOfferTermsVersion, status: 'draft-only' }],
+  }
+  response = await request(creator, `/api/seller/beat-listings/${previewCatalog.contentId}`, 'PUT', listingInput)
+  assert(response.status === 201, 'El creador no pudo crear su borrador privado de venta en PostgreSQL.')
+  let listing = (await response.json() as { data: BeatListingRecord }).data
+  assert((await repo.findBeatListingDraft(listing.contentId, creatorId))?.offers[0]?.amountMinor === 2000, 'No persistió el borrador de venta del beat.')
+  const evidenceForm = new FormData()
+  const pdfBytes = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n')
+  evidenceForm.append('file', new Blob([new Uint8Array(pdfBytes).buffer as ArrayBuffer], { type: 'application/pdf' }), 'qa-rights-proof.pdf')
+  response = await fetch(`${base()}/api/seller/beat-listings/${listing.contentId}/evidence`, { method: 'POST', headers: { cookie: creator.cookie, 'x-csrf-token': creator.csrf }, body: evidenceForm })
+  const evidenceResponse = await response.json() as { data?: { id: string; originalName: string }; error?: { code?: string } }
+  assert(response.status === 201, `El creador no pudo subir evidencia privada de derechos en PostgreSQL (${response.status}: ${evidenceResponse.error?.code || 'sin detalle'}).`)
+  const evidence = evidenceResponse.data!
+  assert(evidence.originalName === 'qa-rights-proof.pdf' && (await repo.listSellerEvidence(listing.contentId, creatorId)).some(item => item.id === evidence.id), 'La evidencia de derechos no persistió en PostgreSQL.')
+  response = await fetch(`${base()}/api/seller/beat-listings/${listing.contentId}/evidence`, { headers: { cookie: outsider.cookie } })
+  assert(response.status === 404, 'Otra cuenta pudo consultar la evidencia privada del vendedor.')
+  response = await request(creator, `/api/seller/beat-listings/${listing.contentId}`, 'PUT', { ...listingInput, rights: { ...listingInput.rights, sampleProofAvailable: true } })
+  assert(response.status === 200, 'El creador no pudo completar el listing tras aportar evidencia.')
+  listing = (await response.json() as { data: BeatListingRecord }).data
+  response = await request(manager, '/api/staff/marketplace-review')
+  const managerQueue = (await response.json() as { data: Array<{ listing: BeatListingRecord; readyForFinalReview: boolean; evidence: Array<{ id: string }> }> }).data
+  const managerItem = managerQueue.find(item => item.listing.contentId === listing.contentId)
+  assert(response.status === 200 && managerItem?.readyForFinalReview && managerItem.evidence.some(item => item.id === evidence.id), 'Community Manager no pudo revisar ficha y evidencia en PostgreSQL.')
+  response = await fetch(`${base()}/api/staff/marketplace-review/${listing.contentId}/evidence/${evidence.id}`, { headers: { cookie: manager.cookie } })
+  assert(response.status === 200 && Buffer.from(await response.arrayBuffer()).equals(pdfBytes) && response.headers.get('cache-control') === 'no-store', 'Community Manager no pudo descargar evidencia privada con controles de caché.')
+  response = await request(admin, `/api/admin/marketplace-listings/${listing.contentId}`, 'POST', { decision: 'approve', note: 'Approved before community review.' })
+  const prematureApproval = await response.json() as { error?: { code?: string } }
+  assert(response.status === 409 && prematureApproval.error?.code === 'COMMUNITY_RECOMMENDATION_REQUIRED', 'El admin aprobó una ficha sin recomendación Community Manager vigente.')
+  response = await request(manager, `/api/staff/marketplace-review/${listing.contentId}`, 'POST', { decision: 'recommend', note: 'Rights evidence and revenue shares reviewed.' })
+  assert(response.status === 200, 'Community Manager no pudo recomendar la ficha lista.')
+  response = await request(admin, '/api/admin/marketplace-listings')
+  const adminReviewQueue = (await response.json() as { data: Array<{ listing: BeatListingRecord; recommendationCurrent: boolean; latestRecommendation?: { decision: string; reviewerId: string } }> }).data
+  const recommendedItem = adminReviewQueue.find(item => item.listing.contentId === listing.contentId)
+  assert(response.status === 200 && recommendedItem?.recommendationCurrent && recommendedItem.latestRecommendation?.decision === 'recommend' && recommendedItem.latestRecommendation.reviewerId === managerId, `La API no reconstruyó la recomendación recién guardada (${JSON.stringify(recommendedItem)}).`)
+  response = await request(manager, `/api/admin/marketplace-listings/${listing.contentId}`, 'POST', { decision: 'approve', note: 'Manager cannot finalize approval.' })
+  assert(response.status === 403, 'Community Manager pudo realizar la decisión final de admin.')
+  response = await request(admin, `/api/admin/marketplace-listings/${listing.contentId}`, 'POST', { decision: 'approve', note: 'Rights declaration reviewed for QA.' })
+  const finalDecision = await response.json() as { error?: { code?: string; message?: string } }
+  assert(response.status === 200, `Admin no pudo aprobar tras recomendación vigente de CM (${response.status}: ${finalDecision.error?.code || finalDecision.error?.message || 'sin detalle'}).`)
+  response = await request(creator, `/api/seller/beat-listings/${listing.contentId}`)
+  const sellerReview = (await response.json() as { data: BeatListingRecord }).data.adminReview
+  assert(response.status === 200 && sellerReview?.decision === 'approve' && sellerReview.current, 'El vendedor no recibió el estado de aprobación vigente.')
+  const outsiderCatalogAfterReview = (await request(outsider, '/api/catalog').then(value => value.json()) as { data: { entries: Array<{ contentId: string; purchaseOffers?: unknown[] }> } }).data.entries
+  assert(!outsiderCatalogAfterReview.some(item => item.contentId === listing.contentId), 'La revisión de intake publicó el beat antes de la aprobación de catálogo.')
+  await delay(5)
+  response = await request(creator, `/api/seller/beat-listings/${listing.contentId}`, 'PUT', { ...listingInput, description: `${listingInput.description} Revised after review.` , rights: { ...listingInput.rights, sampleProofAvailable: true } })
+  assert(response.status === 200, 'El creador no pudo actualizar su ficha después de revisión.')
+  response = await request(creator, `/api/seller/beat-listings/${listing.contentId}`)
+  const staleReview = (await response.json() as { data: BeatListingRecord }).data
+  assert(staleReview.communityReview?.current === false && staleReview.adminReview?.current === false, 'Editar la ficha no invalidó las decisiones de revisión anteriores.')
+  response = await request(admin, `/api/admin/marketplace-listings/${listing.contentId}`, 'POST', { decision: 'approve', note: 'Must wait for a new CM review.' })
+  const staleApproval = await response.json() as { error?: { code?: string } }
+  assert(response.status === 409 && staleApproval.error?.code === 'COMMUNITY_RECOMMENDATION_REQUIRED', 'El admin aprobó usando una recomendación obsoleta.')
   const hasProcessedPreview = Boolean(asset.previewStorageKey)
   if (hasProcessedPreview) {
     assert(previewCatalog.audio?.previewReady === true, 'La API no informó que el derivado está listo al dueño.')
+    const cmQueue = (await request(manager, '/api/staff/catalog-review').then(value => value.json()) as { data: Array<{ contentId: string; previewAvailable: boolean }> }).data
+    assert(cmQueue.some(item => item.contentId === previewCatalog.contentId && item.previewAvailable), 'Community Manager no recibió el Beat en su cola privada con preview disponible.')
+    const privatePreview = await fetch(`${base()}/api/staff/catalog-review/${previewCatalog.contentId}/preview`, { headers: { cookie: manager.cookie } })
+    assert(privatePreview.status === 200 && privatePreview.headers.get('cache-control') === 'no-store' && privatePreview.headers.get('content-type') === 'audio/mp4', 'El preview de revisión del CM no fue privado o no se pudo reproducir.')
+    const creatorOnly = await fetch(`${base()}/api/staff/catalog-review/${previewCatalog.contentId}/preview`, { headers: { cookie: outsider.cookie } })
+    assert(creatorOnly.status === 403, 'Una cuenta sin rol de staff pudo escuchar el preview privado de revisión.')
+    await approveCatalogAsManager(previewCatalog.contentId)
+    const managerPublished = await request(outsider, '/api/catalog').then(value => value.json()) as { data: { entries: Array<{ contentId: string }> } }
+    assert(managerPublished.data.entries.some(item => item.contentId === previewCatalog.contentId), 'La aprobación del CM no publicó independientemente el Beat.')
     response = await request(admin, `/api/admin/catalog-review/${previewCatalog.contentId}`, 'POST', { decision: 'approve' })
-    assert(response.status === 200, 'No se pudo aprobar el beat con preview procesado.')
+    assert(response.status === 409, 'La cola permitió una segunda decisión después de publicar por CM.')
     const publicEntry = (await request(outsider, '/api/catalog').then(value => value.json()) as { data: { entries: Array<{ contentId: string; assetId?: string; previewUrl?: string }> } }).data.entries.find(item => item.contentId === previewCatalog.contentId)
     assert(publicEntry?.previewUrl === `/api/catalog/${previewCatalog.contentId}/preview` && publicEntry.assetId === undefined, 'El catálogo no expuso únicamente la URL derivada.')
     response = await fetch(`${base()}${publicEntry.previewUrl}`)
     const derivative = Buffer.from(await response.arrayBuffer())
     assert(response.status === 200 && response.headers.get('content-type') === 'audio/mp4' && derivative.toString('ascii', 4, 8) === 'ftyp' && derivative.length < wav.length, 'El endpoint público no entregó el derivado M4A esperado.')
   } else {
+    const communityFailure = await request(manager, `/api/staff/catalog-review/${previewCatalog.contentId}`, 'POST', { decision: 'approve', note: 'Reviewed the uploaded audio preview.' })
+    const communityFailureBody = await communityFailure.json() as { error?: { code?: string } }
+    assert(communityFailure.status === 409 && communityFailureBody.error?.code === 'PROCESSED_PREVIEW_REQUIRED', 'El CM aprobó un audio sin preview procesado.')
     response = await request(admin, `/api/admin/catalog-review/${previewCatalog.contentId}`, 'POST', { decision: 'approve' })
     const failure = await response.json() as { error?: { code?: string } }
     assert(response.status === 409 && failure.error?.code === 'PROCESSED_PREVIEW_REQUIRED', 'Se aprobó un audio sin derivado procesado.')
@@ -425,7 +656,7 @@ try {
     assert(response.status === 404, 'El beat pendiente se expuso públicamente sin derivado.')
   }
 
-  response = await request(creator, '/api/catalog', 'POST', { title: `${fixturePrefix} concurrent`, type: 'beat', tagIds: [], publicationStatus: 'pending-review' })
+  response = await request(creator, '/api/catalog', 'POST', { title: `${fixturePrefix} concurrent`, type: 'one-shot', tagIds: [], publicationStatus: 'pending-review' })
   assert(response.status === 201, 'No se creó el beat pendiente de prueba.')
   const catalog = (await response.json() as { data: { contentId: string } }).data
   const decisions = await Promise.all([
@@ -439,6 +670,11 @@ try {
   const rejected = (await response.json() as { data: { contentId: string } }).data
   response = await request(admin, `/api/admin/catalog-review/${rejected.contentId}`, 'POST', { decision: 'reject', reason: 'owner-only QA note' })
   assert(response.status === 200, 'No se pudo rechazar el beat de prueba.')
+  response = await request(creator, '/api/catalog', 'POST', { title: `${fixturePrefix} CM rejected`, type: 'beat', tagIds: [], publicationStatus: 'pending-review' })
+  assert(response.status === 201, 'No se creó el Beat para probar la decisión independiente del CM.')
+  const communityRejected = (await response.json() as { data: { contentId: string } }).data
+  response = await request(manager, `/api/staff/catalog-review/${communityRejected.contentId}`, 'POST', { decision: 'reject', note: 'Metadata requires correction.' })
+  assert(response.status === 200, 'Community Manager no pudo rechazar independientemente una subida.')
   const creatorCatalog = (await request(creator, '/api/catalog').then(value => value.json()) as { data: { entries: Array<{ contentId: string; reviewNote?: string }> } }).data.entries
   assert(creatorCatalog.find(entry => entry.contentId === rejected.contentId)?.reviewNote === 'owner-only QA note', 'El creador no recibió su nota privada.')
   const outsiderCatalog = (await request(outsider, '/api/catalog').then(value => value.json()) as { data: { entries: Array<{ contentId: string }> } }).data.entries
@@ -499,6 +735,8 @@ try {
 
   await stopApi()
   await startApi()
+  response = await request(creator, '/api/account/plan')
+  assert(response.status === 200, 'La sesión PostgreSQL no sobrevivió al reinicio de la API.')
   creator = await login(emailFor('creator'))
   response = await request(creator, `/api/assets/${asset.id}/preview`)
   assert(response.status === 200 && Buffer.from(await response.arrayBuffer()).equals(wav), 'Preview no sobrevivió al reinicio de la API.')
@@ -510,13 +748,22 @@ try {
   assert(messages.some(message => message.body === 'SSE after reconnect'), 'El historial no sobrevivió al reinicio de la API.')
   const auditCount = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM audit_events WHERE actor_id = $1 AND metadata->>'resource' = 'catalog-review'", [adminId])
   assert(auditCount.rows[0].count >= 2, 'No persistieron los eventos de auditoría de revisión.')
-  await verifyBackupRestore(asset.id, previewCatalog.contentId, wav)
-  console.log('PASS: PostgreSQL auth/chat/SSE, plan assignment and storage resolution, package-quota concurrent upload race, seven audio formats, malformed-container fail-closed, declared/chunked upload limits, atomic account quotas, storage usage and moderation.')
+  const uploadReviewAudit = await pool.query<{ community: number; admin: number }>("SELECT count(*) FILTER (WHERE action = 'catalog_community_decision' AND actor_id = $1)::int AS community, count(*) FILTER (WHERE action = 'catalog_admin_decision' AND actor_id = $2)::int AS admin FROM audit_events WHERE target_id = ANY($3::text[])", [managerId, adminId, [communityRejected.contentId, rejected.contentId]])
+  assert(uploadReviewAudit.rows[0].community >= 1 && uploadReviewAudit.rows[0].admin >= 1, 'No persistieron por separado decisiones independientes de CM y admin sobre subidas.')
+  const intakeAudit = await pool.query<{ recommendations: number; decisions: number }>("SELECT count(*) FILTER (WHERE action = 'marketplace_review_recommendation' AND actor_id = $1)::int AS recommendations, count(*) FILTER (WHERE action = 'marketplace_admin_decision' AND actor_id = $2)::int AS decisions FROM audit_events WHERE target_id = $3", [managerId, adminId, previewCatalog.contentId])
+  assert(intakeAudit.rows[0].recommendations >= 1 && intakeAudit.rows[0].decisions >= 1, 'No persistieron por separado la recomendación CM y decisión final admin en PostgreSQL.')
+  const thumbnailResponse = artworkUpload.thumbnailAvailable ? await fetch(`${base()}${previewCatalog.artworkUrl}`, { headers: { cookie: creator.cookie } }) : undefined
+  const thumbnailBytes = thumbnailResponse?.ok ? Buffer.from(await thumbnailResponse.arrayBuffer()) : undefined
+  if (artworkUpload.thumbnailAvailable) assert(thumbnailBytes && thumbnailBytes.length === artworkUpload.thumbnailSizeBytes && thumbnailBytes.length < artworkBytes.length, 'La miniatura no redujo el peso transferido del artwork.')
+  await verifyBackupRestore(asset.id, previewCatalog.contentId, wav, artworkBytes, thumbnailBytes, socialPostId)
+  console.log('PASS: PostgreSQL auth/chat/SSE, creator profile avatar/cover and privacy, transactional notifications and rollback/deduplication, feed/profile sync, social interactions and CM moderation, quota race, audio formats and limits, private Beat artwork/audio review, independent CM/admin Beat approval, and seller listing/evidence review.')
 } finally {
   await stopApi()
   try {
+    await pool.query('DELETE FROM stripe_webhook_events WHERE event_id = $1', [webhookEventId])
+    await pool.query('DELETE FROM beat_orders WHERE id = $1', [orderId])
     await pool.query('DELETE FROM account_storage_quotas WHERE owner_id = ANY($1::text[]) OR updated_by = ANY($1::text[])', [[creatorId, adminId, outsiderId, quotaId]])
-    await pool.query('DELETE FROM accounts WHERE id = ANY($1::text[])', [[creatorId, adminId, outsiderId, quotaId]])
+    await pool.query('DELETE FROM accounts WHERE id = ANY($1::text[])', [[creatorId, adminId, outsiderId, managerId, quotaId]])
   } catch (error) {
     console.error('QA cleanup warning; the test database may already be unavailable:', error)
   }

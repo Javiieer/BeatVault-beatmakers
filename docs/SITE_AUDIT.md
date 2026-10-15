@@ -1,5 +1,8 @@
 # BeatVault site audit
 
+> Dated audit snapshot, not the current module inventory. Check `ROADMAP.md` and
+> `src/app/modules.ts` for current status and next steps.
+
 ## Snapshot: 2026-10-11
 
 PostgreSQL 16 checks passed in a separate disposable container: migrations 001-013,

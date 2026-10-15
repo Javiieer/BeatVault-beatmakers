@@ -1,5 +1,9 @@
 # Next step
 
+> Historical milestone snapshot. Its single-next-implementation and no-payments
+> statements predate marketplace review and Stripe test-mode checkout. For current
+> status and priorities, use `docs/ROADMAP.md`.
+
 ## Current milestone
 
 Home now replaces the old dashboard at /home, with /dashboard retained as an alias.

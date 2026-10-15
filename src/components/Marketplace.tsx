@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, AudioLines, CircleUserRound, Download, Play, Search, ShoppingBag } from 'lucide-react';
 import type { AudioAsset } from '../types';
 import type { CatalogAsset } from '../data/localCatalog';
-import type { MarketplacePage } from '../data/catalogRepository';
+import type { MarketplaceFilters, MarketplacePage } from '../data/catalogRepository';
 import { creatorType } from '../data/creatorUploads';
 import { Badge, PageHeader } from './ui';
 import { tx } from '../i18n';
@@ -11,7 +11,7 @@ import { createBeatCheckout, loadBeatOrders, type BeatOrderView } from '../data/
 
 type MarketKind = 'all' | 'Beat' | 'One-shot';
 
-export function Marketplace({ catalogAssets, onPlay, onSearch }: { catalogAssets: CatalogAsset[]; onPlay: (asset: AudioAsset) => void; onSearch?: (filters: { query?: string; type?: 'beat' | 'sample'; tag?: string; cursor?: string; limit?: number }) => Promise<MarketplacePage> }) {
+export function Marketplace({ catalogAssets, onPlay, onSearch, creatorId }: { catalogAssets: CatalogAsset[]; onPlay: (asset: AudioAsset) => void; onSearch?: (filters: MarketplaceFilters) => Promise<MarketplacePage>; creatorId?: string }) {
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<MarketKind>('all');
   const [tag, setTag] = useState('all');
@@ -69,56 +69,66 @@ export function Marketplace({ catalogAssets, onPlay, onSearch }: { catalogAssets
     let active = true;
     const timer = window.setTimeout(() => {
       setLoading(true);
-      void onSearch({ query, type: kind === 'all' ? undefined : kind === 'Beat' ? 'beat' : 'sample', tag: tag === 'all' ? undefined : tag, limit: 24 })
+      void onSearch({ query, type: kind === 'all' ? undefined : kind === 'Beat' ? 'beat' : 'sample', tag: tag === 'all' ? undefined : tag, creatorId, limit: 24 })
         .then(page => { if (active) setServerPage(page); })
         .finally(() => { if (active) setLoading(false); });
     }, 180);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [onSearch, query, kind, tag]);
+  }, [onSearch, query, kind, tag, creatorId]);
 
   const published = useMemo(() => catalogAssets.filter(asset => asset.publicationStatus === 'published' && creatorType(asset.type)), [catalogAssets]);
-  const tags = useMemo(() => Array.from(new Set(published.flatMap(asset => asset.tags.map(item => item.label.trim()).filter(Boolean)))).sort((a, b) => a.localeCompare(b, 'es')), [published]);
-  const visible = (serverPage?.assets ?? published).filter(asset => {
+  const storeAssets = creatorId && serverPage?.source === 'api'
+    ? serverPage.assets.filter(asset => asset.ownerId === creatorId && asset.publicationStatus === 'published' && Boolean(asset.purchaseOffers?.length))
+    : [];
+  const displayAssets = creatorId ? storeAssets : serverPage?.assets ?? published;
+  const storeName = storeAssets.find(asset => asset.creatorName)?.creatorName || 'Creator store';
+  const tags = useMemo(() => Array.from(new Set(displayAssets.flatMap(asset => asset.tags.map(item => item.label.trim()).filter(Boolean)))).sort((a, b) => a.localeCompare(b, 'es')), [displayAssets]);
+  const visible = displayAssets.filter(asset => {
     const assetKind = creatorType(asset.type);
     const searchable = `${asset.name} ${asset.creatorName ?? ''} ${asset.tags.map(item => item.label).join(' ')}`.toLocaleLowerCase('es');
     return (kind === 'all' || assetKind === kind) &&
       (tag === 'all' || asset.tags.some(item => item.label === tag)) &&
       (!query.trim() || searchable.includes(query.trim().toLocaleLowerCase('es')));
   });
-  const beatCount = published.filter(asset => creatorType(asset.type) === 'Beat').length;
-  const oneShotCount = published.filter(asset => creatorType(asset.type) === 'One-shot').length;
-  const listingTotal = serverPage?.total ?? published.length;
+  const beatCount = displayAssets.filter(asset => creatorType(asset.type) === 'Beat').length;
+  const oneShotCount = displayAssets.filter(asset => creatorType(asset.type) === 'One-shot').length;
+  const listingTotal = creatorId ? storeAssets.length : serverPage?.total ?? published.length;
   const loadMore = async () => {
     if (!onSearch || !serverPage?.nextCursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      const next = await onSearch({ query, type: kind === 'all' ? undefined : kind === 'Beat' ? 'beat' : 'sample', tag: tag === 'all' ? undefined : tag, cursor: serverPage.nextCursor, limit: 24 });
+      const next = await onSearch({ query, type: kind === 'all' ? undefined : kind === 'Beat' ? 'beat' : 'sample', tag: tag === 'all' ? undefined : tag, creatorId, cursor: serverPage.nextCursor, limit: 24 });
       setServerPage(current => current ? { ...next, assets: [...current.assets, ...next.assets] } : next);
     } finally { setLoadingMore(false); }
   };
   const clearFilters = () => { setQuery(''); setKind('all'); setTag('all'); };
 
-  return <>
-    <PageHeader
+  return <div className={creatorId ? 'market-store-view' : undefined}>
+    {creatorId ? <PageHeader
+      eyebrow="BEATVAULT · CREATOR STORE"
+      title={storeName}
+      description="Public beats and one-shots available from this seller."
+      action={<a className="button ghost" href="#/marketplace">Back to Marketplace</a>}
+    /> : <PageHeader
       eyebrow={tx('market.eyebrow')}
       title={tx('market.title')}
       description={tx('market.description')}
       action={<a className="button" href="#/upload">{tx('market.publish')} <ArrowUpRight size={16} aria-hidden="true" /></a>}
-    />
+    />}
 
-    <section className="market-summary" aria-label={tx('market.summary')}>
+    {!creatorId && <section className="market-summary" aria-label={tx('market.summary')}>
       <div><strong>{serverPage?.total ?? published.length}</strong><span>{tx('market.listings')}</span></div>
       <div><strong>{beatCount}</strong><span>{tx('market.beats')}</span></div>
       <div><strong>{oneShotCount}</strong><span>{tx('market.oneShots')}</span></div>
       <Badge tone="muted"><ShoppingBag size={13} aria-hidden="true" /> {tx('market.noPurchases')}</Badge>
-    </section>
+    </section>}
 
-    <StripeConnectPanel />
+    {!creatorId && <StripeConnectPanel />}
 
-    {checkoutResult === 'success' && <p className="market-checkout-status" role="status">{returnedOrder?.status === 'paid' ? 'Payment confirmed. Your beat is ready to download below.' : 'Payment submitted. Your download appears here once Stripe confirms it.'}</p>}
-    {checkoutResult === 'cancelled' && <p className="market-checkout-status" role="status">Checkout canceled. No payment was recorded.</p>}
+    {!creatorId && checkoutResult === 'success' && <p className="market-checkout-status" role="status">{returnedOrder?.status === 'paid' ? 'Payment confirmed. Your beat is ready to download below.' : 'Payment submitted. Your download appears here once Stripe confirms it.'}</p>}
+    {!creatorId && checkoutResult === 'cancelled' && <p className="market-checkout-status" role="status">Checkout canceled. No payment was recorded.</p>}
 
-    {orders.length > 0 && <section className="market-purchases" aria-label="Your beat purchases">
+    {!creatorId && orders.length > 0 && <section className="market-purchases" aria-label="Your beat purchases">
       <h2>Your purchases</h2>
       {orders.map(order => <div className="market-purchase-row" key={order.id}>
         <div><strong>{order.title}</strong><span>{order.status === 'paid' ? 'Paid' : order.status === 'pending' ? 'Payment pending' : order.status === 'failed' ? 'Payment failed' : order.status === 'refunded' ? 'Refunded' : 'Under dispute'} · {new Intl.NumberFormat('en-US', { style: 'currency', currency: order.currency.toUpperCase() }).format(order.amountMinor / 100)}</span></div>
@@ -160,7 +170,7 @@ export function Marketplace({ catalogAssets, onPlay, onSearch }: { catalogAssets
           <div className="market-card-title">
             <div><h2>{asset.name}</h2><p>{asset.tags.length ? asset.tags.map(item => `#${item.label}`).join(' ') : tx('market.noTags')}</p></div>
           </div>
-          <a className="market-creator" href={asset.ownerId ? `#/profile?id=${encodeURIComponent(asset.ownerId)}` : undefined} aria-disabled={!asset.ownerId || undefined}>
+          <a className="market-creator" href={asset.ownerId ? `#/store?id=${encodeURIComponent(asset.ownerId)}` : undefined} aria-disabled={!asset.ownerId || undefined}>
             <CircleUserRound size={16} aria-hidden="true" />
             <span>{asset.creatorName || tx('market.producer')}</span>
           </a>
@@ -177,10 +187,10 @@ export function Marketplace({ catalogAssets, onPlay, onSearch }: { catalogAssets
       {serverPage?.nextCursor && <div className="market-load-more"><button type="button" className="button ghost" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? tx('market.loadingMore') : tx('market.loadMore')}</button></div>}
     </> : <section className="market-empty" role="status">
       <AudioLines size={28} aria-hidden="true" />
-      <h2>{listingTotal ? tx('market.noMatches') : tx('market.emptyTitle')}</h2>
-      <p>{listingTotal ? tx('market.changeFilters') : tx('market.emptyBody')}</p>
-      {listingTotal > 0 && <button type="button" className="button ghost" onClick={clearFilters}>{tx('market.clear')}</button>}
-      {!listingTotal && <a className="button" href="#/upload">{tx('market.upload')} <ArrowUpRight size={16} aria-hidden="true" /></a>}
+      <h2>{creatorId ? (loading ? tx('market.loading') : 'No public offers yet') : listingTotal ? tx('market.noMatches') : tx('market.emptyTitle')}</h2>
+      <p>{creatorId ? 'This seller has no public beats or one-shots available right now.' : listingTotal ? tx('market.changeFilters') : tx('market.emptyBody')}</p>
+      {!creatorId && listingTotal > 0 && <button type="button" className="button ghost" onClick={clearFilters}>{tx('market.clear')}</button>}
+      {!creatorId && !listingTotal && <a className="button" href="#/upload">{tx('market.upload')} <ArrowUpRight size={16} aria-hidden="true" /></a>}
     </section>}
-  </>;
+  </div>;
 }

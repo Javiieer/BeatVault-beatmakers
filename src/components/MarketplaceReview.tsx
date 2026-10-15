@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, CheckCircle2, ClipboardCheck, ShieldCheck } from 'lucide-react'
 import { defaultMarketplaceReviewRepository, type MarketplaceReviewItem } from '../data/marketplaceReviewRepository'
+import { CatalogUploadReview } from './CatalogUploadReview'
 import '../styles/marketplace-review.css'
 
-export function MarketplaceReview() {
+export function MarketplaceReview({ canApproveCatalogUploads = false }: { canApproveCatalogUploads?: boolean }) {
   const [items, setItems] = useState<MarketplaceReviewItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -30,6 +31,7 @@ export function MarketplaceReview() {
     <div className="admin-guard"><ShieldCheck size={19} /><span><strong>Recommendation only.</strong> Community managers cannot approve sales, publish listings, alter prices, or access payment and account controls.</span></div>
     <div className="admin-guard review-preliminary"><AlertTriangle size={19} /><span>Evidence is seller-provided and has not been legally or forensically verified. This review is preliminary and does not approve a sale.</span></div>
     {error && <p className="upload-error" role="alert">{error}</p>}
+    {canApproveCatalogUploads && <CatalogUploadReview />}
     {loading && <p className="muted" role="status">Loading private review queue…</p>}
     {!loading && items.length === 0 && <section className="panel review-empty"><ClipboardCheck size={24} /><h2>Queue is clear</h2><p>Complete beat offer drafts will appear here for an initial review.</p></section>}
     {items.map(item => <article className="panel review-card" key={item.listing.contentId}>

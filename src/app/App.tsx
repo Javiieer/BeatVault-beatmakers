@@ -34,9 +34,9 @@ import { readUserSettings } from "../data/userSettings";
 import { clearSessionPreviews, removeSessionPreview, setSessionPreview } from "../data/sessionPreviewMap";
 import { getPathname, getQuery } from "./routing";
 import { ProjectRepository } from "../data/projectRepository";
-import { authClient, isAuthUser, isNull, uploadAsset, type AuthUser } from "../api/client";
+import { authClient, isAuthUser, isNull, uploadAsset, uploadArtwork, type AuthUser } from "../api/client";
 import { Login } from "../components/Login";
-import { CatalogRepository, mergeCatalogAssets, type CatalogSource } from "../data/catalogRepository";
+import { CatalogRepository, mergeCatalogAssets, type CatalogSource, type MarketplaceFilters } from "../data/catalogRepository";
 import { Plans } from "../components/Plans";
 import { Admin } from "../components/Admin";
 import { ProfileMenu } from "../components/ProfileMenu";
@@ -50,6 +50,9 @@ import { navigationLabel, tx } from '../i18n';
 import { SellerListingRepository } from '../data/sellerListingRepository';
 import type { BeatListingInput } from '../domains/marketplace/sellerListings';
 import { MarketplaceReview } from '../components/MarketplaceReview';
+
+const publicStoreCatalog = new CatalogRepository();
+const searchPublicStore = (filters: MarketplaceFilters) => publicStoreCatalog.marketplacePage(filters);
 
 const navIcons = { home: HomeIcon, disc: Disc3, library: LibraryIcon, music: Music2, video: Video, users: Users, messages: MessageCircle, store: Store, grid: Grid2X2, sparkles: Sparkles, upload: UploadIcon, chart: ChartNoAxesColumn, settings: Settings, plans: CreditCard, admin: ShieldCheck } as const;
 function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Promise<void> }) {
@@ -116,6 +119,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
     setCatalogLoading(true);
     void catalogRepository.list().then(async result => {
       const assets = await Promise.all(result.assets.map(async asset => {
+        if (asset.cover?.startsWith('/api/catalog/')) return asset;
         const artwork = await readLocalArtwork(scope, asset.id).catch(() => undefined);
         if (!artwork) return asset;
         const cover = createLocalArtworkUrl(scope, artwork);
@@ -245,6 +249,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
   const refreshCatalog = useCallback(async () => {
     const result = await catalogRepository.list();
     const hydrated = await Promise.all(result.assets.map(async asset => {
+      if (asset.cover?.startsWith('/api/catalog/')) return asset;
       const artwork = await readLocalArtwork(scope, asset.id).catch(() => undefined);
       if (!artwork) return asset;
       const cover = createLocalArtworkUrl(scope, artwork);
@@ -407,15 +412,19 @@ function renderPage(
   if (path === "/home" || path === "/dashboard" || path === "/")
     return <Home key={user?.id || "demo"} scope={user?.id || "demo"} uploads={feedAssets} onPlay={setActiveAsset} />;
   if (path === "/beats") return <Beats catalogAssets={catalogAssets} onPlay={setActiveAsset} />;
-  if (path === "/marketplace" || path === "/store") return <Marketplace catalogAssets={feedAssets} onPlay={setActiveAsset} onSearch={onSearchMarketplace} />;
+  if (path === "/marketplace") return <Marketplace catalogAssets={feedAssets} onPlay={setActiveAsset} onSearch={onSearchMarketplace} />;
+  if (path === "/store") {
+    const creatorId = getQuery(window.location.hash).get('id');
+    return creatorId ? <Marketplace key={`store-${creatorId}`} catalogAssets={[]} onPlay={setActiveAsset} onSearch={onSearchMarketplace} creatorId={creatorId} /> : <Placeholder name="Creator store" />;
+  }
   if (path === "/library")
     return <Library catalogAssets={catalogAssets} sessionPreviews={sessionPreviews} catalogSource={catalogSource} catalogError={catalogError} onUpdateCatalogAsset={onUpdateCatalogAsset} onDeleteCatalogAsset={onDeleteCatalogAsset} />;
   if (path === "/studio" || path === "/my-uploads")
     return <Studio scope={user?.id || 'demo'} loadError={user ? catalogError : undefined} uploads={uploads} onPlay={setActiveAsset} onUpdate={onUpdateCatalogAsset} onRetryPreview={user ? onRetryCatalogPreview : undefined} onLoadBeatListings={user ? onLoadBeatListings : undefined} onSaveBeatListing={user ? onSaveBeatListing : undefined} />;
-  if (path === "/upload") return <Upload scope={user?.id || 'demo'} onPublish={publishAsset} onRemoteUpload={user ? uploadAsset : undefined} />;
+  if (path === "/upload") return <Upload scope={user?.id || 'demo'} onPublish={publishAsset} onRemoteUpload={user ? uploadAsset : undefined} onRemoteArtworkUpload={user ? uploadArtwork : undefined} />;
   if (path === "/plans" || path === "/subscription") return <Plans />;
   if (path === "/admin") return <Admin onReviewed={onReviewed} />;
-  if (path === '/community-review') return user?.role === 'community_manager' || user?.role === 'admin' ? <MarketplaceReview /> : <Placeholder name="Community review" />;
+  if (path === '/community-review') return user?.role === 'community_manager' || user?.role === 'admin' ? <MarketplaceReview canApproveCatalogUploads={user.role === 'community_manager'} /> : <Placeholder name="Community review" />;
   if (path === "/shorts" || path.startsWith("/shorts?")) {
      const query = getQuery(window.location.hash);
     return <ShortsFeed sharedShortId={query.get("short")} />;
@@ -451,6 +460,8 @@ function App() {
   const authPath = getPathname(hash);
   if (authPath === '/forgot-password' || authPath === '/password-reset') return <PasswordRecovery mode={authPath === '/forgot-password' ? 'request' : 'reset'} token={getQuery(hash).get('token') || ''} />;
   if (authState === "checking") return <Login loading onSubmit={login} onRegister={register} />;
+  const publicStoreId = authPath === '/store' ? getQuery(hash).get('id') : null;
+  if ((authState === 'required' || authState === 'offline') && publicStoreId) return <div className="app-shell"><main className="public-store-view"><div className="public-store-nav"><a href="#/marketplace">BeatVault Marketplace</a><a href="#/dashboard">Sign in</a></div><Marketplace key={`public-store-${publicStoreId}`} creatorId={publicStoreId} catalogAssets={[]} onPlay={() => undefined} onSearch={searchPublicStore} /></main></div>;
   const publicProfileId = getPathname(hash) === '/profile' ? getQuery(hash).get('id') : null;
   if ((authState === 'required' || authState === 'offline') && publicProfileId) return <div className="app-shell"><main className="public-producer-view"><div className="public-producer-nav"><a href="#/dashboard">BeatVault</a><a href="#/dashboard">Iniciar sesion</a></div><CreatorProfilePage key={publicProfileId} targetId={publicProfileId} onPlay={() => undefined} /></main></div>;
   if (authState === "required") return <Login loading={authLoading} error={authError} onSubmit={login} onRegister={register} />;

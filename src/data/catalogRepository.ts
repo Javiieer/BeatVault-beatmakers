@@ -7,7 +7,7 @@ import { formatFileSize } from './localUploadDraft';
 
 export type CatalogSource = "api" | "fallback";
 export type CatalogResult = { assets: CatalogAsset[]; source: CatalogSource; error?: string };
-export type MarketplaceFilters = { query?: string; type?: 'beat' | 'sample'; tag?: string; cursor?: string; limit?: number };
+export type MarketplaceFilters = { query?: string; type?: 'beat' | 'sample'; tag?: string; creatorId?: string; cursor?: string; limit?: number };
 export type MarketplacePage = { assets: CatalogAsset[]; total: number; nextCursor?: string; source: CatalogSource; error?: string };
 
 const statuses = ["draft", "pending-review", "published", "archived", "rejected"] as const;
@@ -38,7 +38,8 @@ const isCatalogEntry = (value: unknown): value is CatalogEntry => {
     statuses.includes(item.publicationStatus as (typeof statuses)[number]) &&
     (item.reviewNote === undefined || typeof item.reviewNote === 'string' && item.reviewNote.length <= 160) &&
     (item.creatorName === undefined || typeof item.creatorName === 'string') &&
-    (item.previewUrl === undefined || typeof item.previewUrl === 'string');
+    (item.previewUrl === undefined || typeof item.previewUrl === 'string') &&
+    (item.artworkUrl === undefined || typeof item.artworkUrl === 'string');
 };
 export const isCatalogPage = (value: unknown): value is CatalogPage => {
   if (!value || typeof value !== "object") return false;
@@ -49,7 +50,7 @@ export const isCatalogPage = (value: unknown): value is CatalogPage => {
 const fromEntry = (entry: CatalogEntry, cached?: CatalogAsset): CatalogAsset => ({
   id: entry.contentId, name: entry.title, type: creatorType(entry.type) || entry.type,
   ownerId: entry.creatorId, creatorName: entry.creatorName, assetId: entry.assetId, coverId: entry.coverId,
-  cover: uploadCovers.find(cover => cover.id === entry.coverId)?.url || cached?.cover,
+  cover: entry.artworkUrl || uploadCovers.find(cover => cover.id === entry.coverId)?.url || cached?.cover,
   previewUrl: entry.previewUrl || (entry.assetId && entry.audio?.state === 'available' ? apiUrl(`/api/assets/${encodeURIComponent(entry.assetId)}/preview`) : undefined),
   downloadUrl: entry.assetId && entry.audio?.state === 'available' ? apiUrl(`/api/assets/${encodeURIComponent(entry.assetId)}/download`) : undefined,
   previewReady: entry.audio?.previewReady,
@@ -87,6 +88,7 @@ export class CatalogRepository {
     if (filters.query?.trim()) params.set('q', filters.query.trim());
     if (filters.type) params.set('type', filters.type);
     if (filters.tag?.trim()) params.set('tag', filters.tag.trim());
+    if (filters.creatorId) params.set('creatorId', filters.creatorId);
     if (filters.cursor) params.set('cursor', filters.cursor);
     params.set('limit', String(filters.limit ?? 24));
     const result = await this.api.request(`/api/marketplace?${params}`, { method: 'GET' }, isCatalogPage);

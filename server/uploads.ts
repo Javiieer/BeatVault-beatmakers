@@ -5,9 +5,10 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import { config } from './config'
-import type { AssetRecord, ServerRepository } from './store'
+import { StorageQuotaExceededError, type AssetRecord, type ServerRepository } from './store'
 import { createProcessedPreview, previewArtifactPath, previewStorageKey } from './media-preview'
 import { sellerEvidencePath } from './seller-evidence-upload'
+import { artworkPath } from './artwork'
 
 const validName = (name: string): string => name.replace(/[\\/\0]/g, '_').slice(0, 255) || 'unnamed'
 const mimeAliases: Record<string, string> = {
@@ -86,6 +87,10 @@ export async function receiveUpload(req: IncomingMessage, ownerId: string, repo:
       }
       await repo.updateAssetState(duplicate.id, 'missing')
     }
+    if (limitBytes !== undefined) {
+      const usedBytes = await repo.getStorageUsage(ownerId)
+      if (usedBytes + sizeBytes > limitBytes) throw new StorageQuotaExceededError(usedBytes, limitBytes, sizeBytes)
+    }
     const storageKey = `${owner}/${id}`; const destination = join(config.uploadDirectory, owner, id)
     const previewKey = previewStorageKey(owner, id)
     const preview = await createProcessedPreview(temporary, previewArtifactPath(config.uploadDirectory, previewKey), previewKey)
@@ -146,6 +151,21 @@ export async function reconcileUploads(repo: ServerRepository): Promise<void> {
     if (asset.previewStorageKey) {
       const previewPath = previewArtifactPath(config.uploadDirectory, asset.previewStorageKey); known.add(previewPath)
       try { await stat(previewPath) } catch { await repo.updateAssetPreview(asset.id, {}) }
+    }
+  }
+  for (const artwork of await repo.listCatalogArtwork()) {
+    known.add(artworkPath(config.uploadDirectory, artwork.storageKey))
+    if (artwork.thumbnailStorageKey) known.add(artworkPath(config.uploadDirectory, artwork.thumbnailStorageKey))
+  }
+  for (const account of await repo.listAccounts()) {
+    const profile = await repo.findProfile(account.id)
+    const owner = account.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
+    for (const kind of ['avatar', 'cover'] as const) {
+      const image = kind === 'avatar' ? profile?.avatarImage : profile?.coverImage
+      const prefix = `${owner}/profile-${kind}-`
+      if (!image || !image.storageKey.startsWith(prefix) || image.thumbnailStorageKey !== image.storageKey.replace(/\.(?:jpg|png)$/i, '.thumb.webp')) continue
+      known.add(artworkPath(config.uploadDirectory, image.storageKey))
+      known.add(artworkPath(config.uploadDirectory, image.thumbnailStorageKey))
     }
   }
   const listings = await repo.listAllBeatListingDrafts()

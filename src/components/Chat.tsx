@@ -9,13 +9,22 @@ import { uploadCovers } from '../data/creatorUploads';
 import '../styles/chat.css';
 
 type Contact = { profile: FriendDirectoryEntry; conversation?: ChatConversationView };
+type ChatError = { kind: 'inbox' | 'thread' | 'send'; message: string; peerId?: string };
 const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase() || 'BV';
 const avatarFor = (id: string) => uploadCovers.find(cover => cover.id === id)?.url;
 const timeLabel = (value: string) => new Intl.DateTimeFormat('es-MX', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 const dayLabel = (value: string) => new Intl.DateTimeFormat('es-MX', { day: 'numeric', month: 'short' }).format(new Date(value));
 
+function ChatErrorNotice({ error, onAction }: { error: ChatError; onAction: () => void }) {
+  const label = error.kind === 'inbox' ? 'Reintentar bandeja' : error.kind === 'send' ? 'Comprobar conversación' : 'Reintentar conversación';
+  const message = error.kind === 'send'
+    ? `No se pudo confirmar el envío. Conservamos el borrador; comprueba el hilo antes de decidir si volver a enviarlo. ${error.message}`
+    : error.message;
+  return <div className="chat-error" role="alert"><span>{message}</span><button type="button" onClick={onAction}>{label}</button></div>;
+}
+
 function Avatar({ profile, className = '', online = false }: { profile: FriendDirectoryEntry; className?: string; online?: boolean }) {
-  const image = avatarFor(profile.avatarId);
+  const image = profile.avatarId === 'custom' ? profile.avatarUrl : avatarFor(profile.avatarId);
   return <span className={`chat-avatar ${className}`} title={`${profile.displayName}: ${online ? 'En línea' : 'Desconectado'}`}>{image ? <img src={image} alt="" /> : initials(profile.displayName)}<i className={online ? 'is-online' : 'is-offline'} /></span>;
 }
 
@@ -27,7 +36,7 @@ export function Chat({ userId, initialPeerId }: { userId?: string; initialPeerId
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<ChatError | null>(null);
   const [connection, setConnection] = useState<'connecting' | 'connected' | 'offline'>('connecting');
   const [onlineIds, setOnlineIds] = useState<Set<string>>(() => new Set());
   const [liveNotice, setLiveNotice] = useState('');
@@ -42,8 +51,8 @@ export function Chat({ userId, initialPeerId }: { userId?: string; initialPeerId
 
   const loadInbox = useCallback(async () => {
     const [friends, conversations, presence] = await Promise.all([readFriendOverview(), readChatConversations(), readChatPresence()]);
-    if (!friends.ok) { setError(friends.error.message); return; }
-    if (!conversations.ok) { setError(conversations.error.message); return; }
+    if (!friends.ok) { setError({ kind: 'inbox', message: friends.error.message }); return; }
+    if (!conversations.ok) { setError({ kind: 'inbox', message: conversations.error.message }); return; }
     const byPeer = new Map(conversations.data.map(conversation => [conversation.peerId, conversation]));
     const items = friends.data.friends.map(friend => ({ profile: friend.profile, conversation: byPeer.get(friend.profile.accountId) }));
     items.sort((a, b) => {
@@ -53,16 +62,17 @@ export function Chat({ userId, initialPeerId }: { userId?: string; initialPeerId
     });
     setContacts(items);
     setOnlineIds(new Set(presence.ok ? presence.data.onlineIds : []));
-    setError('');
+    setError(current => current?.kind === 'inbox' ? null : current);
   }, []);
 
   const loadThread = useCallback(async (peerId: string, isCurrent: () => boolean = () => true) => {
     const result = await readChatMessages(peerId);
-    if (!result.ok) { if (isCurrent()) setError(result.error.message); return false; }
+    if (!result.ok) { if (isCurrent()) setError({ kind: 'thread', peerId, message: result.error.message }); return false; }
     const receipt = await markChatRead(peerId);
     if (!isCurrent()) return false;
     setMessages(result.data.map(message => receipt.ok && message.senderId === peerId && !message.readAt ? { ...message, readAt: receipt.data.readAt } : message));
-    if (!receipt.ok) setError(receipt.error.message);
+    if (!receipt.ok) setError({ kind: 'thread', peerId, message: receipt.error.message });
+    else setError(current => current?.peerId === peerId ? null : current);
     return receipt.ok;
   }, []);
 
@@ -80,7 +90,7 @@ export function Chat({ userId, initialPeerId }: { userId?: string; initialPeerId
       setConnection('connected');
       void loadInbox();
       const peerId = selectedIdRef.current;
-      if (peerId) void loadThread(peerId);
+      if (peerId) void loadThread(peerId, () => selectedIdRef.current === peerId);
     };
     stream.onerror = () => setConnection('offline');
     stream.onmessage = event => {
@@ -98,7 +108,7 @@ export function Chat({ userId, initialPeerId }: { userId?: string; initialPeerId
       }
       if ((value.type !== 'message' && value.type !== 'read') || typeof value.peerId !== 'string') return;
       void loadInbox();
-      if (value.peerId === selectedIdRef.current) { void loadThread(value.peerId); void loadInbox(); }
+      if (value.peerId === selectedIdRef.current) { void loadThread(value.peerId, () => selectedIdRef.current === value.peerId); void loadInbox(); }
       if (value.type === 'message' && value.peerId !== selectedIdRef.current) {
         const contact = contactsRef.current.find(item => item.profile.accountId === value.peerId);
         setLiveNotice(`Nuevo mensaje de ${contact?.profile.displayName || 'un amigo'}`);
@@ -112,7 +122,7 @@ export function Chat({ userId, initialPeerId }: { userId?: string; initialPeerId
     if (!selectedId) { setMessages([]); return; }
     let active = true;
     setMessages([]);
-    void loadThread(selectedId, () => active).then(loaded => { if (active && loaded) { setError(''); void loadInbox(); } });
+    void loadThread(selectedId, () => active && selectedIdRef.current === selectedId).then(loaded => { if (active && loaded) void loadInbox(); });
     return () => { active = false; };
   }, [loadInbox, loadThread, selectedId]);
 
@@ -125,13 +135,27 @@ export function Chat({ userId, initialPeerId }: { userId?: string; initialPeerId
     const body = draft.trim();
     if (!selectedId || !body || sending) return;
     setSending(true);
-    const result = await sendChatMessage(selectedId, body);
-    if (result.ok) {
-      setMessages(current => current.some(message => message.id === result.data.id) ? current : [...current, result.data]);
-      setDraft('');
-      void loadInbox();
-    } else setError(result.error.message);
-    setSending(false);
+    try {
+      const result = await sendChatMessage(selectedId, body);
+      if (result.ok) {
+        setMessages(current => current.some(message => message.id === result.data.id) ? current : [...current, result.data]);
+        setDraft(current => current === body ? '' : current);
+        setError(current => current?.peerId === selectedId ? null : current);
+        void loadInbox();
+      } else setError({ kind: 'send', peerId: selectedId, message: result.error.message });
+    } catch {
+      setError({ kind: 'send', peerId: selectedId, message: 'La conexión se interrumpió antes de confirmar la respuesta del servidor.' });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const retryError = () => {
+    if (!error) return;
+    if (error.kind === 'inbox') { void loadInbox(); return; }
+    if (error.peerId && error.peerId === selectedId) {
+      void loadThread(error.peerId, () => selectedIdRef.current === error.peerId);
+    }
   };
 
   if (!userId) return <main className="chat-page"><section className="chat-auth-required"><MessageCircle size={28} /><h1>Inicia sesión para chatear</h1><p>Los mensajes privados están disponibles para tu cuenta.</p><a className="button" href="#/home">Ir al inicio</a></section></main>;
@@ -142,7 +166,7 @@ export function Chat({ userId, initialPeerId }: { userId?: string; initialPeerId
       <aside className="chat-list-panel">
         <div className="chat-list-heading"><div><h2>Chats</h2><span>{contacts.length} {contacts.length === 1 ? 'amigo' : 'amigos'}</span></div><a href="#/friends" aria-label="Buscar amigos" title="Buscar amigos"><Users size={18} /></a></div>
         <label className="chat-search"><Search size={16} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Buscar en chats" aria-label="Buscar conversaciones" /></label>
-        {error && <div className="chat-error" role="alert"><span>{error}</span><button type="button" onClick={() => void loadInbox()}>Reintentar</button></div>}
+        {!selectedId && error && <ChatErrorNotice error={error} onAction={retryError} />}
         <nav className="chat-contact-list" aria-label="Conversaciones">
           {loading ? <p className="chat-list-state">Cargando conversaciones...</p> : visibleContacts.length ? visibleContacts.map(contact => {
             const last = contact.conversation?.lastMessage;
@@ -156,8 +180,12 @@ export function Chat({ userId, initialPeerId }: { userId?: string; initialPeerId
         </nav>
       </aside>
       <section className="chat-thread" aria-label={selected ? `Conversación con ${selected.profile.displayName}` : 'Conversación'}>
-        {!selected ? <div className="chat-empty-thread"><span><MessageCircle size={27} /></span><h2>Tu espacio para colaborar</h2><p>Elige un amigo y conversen sobre ideas, beats y proyectos.</p></div> : <>
-          <header className="chat-thread-header"><button type="button" className="chat-back" aria-label="Volver a conversaciones" onClick={() => setSelectedId(null)}><ArrowLeft size={19} /></button><Avatar profile={selected.profile} online={onlineIds.has(selected.profile.accountId)} /><span><strong>{selected.profile.displayName}</strong><small>{onlineIds.has(selected.profile.accountId) ? 'En línea' : selected.profile.genres.join(' · ') || 'Desconectado'}</small></span><a href={`#/profile?id=${encodeURIComponent(selected.profile.accountId)}`} className="chat-profile-link">Ver perfil</a></header>
+        {!selected ? <>
+          {selectedId && error && (error.kind === 'inbox' || error.peerId === selectedId) && <ChatErrorNotice error={error} onAction={retryError} />}
+          <div className="chat-empty-thread"><span><MessageCircle size={27} /></span><h2>Tu espacio para colaborar</h2><p>Elige un amigo y conversen sobre ideas, beats y proyectos.</p></div>
+        </> : <>
+          <header className="chat-thread-header"><button type="button" className="chat-back" aria-label="Volver a conversaciones" onClick={() => { setSelectedId(null); setError(null); }}><ArrowLeft size={19} /></button><Avatar profile={selected.profile} online={onlineIds.has(selected.profile.accountId)} /><span><strong>{selected.profile.displayName}</strong><small>{onlineIds.has(selected.profile.accountId) ? 'En línea' : selected.profile.genres.join(' · ') || 'Desconectado'}</small></span><a href={`#/profile?id=${encodeURIComponent(selected.profile.accountId)}`} className="chat-profile-link">Ver perfil</a></header>
+          {error && (error.kind === 'inbox' || error.peerId === selected.profile.accountId) && <ChatErrorNotice error={error} onAction={retryError} />}
           <div className="chat-message-list" ref={scrollRef} aria-live="polite">
             {!messages.length ? <p className="chat-start-hint">Saluda a {selected.profile.displayName} y empieza la conversación.</p> : messages.map(message => {
               const mine = message.senderId === userId;

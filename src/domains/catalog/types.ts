@@ -14,6 +14,7 @@ export interface CatalogEntry {
   reviewNote?: string
   creatorName?: string
   previewUrl?: string
+  artworkUrl?: string
   audio?: { originalName: string; mimeType: string; sizeBytes: number; state: 'available' | 'missing' | 'metadata-only'; previewReady?: boolean }
   purchaseOffers?: Array<{ id: string; label: string; amountMinor: number; currency: 'USD'; deliverables: string[] }>
 }

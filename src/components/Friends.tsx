@@ -8,7 +8,7 @@ import '../styles/friends.css';
 type View = 'discover' | 'requests' | 'friends';
 const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase() || 'BV';
 function CreatorAvatar({ profile }: { profile: FriendDirectoryEntry }) {
-  const image = profile.avatarId === 'initials' ? undefined : uploadCovers.find(cover => cover.id === profile.avatarId)?.url;
+  const image = profile.avatarId === 'custom' ? profile.avatarUrl : profile.avatarId === 'initials' ? undefined : uploadCovers.find(cover => cover.id === profile.avatarId)?.url;
   return <span className="friends-avatar">{image ? <img src={image} alt="" /> : initials(profile.displayName)}</span>;
 }
 

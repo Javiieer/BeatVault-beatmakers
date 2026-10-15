@@ -28,15 +28,15 @@ bash scripts/deploy-oracle.sh
 Put the real domain in `BEATVAULT_DOMAIN` and the generated 64-character hex value
 in `POSTGRES_PASSWORD`. Keep `.env.oracle` private; the script restricts it to the
 deploying user. The script validates the Compose configuration, builds both images
-and starts the stack. Migrations 001-022 run automatically only when PostgreSQL
+and starts the stack. Migrations 001-023 run automatically only when PostgreSQL
 creates a fresh data volume. Future database changes need a separate migration step;
 re-deploying does not apply migrations to an existing volume.
 
 For an existing deployment, back up PostgreSQL first, then apply new SQL migrations
-from the project directory on the VM. For migration 022:
+from the project directory on the VM. For the latest migration (023):
 
 ```bash
-docker compose --env-file .env.oracle exec -T postgres psql -v ON_ERROR_STOP=1 -U beatvault -d beatvault < db/migrations/022_auth_sessions.sql
+docker compose --env-file .env.oracle exec -T postgres psql -v ON_ERROR_STOP=1 -U beatvault -d beatvault < db/migrations/023_catalog_artwork.sql
 ```
 
 The app listens on HTTPS at the domain. Compose publishes only TCP 80/443 through

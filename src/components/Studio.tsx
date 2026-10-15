@@ -23,7 +23,7 @@ export function UploadCard({ asset, onPlay, onEdit, onArchive, onRetryPreview, o
   asset: CatalogAsset; onPlay: (asset: AudioAsset) => void; onEdit?: () => void; onArchive?: () => void; onRetryPreview?: () => void; onPrepareSale?: () => void; listing?: BeatListingRecord; retrying?: boolean; busy?: boolean;
 }) {
   return <article className="creator-upload-card">
-    <img className="creator-upload-cover" src={asset.cover || uploadCovers[0].url} alt="" />
+    <img className="creator-upload-cover" src={asset.cover || uploadCovers[0].url} alt="" loading="lazy" decoding="async" />
     <div className="creator-upload-copy">
       <span className="eyebrow">{creatorType(asset.type)}</span>
       <h2 title={asset.name}>{asset.name}</h2>
@@ -133,7 +133,7 @@ export function Studio({ uploads, onPlay, onUpdate, onRetryPreview, onLoadBeatLi
     <PageHeader eyebrow="BeatVault" title="Mis subidas" description={`${uploads.length} audios`}
       action={<a className="button" href="#/upload"><UploadIcon size={17} /> Subir audio</a>} />
     {scope !== 'demo' && <section className="creator-storage-summary" aria-label="Uso de almacenamiento">
-      <div><span className="eyebrow">Almacenamiento de originales</span><strong>{storageUsage ? `${formatBytes(storageUsage.usedBytes)} usados${storageUsage.limitBytes === null ? '' : ` de ${formatBytes(storageUsage.limitBytes)}`}` : storageUnavailable ? 'No disponible' : 'Consultando consumo...'}</strong><p>{storageUnavailable ? 'No se pudo consultar el almacenamiento de la cuenta.' : storageUsage?.quotaSource === 'account' ? 'Límite de prueba asignado por administración. Se contabilizan tus originales.' : storageUsage?.quotaSource === 'server' ? 'Límite técnico global. Se contabilizan tus originales.' : 'Sin límite asignado por ahora; la cuota del paquete se definirá más adelante.'}</p></div>
+      <div><span className="eyebrow">Almacenamiento de audios y artwork</span><strong>{storageUsage ? `${formatBytes(storageUsage.usedBytes)} usados${storageUsage.limitBytes === null ? '' : ` de ${formatBytes(storageUsage.limitBytes)}`}` : storageUnavailable ? 'No disponible' : 'Consultando consumo...'}</strong><p>{storageUnavailable ? 'No se pudo consultar el almacenamiento de la cuenta.' : storageUsage?.quotaSource === 'account' ? 'Límite de prueba asignado por administración. Se contabilizan audios y artwork.' : storageUsage?.quotaSource === 'server' ? 'Límite técnico global. Se contabilizan audios y artwork.' : 'Sin límite asignado por ahora; la cuota del paquete se definirá más adelante.'}</p></div>
       {storageUsage?.limitBytes !== null && storageUsage && <div className="creator-storage-meter" role="progressbar" aria-label="Almacenamiento usado" aria-valuenow={Math.min(100, Math.round(storageUsage.usedBytes / storageUsage.limitBytes * 100))} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${Math.min(100, storageUsage.usedBytes / storageUsage.limitBytes * 100)}%` }} /></div>}
     </section>}
     {hasDraft && <div className="creator-draft-strip"><div><span className="eyebrow">Borrador sin enviar</span><strong>{draft.title || draft.file}</strong></div><a className="button ghost" href="#/upload"><Pencil size={16} /> Continuar</a></div>}

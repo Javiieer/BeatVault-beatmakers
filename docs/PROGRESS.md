@@ -1,5 +1,8 @@
 # Alpha Progress
 
+> Historical progress snapshot. Its claims about no backend, APIs, or payments are
+> obsolete. For current implementation status and remaining work, see `ROADMAP.md`.
+
 Updated: 2026-09-02
 
 Phase 4.6 añadió el Admin Control Center local de solo lectura: endpoints protegidos por sesión y rol admin, redacción de cuentas y UI API-first con fallback mock visible. Phase 4.7 persiste la auditoría local redactada en JSON/PostgreSQL con retención configurable. Ver `docs/PHASE_4_7_REPORT.md`.

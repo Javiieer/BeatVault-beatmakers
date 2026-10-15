@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http'
 
-export type ChatEvent = { type: 'message' | 'read' | 'activity'; peerId: string } | { type: 'presence'; peerId: string; online: boolean }
+export type ChatEvent = { type: 'message' | 'read' | 'activity'; peerId: string } | { type: 'presence'; peerId: string; online: boolean } | { type: 'notification'; notificationId: string }
 
 const streams = new Map<string, Set<ServerResponse>>()
 

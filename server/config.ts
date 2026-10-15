@@ -16,6 +16,7 @@ export type ServerConfig = {
   storageQuotaBytes?: number
   planStorageBytes: { free?: number; creator?: number; studio?: number }
   ffmpegPath: string
+  ffprobePath: string
   previewDurationSeconds: number
   uploadLimits: { fileBytes: number; requestBytes: number; files: number; fields: number }
   audit: { maxEntries: number; retentionDays: number }
@@ -91,6 +92,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServerConfig =
       studio: env.BEATVAULT_PLAN_STUDIO_STORAGE_BYTES === undefined ? undefined : positive('BEATVAULT_PLAN_STUDIO_STORAGE_BYTES', env.BEATVAULT_PLAN_STUDIO_STORAGE_BYTES, 1),
     },
     ffmpegPath: env.BEATVAULT_FFMPEG_PATH || 'ffmpeg',
+    ffprobePath: env.BEATVAULT_FFPROBE_PATH || 'ffprobe',
     previewDurationSeconds: positive('BEATVAULT_PREVIEW_DURATION_SECONDS', env.BEATVAULT_PREVIEW_DURATION_SECONDS, 30),
     uploadLimits: { fileBytes: positive('BEATVAULT_UPLOAD_MAX_FILE_BYTES', env.BEATVAULT_UPLOAD_MAX_FILE_BYTES, 500 * 1024 * 1024), requestBytes: positive('BEATVAULT_UPLOAD_MAX_REQUEST_BYTES', env.BEATVAULT_UPLOAD_MAX_REQUEST_BYTES, 510 * 1024 * 1024), files: positive('BEATVAULT_UPLOAD_MAX_FILES', env.BEATVAULT_UPLOAD_MAX_FILES, 1), fields: positive('BEATVAULT_UPLOAD_MAX_FIELDS', env.BEATVAULT_UPLOAD_MAX_FIELDS, 8) },
     audit: { maxEntries: positive('BEATVAULT_AUDIT_MAX_ENTRIES', env.BEATVAULT_AUDIT_MAX_ENTRIES, 10000), retentionDays: positive('BEATVAULT_AUDIT_RETENTION_DAYS', env.BEATVAULT_AUDIT_RETENTION_DAYS, 365) },

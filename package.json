@@ -14,6 +14,7 @@
     "server:dev": "tsx watch server/index.ts",
     "server:test": "vitest run server --pool forks --maxWorkers 2",
     "test:postgres": "tsx scripts/postgres-qa.ts",
+    "artwork:backfill": "tsx scripts/backfill-artwork-thumbnails.ts",
     "test:plan-capacity": "tsx scripts/plan-capacity-bots.ts",
     "admin:bootstrap": "tsx server/admin-bootstrap.ts",
     "local:qa-accounts": "tsx scripts/setup-local-qa-accounts.ts",
@@ -33,6 +34,7 @@
     "pg": "^8.23.0",
     "react": "latest",
     "react-dom": "latest",
+    "sharp": "^0.35.5",
     "stripe": "^23.0.0",
     "typescript": "latest",
     "vite": "latest"

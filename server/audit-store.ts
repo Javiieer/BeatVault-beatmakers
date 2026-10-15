@@ -16,6 +16,9 @@ export class JsonAuditStore implements AuditStore {
 }
 export class PostgresAuditStore implements AuditStore {
   constructor(private readonly db: SqlClient) {}
-  async list(): Promise<AuditEvent[]> { const result = await this.db.query<AuditEvent>('SELECT id, timestamp, action, request_id AS "requestId", actor_id AS "actorId", target_id AS "targetId", success, metadata FROM audit_events WHERE timestamp >= NOW() - ($1 * INTERVAL \'1 day\') ORDER BY timestamp DESC LIMIT $2', [config.audit.retentionDays, config.audit.maxEntries]); return result.rows.reverse() }
+  async list(): Promise<AuditEvent[]> {
+    const result = await this.db.query<Omit<AuditEvent, 'timestamp'> & { timestamp: string | Date }>('SELECT id, timestamp, action, request_id AS "requestId", actor_id AS "actorId", target_id AS "targetId", success, metadata FROM audit_events WHERE timestamp >= NOW() - ($1 * INTERVAL \'1 day\') ORDER BY timestamp DESC LIMIT $2', [config.audit.retentionDays, config.audit.maxEntries])
+    return result.rows.reverse().map(event => ({ ...event, timestamp: event.timestamp instanceof Date ? event.timestamp.toISOString() : event.timestamp }))
+  }
   async append(event: AuditEvent): Promise<void> { await this.db.query('INSERT INTO audit_events (id, timestamp, action, request_id, actor_id, target_id, success, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', [event.id || randomUUID(), event.timestamp, event.action, event.requestId, event.actorId ?? null, event.targetId ?? null, event.success, JSON.stringify(event.metadata)]) }
 }

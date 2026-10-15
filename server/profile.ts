@@ -20,7 +20,7 @@ export function validateProfile(value: unknown): ProfileInput {
   const instagram = field('instagram', 31).replace(/^@/, '');
   if (instagram && !/^[a-zA-Z0-9._]{1,30}$/.test(instagram)) throw new ValidationError('instagram', 'Usuario de Instagram no valido.');
   if (!Array.isArray(p.genres) || p.genres.length > 8 || p.genres.some(g => typeof g !== 'string' || !g.trim() || g.length > 24)) throw new ValidationError('genres', 'Hasta 8 generos de 24 caracteres.');
-  if (!profileCoverIds.includes(p.coverId as ProfileInput['coverId']) || !['initials', ...profileCoverIds].includes(p.avatarId as string)) throw new ValidationError('coverId', 'Selecciona una imagen disponible.');
+  if (!(profileCoverIds.includes(p.coverId as typeof profileCoverIds[number]) || p.coverId === 'custom') || !(['initials', ...profileCoverIds].includes(p.avatarId as string) || p.avatarId === 'custom')) throw new ValidationError('coverId', 'Selecciona una imagen disponible.');
   if (typeof p.publicProfile !== 'boolean') throw new ValidationError('publicProfile', 'Visibilidad no valida.');
   return { displayName, bio, location, website, instagram, genres: [...new Set(p.genres.map(g => (g as string).trim()))], coverId: p.coverId as ProfileInput['coverId'], avatarId: p.avatarId as ProfileInput['avatarId'], publicProfile: p.publicProfile };
 }

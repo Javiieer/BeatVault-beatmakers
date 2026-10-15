@@ -1,5 +1,9 @@
 # Phase 5 Product Catalog and Monetization Plan
 
+> Historical planning document. Its instruction to implement no payments predates the
+> test-mode Stripe marketplace slice. Current scope and launch gates are in `ROADMAP.md`
+> and `STRIPE_CONNECT_TESTING.md`.
+
 **Status:** Phase 5.3 complete; sales phases planned
 **Rule:** Define the product model before implementing sales
 

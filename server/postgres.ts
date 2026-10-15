@@ -8,6 +8,9 @@ import type { SocialActivity, SocialComment } from '../src/domains/social'
 import type { PromotionRule } from '../src/domains/marketplace/promotions'
 import type { BeatListingRecord } from '../src/domains/marketplace/sellerListings'
 import { sellerEvidenceMaxFiles, type SellerEvidenceRecord } from '../src/domains/marketplace/sellerEvidence'
+import type { ArtworkRecord } from './artwork'
+import type { SocialPost, SocialPostComment, SocialPostCursor, SocialPostReport, SocialPostVisibility } from './social-posts'
+import { isValidNotificationTimestamp, normalizeNotificationCursor, normalizeNotificationRecord, notificationLimit, type NotificationPage, type NotificationPageOptions, type NotificationRecord, type NotificationSeed } from './notifications'
 
 export type SqlResult<Row> = { rows: Row[] }
 export interface SqlClient {
@@ -21,11 +24,32 @@ type AssetRow = { id: string; owner_id: string; original_name: string; storage_k
 type MessageRow = { id: string; sender_id: string; recipient_id: string; body: string; created_at: string; read_at: string | null }
 type SocialCommentRow = { id: string; content_id: string; author_id: string; body: string; created_at: string }
 type SessionRow = { token_hash: string; account_id: string; csrf_token_hash: string; expires_at: string }
+type SocialPostRow = { id: string; author_id: string; kind: SocialPost['kind']; body: string; audience: SocialPost['audience']; visibility: SocialPost['visibility']; media_storage_key: string | null; media_mime_type: SocialPost['media'] extends infer M ? M extends { mimeType: infer T } ? T | null : never : never; media_size_bytes: string | number | null; media_sha256: string | null; created_at: string; updated_at: string; reviewed_at: string | null; reviewed_by: string | null; review_note: string | null }
+type SocialPostReportRow = { id: string; post_id: string; reporter_id: string; reason: SocialPostReport['reason']; details: string; status: SocialPostReport['status']; created_at: string; reviewed_at: string | null; reviewed_by: string | null }
+type SocialPostCommentRow = { id: string; post_id: string; author_id: string; body: string; created_at: string }
+type NotificationRow = { unread_count?: string | number; id: string | null; recipient_id: string | null; actor_id: string | null; type: NotificationRecord['type'] | null; resource_type: NotificationRecord['resourceType'] | null; resource_id: string | null; source_id: string | null; event_key: string | null; created_at: string | Date | null; read_at: string | Date | null }
+type NotificationMutationRow = { notification_id: string | null; notification_recipient_id: string | null; notification_actor_id: string | null; notification_type: NotificationRecord['type'] | null; notification_resource_type: NotificationRecord['resourceType'] | null; notification_resource_id: string | null; notification_source_id: string | null; notification_event_key: string | null; notification_created_at: string | Date | null; notification_read_at: string | Date | null }
 
 const project = (row: ProjectRow): ProjectRecord => ({ id: row.id, ownerId: row.owner_id, title: row.title, status: row.status, updatedAt: row.updated_at })
 const catalog = (row: CatalogRow): CatalogEntry => ({ contentId: row.content_id, creatorId: row.creator_id, type: row.type, title: row.title, tagIds: row.tag_ids, previewIds: row.preview_ids, publicationStatus: row.publication_status, assetId: row.asset_id ?? undefined, coverId: row.cover_id ?? undefined, reviewNote: row.review_note ?? undefined })
 const catalogColumns = 'content_id, creator_id, type, title, tag_ids, preview_ids, publication_status, asset_id, cover_id, review_note'
 const chatMessage = (row: MessageRow): DirectMessage => ({ id: row.id, senderId: row.sender_id, recipientId: row.recipient_id, body: row.body, createdAt: row.created_at, readAt: row.read_at ?? undefined })
+const socialPostColumns = 'id, author_id, kind, body, audience, visibility, media_storage_key, media_mime_type, media_size_bytes, media_sha256, created_at, updated_at, reviewed_at, reviewed_by, review_note'
+const socialPost = (row: SocialPostRow): SocialPost => ({ id: row.id, authorId: row.author_id, kind: row.kind, body: row.body, audience: row.audience, visibility: row.visibility, ...(row.media_storage_key ? { media: { storageKey: row.media_storage_key, mimeType: row.media_mime_type as NonNullable<SocialPost['media']>['mimeType'], sizeBytes: Number(row.media_size_bytes), sha256: row.media_sha256! } } : {}), createdAt: row.created_at, updatedAt: row.updated_at, ...(row.reviewed_at ? { reviewedAt: row.reviewed_at } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}), ...(row.review_note ? { reviewNote: row.review_note } : {}) })
+const socialPostReport = (row: SocialPostReportRow): SocialPostReport => ({ id: row.id, postId: row.post_id, reporterId: row.reporter_id, reason: row.reason, details: row.details, status: row.status, createdAt: row.created_at, ...(row.reviewed_at ? { reviewedAt: row.reviewed_at } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}) })
+const timestamp = (value: string | Date): string => value instanceof Date ? value.toISOString() : value
+const notification = (row: NotificationRow): NotificationRecord => {
+  if (!row.id || !row.recipient_id || !row.actor_id || !row.type || !row.resource_type || !row.resource_id || !row.source_id || !row.event_key || !row.created_at) throw new Error('INVALID_NOTIFICATION_ROW')
+  return { id: row.id, recipientId: row.recipient_id, actorId: row.actor_id, type: row.type, resourceType: row.resource_type, resourceId: row.resource_id, sourceId: row.source_id, eventKey: row.event_key, createdAt: timestamp(row.created_at), readAt: row.read_at ? timestamp(row.read_at) : null }
+}
+const notificationColumns = 'id, recipient_id, actor_id, type, resource_type, resource_id, source_id, event_key, created_at, read_at'
+const notificationMutationColumns = `saved.id AS notification_id, saved.recipient_id AS notification_recipient_id, saved.actor_id AS notification_actor_id, saved.type AS notification_type, saved.resource_type AS notification_resource_type, saved.resource_id AS notification_resource_id, saved.source_id AS notification_source_id, saved.event_key AS notification_event_key, saved.created_at AS notification_created_at, saved.read_at AS notification_read_at`
+const notificationFromMutation = (row: NotificationMutationRow): NotificationRecord | undefined => row.notification_id ? notification({ id: row.notification_id, recipient_id: row.notification_recipient_id, actor_id: row.notification_actor_id, type: row.notification_type, resource_type: row.notification_resource_type, resource_id: row.notification_resource_id, source_id: row.notification_source_id, event_key: row.notification_event_key, created_at: row.notification_created_at, read_at: row.notification_read_at }) : undefined
+const normalizedNotificationSeed = (seed: NotificationSeed | undefined, type: NotificationRecord['type'], resourceType: NotificationRecord['resourceType'], resourceId: string, sourceId: string): NotificationSeed | undefined => {
+  if (!seed) return undefined
+  const normalized = normalizeNotificationRecord({ ...seed, recipientId: 'recipient', actorId: 'actor', type, resourceType, resourceId, sourceId, eventKey: `${type}:${sourceId}`, readAt: null })
+  return { id: normalized.id, type, resourceType, resourceId, sourceId, eventKey: normalized.eventKey, createdAt: normalized.createdAt }
+}
 
 /** SQL-only adapter. A PostgreSQL driver and transaction boundary are injected by a later platform phase. */
 export class PostgresRepository implements ServerRepository {
@@ -52,9 +76,47 @@ export class PostgresRepository implements ServerRepository {
     const result = await this.db.query<Friendship>('INSERT INTO friendships (id, requester_id, recipient_id, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, requester_id AS "requesterId", recipient_id AS "recipientId", status, created_at AS "createdAt", updated_at AS "updatedAt"', [input.id, input.requesterId, input.recipientId, input.status, input.createdAt, input.updatedAt])
     return result.rows[0]
   }
+  async createFriendshipWithNotification(input: Friendship, inputSeed?: NotificationSeed) {
+    const seed = normalizedNotificationSeed(inputSeed, 'friend_request', 'friendship', input.id, input.id)
+    const result = await this.db.query<Friendship & NotificationMutationRow>(`WITH created AS (
+      INSERT INTO friendships (id, requester_id, recipient_id, status, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, requester_id AS "requesterId", recipient_id AS "recipientId", status, created_at AS "createdAt", updated_at AS "updatedAt"
+    ), saved AS (
+      INSERT INTO notifications (${notificationColumns})
+      SELECT $7::uuid, created."recipientId", created."requesterId", 'friend_request', 'friendship', created.id, created.id, 'friend_request:' || created.id, $8::timestamptz, NULL
+      FROM created WHERE $7::uuid IS NOT NULL AND created.status = 'pending' AND created."requesterId" <> created."recipientId"
+      ON CONFLICT (event_key) DO UPDATE SET event_key = EXCLUDED.event_key
+      RETURNING ${notificationColumns}
+    )
+    SELECT created.*, ${notificationMutationColumns} FROM created LEFT JOIN saved ON TRUE`, [input.id, input.requesterId, input.recipientId, input.status, input.createdAt, input.updatedAt, seed?.id ?? null, seed?.createdAt ?? null])
+    const row = result.rows[0]
+    if (!row) throw new Error('FRIENDSHIP_CREATE_FAILED')
+    const saved = notificationFromMutation(row)
+    return { value: { id: row.id, requesterId: row.requesterId, recipientId: row.recipientId, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt }, notifications: saved ? [saved] : [] }
+  }
   async updateFriendship(id: string, actorId: string, status: Friendship['status']) {
     const result = await this.db.query<Friendship>('UPDATE friendships SET status = $1, updated_at = NOW() WHERE id = $2 AND recipient_id = $3 AND status = $4 RETURNING id, requester_id AS "requesterId", recipient_id AS "recipientId", status, created_at AS "createdAt", updated_at AS "updatedAt"', [status, id, actorId, 'pending'])
     return result.rows[0]
+  }
+  async acceptFriendshipWithNotification(id: string, actorId: string, inputSeed?: NotificationSeed) {
+    const seed = normalizedNotificationSeed(inputSeed, 'friend_request_accepted', 'friendship', id, id)
+    const result = await this.db.query<(Friendship & NotificationMutationRow)>(`WITH updated AS (
+      UPDATE friendships SET status = 'accepted', updated_at = NOW()
+      WHERE id = $1 AND recipient_id = $2 AND status = 'pending'
+      RETURNING id, requester_id AS "requesterId", recipient_id AS "recipientId", status, created_at AS "createdAt", updated_at AS "updatedAt"
+    ), saved AS (
+      INSERT INTO notifications (${notificationColumns})
+      SELECT $3::uuid, updated."requesterId", updated."recipientId", 'friend_request_accepted', 'friendship', updated.id, updated.id, 'friend_request_accepted:' || updated.id, $4::timestamptz, NULL
+      FROM updated WHERE $3::uuid IS NOT NULL AND updated."requesterId" <> updated."recipientId"
+      ON CONFLICT (event_key) DO UPDATE SET event_key = EXCLUDED.event_key
+      RETURNING ${notificationColumns}
+    )
+    SELECT updated.*, ${notificationMutationColumns} FROM updated LEFT JOIN saved ON TRUE`, [id, actorId, seed?.id ?? null, seed?.createdAt ?? null])
+    const row = result.rows[0]
+    if (!row) return { value: undefined, notifications: [] }
+    const saved = notificationFromMutation(row)
+    return { value: { id: row.id, requesterId: row.requesterId, recipientId: row.recipientId, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt }, notifications: saved ? [saved] : [] }
   }
   async deleteFriendship(id: string, actorId: string, status: Friendship['status']) {
     const result = await this.db.query('DELETE FROM friendships WHERE id = $1 AND status = $3 AND (requester_id = $2 OR recipient_id = $2) RETURNING id', [id, actorId, status])
@@ -107,6 +169,121 @@ export class PostgresRepository implements ServerRepository {
   async listSocialActivity(recipientId: string): Promise<SocialActivity[]> {
     const result = await this.db.query<SocialActivity>(`SELECT e.id::text AS id, e.type, e.content_id AS "contentId", a.title AS "contentTitle", e.actor_id AS "actorId", ''::text AS "actorName", COALESCE(e.body, '') AS body, e.created_at AS "createdAt" FROM catalog_activity e JOIN catalog_assets a ON a.content_id = e.content_id WHERE a.creator_id = $1 AND a.publication_status = 'published' AND e.actor_id <> $1 ORDER BY e.created_at DESC LIMIT 100`, [recipientId])
     return result.rows
+  }
+  async createNotification(input: NotificationRecord): Promise<NotificationRecord> {
+    const record = normalizeNotificationRecord(input)
+    const result = await this.db.query<NotificationRow>(`INSERT INTO notifications (${notificationColumns}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (event_key) DO UPDATE SET event_key = EXCLUDED.event_key RETURNING ${notificationColumns}`, [record.id, record.recipientId, record.actorId, record.type, record.resourceType, record.resourceId, record.sourceId, record.eventKey, record.createdAt, record.readAt])
+    return notification(result.rows[0])
+  }
+  async listNotifications(recipientId: string, options: NotificationPageOptions): Promise<NotificationPage> {
+    const limit = notificationLimit(options.limit)
+    const cursor = normalizeNotificationCursor(options.cursor)
+    const result = await this.db.query<NotificationRow>(`WITH page AS (
+      SELECT ${notificationColumns} FROM notifications
+      WHERE recipient_id = $1 AND ($2::timestamptz IS NULL OR created_at < $2 OR (created_at = $2 AND id < $3::uuid))
+      ORDER BY created_at DESC, id DESC LIMIT $4
+    ), unread AS (
+      SELECT COUNT(*)::int AS unread_count FROM notifications WHERE recipient_id = $1 AND read_at IS NULL
+    )
+    SELECT unread.unread_count, page.id, page.recipient_id, page.actor_id, page.type, page.resource_type, page.resource_id, page.source_id, page.event_key, page.created_at, page.read_at
+    FROM unread LEFT JOIN page ON TRUE ORDER BY page.created_at DESC NULLS LAST, page.id DESC NULLS LAST`, [recipientId, cursor?.createdAt ?? null, cursor?.id ?? null, limit + 1])
+    const rows = result.rows.filter(row => row.id !== null)
+    const hasMore = rows.length > limit
+    const items = rows.slice(0, limit).map(notification)
+    const last = items.at(-1)
+    return { items, unreadCount: Number(result.rows[0]?.unread_count ?? 0), nextCursor: hasMore && last ? { createdAt: last.createdAt, id: last.id } : null }
+  }
+  async markNotificationRead(id: string, recipientId: string, readAt: string): Promise<NotificationRecord | undefined> {
+    if (!isValidNotificationTimestamp(readAt)) throw new Error('INVALID_NOTIFICATION_TIMESTAMP')
+    const result = await this.db.query<NotificationRow>(`UPDATE notifications SET read_at = COALESCE(read_at, $3) WHERE id = $1 AND recipient_id = $2 RETURNING ${notificationColumns}`, [id, recipientId, new Date(readAt).toISOString()])
+    return result.rows[0] ? notification(result.rows[0]) : undefined
+  }
+  async createSocialPost(input: SocialPost, _mediaLimitBytes: number): Promise<SocialPost> {
+    if (input.media && input.media.sizeBytes > _mediaLimitBytes) throw new StorageQuotaExceededError(0, _mediaLimitBytes, input.media.sizeBytes)
+    const result = await this.db.query<SocialPostRow>(`INSERT INTO social_posts (${socialPostColumns}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING ${socialPostColumns}`, [input.id, input.authorId, input.kind, input.body, input.audience, input.visibility, input.media?.storageKey ?? null, input.media?.mimeType ?? null, input.media?.sizeBytes ?? null, input.media?.sha256 ?? null, input.createdAt, input.updatedAt, input.reviewedAt ?? null, input.reviewedBy ?? null, input.reviewNote ?? null])
+    return socialPost(result.rows[0])
+  }
+  async findSocialPost(id: string) { const result = await this.db.query<SocialPostRow>(`SELECT ${socialPostColumns} FROM social_posts WHERE id = $1`, [id]); return result.rows[0] ? socialPost(result.rows[0]) : undefined }
+  async listSocialPosts(options: { authorId?: string; cursor?: SocialPostCursor; limit: number; moderationOnly?: boolean }) {
+    const result = await this.db.query<SocialPostRow>(`SELECT ${socialPostColumns} FROM social_posts WHERE ($1::text IS NULL OR author_id = $1) AND (NOT $2::boolean OR visibility = 'pending-review') AND ($3::timestamptz IS NULL OR created_at < $3 OR (created_at = $3 AND id < $4::uuid)) ORDER BY created_at DESC, id DESC LIMIT $5`, [options.authorId ?? null, options.moderationOnly ?? false, options.cursor?.createdAt ?? null, options.cursor?.id ?? null, options.limit])
+    return result.rows.map(socialPost)
+  }
+  async deleteSocialPost(id: string, authorId: string) { const result = await this.db.query<SocialPostRow>(`DELETE FROM social_posts WHERE id = $1 AND author_id = $2 RETURNING ${socialPostColumns}`, [id, authorId]); return result.rows[0] ? socialPost(result.rows[0]) : undefined }
+  async reviewSocialPost(id: string, status: Extract<SocialPostVisibility, 'published' | 'rejected' | 'removed'>, staffId: string, note?: string) {
+    const result = await this.db.query<SocialPostRow>(`UPDATE social_posts SET visibility = $1, reviewed_by = $2, reviewed_at = NOW(), review_note = $3, updated_at = NOW() WHERE id = $4 AND visibility <> 'removed' AND ($1 <> 'published' OR visibility = 'pending-review') RETURNING ${socialPostColumns}`, [status, staffId, note?.slice(0, 500) ?? null, id])
+    return result.rows[0] ? socialPost(result.rows[0]) : undefined
+  }
+  async listSocialPostComments(postId: string): Promise<SocialPostComment[]> {
+    const result = await this.db.query<SocialPostCommentRow>('SELECT id, post_id, author_id, body, created_at FROM (SELECT id, post_id, author_id, body, created_at FROM social_post_comments WHERE post_id = $1 ORDER BY created_at DESC, id DESC LIMIT 100) recent ORDER BY created_at ASC, id ASC', [postId])
+    return result.rows.map(row => ({ id: row.id, postId: row.post_id, authorId: row.author_id, body: row.body, createdAt: row.created_at }))
+  }
+  async createSocialPostComment(input: SocialPostComment): Promise<SocialPostComment> {
+    const result = await this.db.query<SocialPostCommentRow>('INSERT INTO social_post_comments (id, post_id, author_id, body, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING id, post_id, author_id, body, created_at', [input.id, input.postId, input.authorId, input.body, input.createdAt])
+    const row = result.rows[0]
+    return { id: row.id, postId: row.post_id, authorId: row.author_id, body: row.body, createdAt: row.created_at }
+  }
+  async createSocialPostCommentWithNotification(input: SocialPostComment, inputSeed?: NotificationSeed) {
+    const seed = normalizedNotificationSeed(inputSeed, 'social_post_comment', 'post', input.postId, input.id)
+    const result = await this.db.query<SocialPostCommentRow & NotificationMutationRow>(`WITH created AS (
+      INSERT INTO social_post_comments (id, post_id, author_id, body, created_at)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, post_id, author_id, body, created_at
+    ), saved AS (
+      INSERT INTO notifications (${notificationColumns})
+      SELECT $6::uuid, post.author_id, created.author_id, 'social_post_comment', 'post', created.post_id, created.id, 'social_post_comment:' || created.id, $7::timestamptz, NULL
+      FROM created JOIN social_posts post ON post.id = created.post_id
+      WHERE $6::uuid IS NOT NULL AND post.author_id <> created.author_id
+      ON CONFLICT (event_key) DO UPDATE SET event_key = EXCLUDED.event_key
+      RETURNING ${notificationColumns}
+    )
+    SELECT created.*, ${notificationMutationColumns} FROM created LEFT JOIN saved ON TRUE`, [input.id, input.postId, input.authorId, input.body, input.createdAt, seed?.id ?? null, seed?.createdAt ?? null])
+    const row = result.rows[0]
+    if (!row) throw new Error('SOCIAL_POST_COMMENT_CREATE_FAILED')
+    const saved = notificationFromMutation(row)
+    return { value: { id: row.id, postId: row.post_id, authorId: row.author_id, body: row.body, createdAt: row.created_at }, notifications: saved ? [saved] : [] }
+  }
+  async listSocialPostReactions(postId: string): Promise<string[]> {
+    const result = await this.db.query<{ actor_id: string }>('SELECT actor_id FROM social_post_reactions WHERE post_id = $1 AND active = TRUE ORDER BY created_at ASC, actor_id ASC', [postId])
+    return result.rows.map(row => row.actor_id)
+  }
+  async toggleSocialPostReaction(postId: string, actorId: string): Promise<boolean> {
+    const result = await this.db.query<{ active: boolean }>('INSERT INTO social_post_reactions (post_id, actor_id, active, created_at, updated_at) VALUES ($1, $2, TRUE, NOW(), NOW()) ON CONFLICT (post_id, actor_id) DO UPDATE SET active = NOT social_post_reactions.active, updated_at = NOW() RETURNING active', [postId, actorId])
+    return result.rows[0]?.active ?? false
+  }
+  async toggleSocialPostReactionWithNotification(postId: string, actorId: string, inputSeed?: NotificationSeed) {
+    const sourceId = `${postId}:${actorId}`
+    const seed = normalizedNotificationSeed(inputSeed, 'social_post_reaction', 'post', postId, sourceId)
+    const result = await this.db.query<{ active: boolean } & NotificationMutationRow>(`WITH changed AS (
+      INSERT INTO social_post_reactions (post_id, actor_id, active, created_at, updated_at)
+      VALUES ($1, $2, TRUE, NOW(), NOW())
+      ON CONFLICT (post_id, actor_id) DO UPDATE SET active = NOT social_post_reactions.active, updated_at = NOW()
+      RETURNING post_id, actor_id, active
+    ), saved AS (
+      INSERT INTO notifications (${notificationColumns})
+      SELECT $3::uuid, post.author_id, changed.actor_id, 'social_post_reaction', 'post', changed.post_id, changed.post_id || ':' || changed.actor_id, 'social_post_reaction:' || changed.post_id || ':' || changed.actor_id, $4::timestamptz, NULL
+      FROM changed JOIN social_posts post ON post.id = changed.post_id
+      WHERE changed.active = TRUE AND $3::uuid IS NOT NULL AND post.author_id <> changed.actor_id
+      ON CONFLICT (event_key) DO UPDATE SET event_key = EXCLUDED.event_key
+      RETURNING ${notificationColumns}
+    )
+    SELECT changed.active, ${notificationMutationColumns} FROM changed LEFT JOIN saved ON TRUE`, [postId, actorId, seed?.id ?? null, seed?.createdAt ?? null])
+    const row = result.rows[0]
+    const saved = row ? notificationFromMutation(row) : undefined
+    return { value: row?.active ?? false, notifications: saved ? [saved] : [] }
+  }
+  async drainNotificationOutbox(): Promise<NotificationRecord[]> { return [] }
+  async createSocialPostReport(input: SocialPostReport) {
+    const result = await this.db.query<SocialPostReportRow>('INSERT INTO social_post_reports (id, post_id, reporter_id, reason, details, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, post_id, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by', [input.id, input.postId, input.reporterId, input.reason, input.details, input.status, input.createdAt])
+    return socialPostReport(result.rows[0])
+  }
+  async deleteSocialPostReport(id: string, reporterId: string) { const result = await this.db.query('DELETE FROM social_post_reports WHERE id = $1 AND reporter_id = $2 RETURNING id', [id, reporterId]); return result.rows.length > 0 }
+  async listSocialPostReports(status?: SocialPostReport['status']) {
+    const result = await this.db.query<SocialPostReportRow>('SELECT id, post_id, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by FROM social_post_reports WHERE ($1::text IS NULL OR status = $1) ORDER BY created_at DESC LIMIT 500', [status ?? null])
+    return result.rows.map(socialPostReport)
+  }
+  async reviewSocialPostReport(id: string, status: Extract<SocialPostReport['status'], 'reviewed' | 'dismissed'>, staffId: string) {
+    const result = await this.db.query<SocialPostReportRow>('UPDATE social_post_reports SET status = $1, reviewed_by = $2, reviewed_at = NOW() WHERE id = $3 AND status = \'open\' RETURNING id, post_id, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by', [status, staffId, id])
+    return result.rows[0] ? socialPostReport(result.rows[0]) : undefined
   }
   async findAccountByEmail(email: string) { const result = await this.db.query<AccountRow>('SELECT * FROM accounts WHERE email = $1', [email]); return result.rows[0] ? account(result.rows[0]) : undefined }
   async findAccountById(id: string) { const result = await this.db.query<AccountRow>('SELECT * FROM accounts WHERE id = $1', [id]); return result.rows[0] ? account(result.rows[0]) : undefined }
@@ -163,13 +340,49 @@ export class PostgresRepository implements ServerRepository {
   async findDuplicateAsset(input: Pick<AssetRecord, 'ownerId' | 'contentHash'>) { const r = await this.db.query<AssetRow>('SELECT id, owner_id, original_name, storage_key, mime_type, size_bytes, content_hash, state, created_at, updated_at, preview_storage_key, preview_mime_type, preview_size_bytes FROM assets WHERE owner_id = $1 AND content_hash = $2 AND state <> $3 LIMIT 1', [input.ownerId, input.contentHash, 'missing']); return r.rows[0] ? asset(r.rows[0]) : undefined }
   async getStorageUsage(ownerId: string) { const r = await this.db.query<{ used_bytes: string | number }>('SELECT used_bytes FROM account_storage_usage WHERE owner_id = $1', [ownerId]); return Number(r.rows[0]?.used_bytes ?? 0) }
   async listStorageUsage() {
-    const r = await this.db.query<{ owner_id: string; used_bytes: string | number; original_count: string | number; preview_bytes: string | number; preview_count: string | number }>(`SELECT a.id AS owner_id, COALESCE(u.used_bytes, 0) AS used_bytes,
-      COUNT(asset.id) FILTER (WHERE asset.state = 'available') AS original_count,
-      COALESCE(SUM(asset.preview_size_bytes) FILTER (WHERE asset.preview_storage_key IS NOT NULL), 0) AS preview_bytes,
-      COUNT(asset.id) FILTER (WHERE asset.preview_storage_key IS NOT NULL) AS preview_count
-      FROM accounts a LEFT JOIN account_storage_usage u ON u.owner_id = a.id LEFT JOIN assets asset ON asset.owner_id = a.id
-      GROUP BY a.id, u.used_bytes ORDER BY COALESCE(u.used_bytes, 0) DESC, a.id`)
-    return r.rows.map(row => { const usedBytes = Number(row.used_bytes); const previewBytes = Number(row.preview_bytes); return { ownerId: row.owner_id, usedBytes, originalCount: Number(row.original_count), previewBytes, previewCount: Number(row.preview_count), storedBytes: usedBytes + previewBytes } })
+    const r = await this.db.query<{ owner_id: string; used_bytes: string | number; original_count: string | number; artwork_bytes: string | number; artwork_count: string | number; preview_bytes: string | number; preview_count: string | number }>(`SELECT a.id AS owner_id, COALESCE(u.used_bytes, 0) AS used_bytes,
+      COALESCE(asset.original_count, 0) AS original_count, COALESCE(artwork.artwork_bytes, 0) AS artwork_bytes,
+      COALESCE(artwork.artwork_count, 0) AS artwork_count, COALESCE(asset.preview_bytes, 0) AS preview_bytes,
+      COALESCE(asset.preview_count, 0) AS preview_count
+      FROM accounts a LEFT JOIN account_storage_usage u ON u.owner_id = a.id
+      LEFT JOIN (SELECT owner_id, COUNT(*) FILTER (WHERE state = 'available') AS original_count,
+        COALESCE(SUM(preview_size_bytes) FILTER (WHERE preview_storage_key IS NOT NULL), 0) AS preview_bytes,
+        COUNT(*) FILTER (WHERE preview_storage_key IS NOT NULL) AS preview_count FROM assets GROUP BY owner_id) asset ON asset.owner_id = a.id
+      LEFT JOIN (SELECT owner_id, SUM(size_bytes + COALESCE(thumbnail_size_bytes, 0)) AS artwork_bytes, COUNT(*) AS artwork_count FROM catalog_artwork GROUP BY owner_id) artwork ON artwork.owner_id = a.id
+      ORDER BY COALESCE(u.used_bytes, 0) DESC, a.id`)
+    return r.rows.map(row => { const usedBytes = Number(row.used_bytes); const previewBytes = Number(row.preview_bytes); return { ownerId: row.owner_id, usedBytes, originalCount: Number(row.original_count), artworkBytes: Number(row.artwork_bytes), artworkCount: Number(row.artwork_count), previewBytes, previewCount: Number(row.preview_count), storedBytes: usedBytes + previewBytes } })
+  }
+  async findCatalogArtwork(assetId: string, ownerId?: string): Promise<ArtworkRecord | undefined> {
+    const result = await this.db.query<{ asset_id: string; owner_id: string; storage_key: string; mime_type: ArtworkRecord['mimeType']; size_bytes: string | number; thumbnail_storage_key: string | null; thumbnail_size_bytes: string | number | null; width: number; height: number; updated_at: string }>('SELECT asset_id, owner_id, storage_key, mime_type, size_bytes, thumbnail_storage_key, thumbnail_size_bytes, width, height, updated_at FROM catalog_artwork WHERE asset_id = $1 AND ($2::text IS NULL OR owner_id = $2)', [assetId, ownerId ?? null])
+    const row = result.rows[0]
+    return row ? { assetId: row.asset_id, ownerId: row.owner_id, storageKey: row.storage_key, mimeType: row.mime_type, extension: row.mime_type === 'image/png' ? 'png' : 'jpg', sizeBytes: Number(row.size_bytes), ...(row.thumbnail_storage_key && row.thumbnail_size_bytes ? { thumbnailStorageKey: row.thumbnail_storage_key, thumbnailSizeBytes: Number(row.thumbnail_size_bytes) } : {}), width: row.width, height: row.height, updatedAt: row.updated_at } : undefined
+  }
+  async listCatalogArtwork(): Promise<ArtworkRecord[]> {
+    const result = await this.db.query<{ asset_id: string; owner_id: string; storage_key: string; mime_type: ArtworkRecord['mimeType']; size_bytes: string | number; thumbnail_storage_key: string | null; thumbnail_size_bytes: string | number | null; width: number; height: number; updated_at: string }>('SELECT asset_id, owner_id, storage_key, mime_type, size_bytes, thumbnail_storage_key, thumbnail_size_bytes, width, height, updated_at FROM catalog_artwork')
+    return result.rows.map(row => ({ assetId: row.asset_id, ownerId: row.owner_id, storageKey: row.storage_key, mimeType: row.mime_type, extension: row.mime_type === 'image/png' ? 'png' : 'jpg', sizeBytes: Number(row.size_bytes), ...(row.thumbnail_storage_key && row.thumbnail_size_bytes ? { thumbnailStorageKey: row.thumbnail_storage_key, thumbnailSizeBytes: Number(row.thumbnail_size_bytes) } : {}), width: row.width, height: row.height, updatedAt: row.updated_at }))
+  }
+  async saveCatalogArtwork(record: ArtworkRecord, limitBytes?: number): Promise<ArtworkRecord> {
+    const result = await this.db.query<{ asset_id: string; owner_id: string; storage_key: string; mime_type: ArtworkRecord['mimeType']; size_bytes: string | number; thumbnail_storage_key: string | null; thumbnail_size_bytes: string | number | null; width: number; height: number; updated_at: string }>(`WITH target AS (
+      SELECT a.owner_id, (COALESCE(old.size_bytes, 0) + COALESCE(old.thumbnail_size_bytes, 0))::bigint AS old_size
+      FROM assets a
+      LEFT JOIN catalog_artwork old ON old.asset_id = a.id
+      WHERE a.id = $1 AND a.owner_id = $2 AND a.state = 'available'
+      FOR UPDATE OF a
+    ), delta AS (SELECT owner_id, ($5::bigint + $9::bigint) - old_size AS bytes_delta FROM target), quota AS (
+      INSERT INTO account_storage_usage (owner_id, used_bytes)
+      SELECT owner_id, GREATEST(bytes_delta, 0) FROM delta WHERE $10::bigint IS NULL OR GREATEST(bytes_delta, 0) <= $10
+      ON CONFLICT (owner_id) DO UPDATE SET used_bytes = GREATEST(0, account_storage_usage.used_bytes + (SELECT bytes_delta FROM delta WHERE delta.owner_id = EXCLUDED.owner_id)), updated_at = NOW()
+      WHERE $10::bigint IS NULL OR account_storage_usage.used_bytes + (SELECT bytes_delta FROM delta WHERE delta.owner_id = account_storage_usage.owner_id) <= $10
+      RETURNING owner_id
+    )
+    INSERT INTO catalog_artwork (asset_id, owner_id, storage_key, mime_type, size_bytes, width, height, thumbnail_storage_key, thumbnail_size_bytes, updated_at)
+    SELECT $1, target.owner_id, $3, $4, $5, $6, $7, $8, NULLIF($9, 0), NOW() FROM target JOIN quota USING (owner_id)
+    ON CONFLICT (asset_id) DO UPDATE SET storage_key = EXCLUDED.storage_key, mime_type = EXCLUDED.mime_type, size_bytes = EXCLUDED.size_bytes, width = EXCLUDED.width, height = EXCLUDED.height, thumbnail_storage_key = EXCLUDED.thumbnail_storage_key, thumbnail_size_bytes = EXCLUDED.thumbnail_size_bytes, updated_at = NOW()
+    WHERE catalog_artwork.owner_id = EXCLUDED.owner_id
+    RETURNING asset_id, owner_id, storage_key, mime_type, size_bytes, thumbnail_storage_key, thumbnail_size_bytes, width, height, updated_at`, [record.assetId, record.ownerId, record.storageKey, record.mimeType, record.sizeBytes, record.width, record.height, record.thumbnailStorageKey ?? null, record.thumbnailSizeBytes ?? 0, limitBytes ?? null])
+    const row = result.rows[0]
+    if (!row) throw new StorageQuotaExceededError(await this.getStorageUsage(record.ownerId), limitBytes ?? 0, record.sizeBytes)
+    return { assetId: row.asset_id, ownerId: row.owner_id, storageKey: row.storage_key, mimeType: row.mime_type, extension: row.mime_type === 'image/png' ? 'png' : 'jpg', sizeBytes: Number(row.size_bytes), ...(row.thumbnail_storage_key && row.thumbnail_size_bytes ? { thumbnailStorageKey: row.thumbnail_storage_key, thumbnailSizeBytes: Number(row.thumbnail_size_bytes) } : {}), width: row.width, height: row.height, updatedAt: row.updated_at }
   }
   async getStorageQuota(ownerId: string) { const r = await this.db.query<{ limit_bytes: string | number }>('SELECT limit_bytes FROM account_storage_quotas WHERE owner_id = $1', [ownerId]); return r.rows[0] ? Number(r.rows[0].limit_bytes) : undefined }
   async listStorageQuotas(): Promise<StorageQuotaRecord[]> { const r = await this.db.query<{ owner_id: string; limit_bytes: string | number; updated_by: string; updated_at: string }>('SELECT owner_id, limit_bytes, updated_by, updated_at FROM account_storage_quotas'); return r.rows.map(row => ({ ownerId: row.owner_id, limitBytes: Number(row.limit_bytes), updatedBy: row.updated_by, updatedAt: row.updated_at })) }
@@ -256,9 +469,11 @@ export class PostgresRepository implements ServerRepository {
   }
   async updateAssetPreview(id: string, preview: Pick<AssetRecord, 'previewStorageKey' | 'previewMimeType' | 'previewSizeBytes'>) { await this.db.query('UPDATE assets SET preview_storage_key = $1, preview_mime_type = $2, preview_size_bytes = $3, updated_at = NOW() WHERE id = $4', [preview.previewStorageKey ?? null, preview.previewMimeType ?? null, preview.previewSizeBytes ?? null, id]) }
   async deleteAsset(id: string, ownerId: string) {
-    await this.db.query(`WITH removed AS (DELETE FROM assets WHERE id = $1 AND owner_id = $2 RETURNING owner_id, size_bytes, state)
-      UPDATE account_storage_usage usage SET used_bytes = GREATEST(0, usage.used_bytes - CASE WHEN removed.state = 'available' THEN removed.size_bytes ELSE 0 END), updated_at = NOW()
-      FROM removed WHERE usage.owner_id = removed.owner_id`, [id, ownerId])
+    await this.db.query(`WITH removed_artwork AS (DELETE FROM catalog_artwork WHERE asset_id = $1 AND owner_id = $2 RETURNING owner_id, size_bytes, thumbnail_size_bytes),
+      removed AS (DELETE FROM assets WHERE id = $1 AND owner_id = $2 AND (SELECT COUNT(*) FROM removed_artwork) >= 0 RETURNING owner_id, size_bytes, state),
+      delta AS (SELECT removed.owner_id, (CASE WHEN removed.state = 'available' THEN removed.size_bytes ELSE 0 END) + COALESCE((SELECT SUM(size_bytes + COALESCE(thumbnail_size_bytes, 0)) FROM removed_artwork), 0) AS bytes_removed FROM removed)
+      UPDATE account_storage_usage usage SET used_bytes = GREATEST(0, usage.used_bytes - delta.bytes_removed), updated_at = NOW()
+      FROM delta WHERE usage.owner_id = delta.owner_id`, [id, ownerId])
   }
 }
 const asset = (row: AssetRow): AssetRecord => ({ id: row.id, ownerId: row.owner_id, originalName: row.original_name, storageKey: row.storage_key, mimeType: row.mime_type, sizeBytes: Number(row.size_bytes), contentHash: row.content_hash, state: row.state, createdAt: row.created_at, updatedAt: row.updated_at, ...(row.preview_storage_key && row.preview_mime_type && row.preview_size_bytes ? { previewStorageKey: row.preview_storage_key, previewMimeType: row.preview_mime_type, previewSizeBytes: Number(row.preview_size_bytes) } : {}) })

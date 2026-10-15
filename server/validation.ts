@@ -44,7 +44,7 @@ export function validateProjectRecord(value: unknown): boolean {
 export function validateCatalogEntry(value: unknown): value is CatalogEntry {
   if (!value || typeof value !== 'object') return false
   const item = value as Record<string, unknown>
-  return typeof item.contentId === 'string' && typeof item.title === 'string' && typeof item.creatorId === 'string' && typeof item.type === 'string' && contentTypes.includes(item.type as ContentType) && Array.isArray(item.tagIds) && item.tagIds.every(tag => typeof tag === 'string') && Array.isArray(item.previewIds) && publicationStatuses.includes(item.publicationStatus as PublicationStatus) && (item.reviewNote === undefined || typeof item.reviewNote === 'string' && item.reviewNote.length <= 160)
+  return typeof item.contentId === 'string' && typeof item.title === 'string' && typeof item.creatorId === 'string' && typeof item.type === 'string' && contentTypes.includes(item.type as ContentType) && Array.isArray(item.tagIds) && item.tagIds.every(tag => typeof tag === 'string') && Array.isArray(item.previewIds) && publicationStatuses.includes(item.publicationStatus as PublicationStatus) && (item.reviewNote === undefined || typeof item.reviewNote === 'string' && item.reviewNote.length <= 160) && (item.artworkUrl === undefined || typeof item.artworkUrl === 'string')
 }
 
 function toContentType(value: unknown): ContentType {
