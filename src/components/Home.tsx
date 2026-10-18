@@ -7,8 +7,10 @@ import { scopedKey } from "../data/storageScope";
 import { readLocalHomePosts, type LocalHomePost } from "../data/homePosts";
 import { createCatalogComment, readCatalogSocial, toggleCatalogReaction } from "../data/socialRepository";
 import type { CatalogSocial } from "../domains/social";
+import { defaultAvatarFocalPoint, type ProfileImageFocalPoint } from "../domains/profile";
 import { HomeComposer } from "./HomeComposer";
-import { createSocialPostComment, deleteSocialPost, readProfileSocialPosts, readSocialFeed, readSocialPostInteractions, reportSocialPost, toggleSocialPostReaction, type SocialPostInteraction, type SocialPostReportReason, type SocialPostView } from "../data/socialPostRepository";
+import { HomeStories } from "./HomeStories";
+import { createSocialPostComment, deleteSocialPost, readProfileSocialPosts, readSocialAccountState, readSocialFeed, readSocialPostInteractionsBatch, reportSocialPost, setSocialFollow, setSocialPostBookmark, toggleSocialPostReaction, type SocialAccountState, type SocialPostInteraction, type SocialPostReportReason, type SocialPostView } from "../data/socialPostRepository";
 import orchestraCover from "../../assets/demo/dark-orchestra.png";
 import loFiCover from "../../assets/demo/chill-lo-fi.png";
 import hard808Cover from "../../assets/demo/hard-808s.png";
@@ -17,10 +19,12 @@ import "../styles/home.css";
 type FeedKind = "status" | "photo" | "video" | "beat" | "short";
 type FeedPost = {
   id: string;
+  accountId?: string;
   kind: FeedKind;
   creator: string;
   handle: string;
   avatar: string;
+  avatarFocalPoint?: ProfileImageFocalPoint;
   profileBio?: string;
   profileGenres?: string[];
   profileHref?: string;
@@ -40,6 +44,7 @@ type FeedPost = {
 };
 type Story = { creator: string; title: string; image: string; kind: "status" | "short" };
 type HomeComment = { id: string; text: string; createdAt: string; authorName?: string };
+const avatarObjectPosition = (post: FeedPost) => `${post.avatarFocalPoint?.x ?? defaultAvatarFocalPoint.x}% ${post.avatarFocalPoint?.y ?? defaultAvatarFocalPoint.y}%`;
 
 function readComments(scope: string): Record<string, HomeComment[]> {
   try {
@@ -87,12 +92,12 @@ function HomeProfilePreview({ post }: { post: FeedPost }) {
   const wrapper = useRef<HTMLDivElement>(null);
   return <div className="home-profile-hover" ref={wrapper} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)} onFocus={() => setOpen(true)} onBlur={event => { if (!wrapper.current?.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
     <button type="button" className="home-profile-trigger" aria-expanded={open} onClick={() => setOpen(value => !value)}>
-      <img className="home-avatar" src={post.avatar} alt="" />
+      <img className="home-avatar" src={post.avatar} alt="" style={{ objectPosition: avatarObjectPosition(post) }} />
       <span className="home-post-author"><strong>{post.creator}</strong><span>{post.handle} · {post.time}</span></span>
     </button>
     {open && <section className="home-profile-popover" aria-label={`Vista previa del perfil de ${post.creator}`}>
-      <div className="home-profile-cover"><img src={post.avatar} alt="" /></div>
-      <div className="home-profile-body"><img className="home-profile-avatar" src={post.avatar} alt="" /><strong>{post.creator}</strong><span>{post.handle}</span>
+      <div className="home-profile-cover"><img src={post.avatar} alt="" style={{ objectPosition: avatarObjectPosition(post) }} /></div>
+      <div className="home-profile-body"><img className="home-profile-avatar" src={post.avatar} alt="" style={{ objectPosition: avatarObjectPosition(post) }} /><strong>{post.creator}</strong><span>{post.handle}</span>
         <p>{post.profileBio || (post.handle === "Tu publicación" ? "Comparte tus ideas y lanzamientos desde tu perfil." : "Creador de la comunidad BeatVault.")}</p>
         {post.profileGenres?.length ? <div className="home-profile-genres">{post.profileGenres.slice(0, 3).map(genre => <span key={genre}>{genre}</span>)}</div> : null}
         <a href={post.profileHref || (post.handle === "Tu publicación" ? "#/profile" : "#/friends")}>{post.profileHref || post.handle === "Tu publicación" ? "Ver perfil" : "Descubrir creadores"}</a>
@@ -101,15 +106,16 @@ function HomeProfilePreview({ post }: { post: FeedPost }) {
   </div>;
 }
 
-function HomePost({ post, liked, likeCount, saved, followed, comments, onComment, onLike, onSave, onPlay, onShare, onFollow, onExpandPhoto, onDelete, onReport }: {
+function HomePost({ post, liked, likeCount, saved, followed, showFollow, saveBusy, followBusy, followDisabled, saveDisabled, comments, onComment, onLike, onSave, onPlay, onShare, onFollow, onExpandPhoto, onDelete, onReport }: {
   post: FeedPost; liked: boolean; likeCount: number; saved: boolean; onLike: () => void; onSave: () => void;
-  onPlay: (asset: AudioAsset) => void; onShare: () => void; followed: boolean; onFollow: () => void;
-  comments: HomeComment[]; onComment: (text: string) => void;
+  onPlay: (asset: AudioAsset) => void; onShare: () => void; followed: boolean; showFollow: boolean; onFollow: () => void; saveBusy: boolean; followBusy: boolean; followDisabled: boolean; saveDisabled: boolean;
+  comments: HomeComment[]; onComment: (text: string) => Promise<boolean>;
   onExpandPhoto: () => void;
   onDelete?: () => void;
   onReport?: (reason: SocialPostReportReason, details: string) => Promise<void>;
 }) {
   const [commentText, setCommentText] = useState("");
+  const [commentBusy, setCommentBusy] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState<SocialPostReportReason>("other");
   const [reportDetails, setReportDetails] = useState("");
@@ -123,7 +129,7 @@ function HomePost({ post, liked, likeCount, saved, followed, comments, onComment
       {post.localOnly && <span className="home-local-mark">Solo este equipo</span>}
       {post.socialPost?.visibility === "pending-review" && <span className="home-pending-mark">Pendiente de revisión</span>}
       {post.socialPost && <span className="home-audience-mark">{post.socialPost.audience === "private" ? "Solo yo" : post.socialPost.audience === "friends" ? "Amigos" : "Público"}</span>}
-      {post.handle.startsWith("@") && <button type="button" className={`home-follow ${followed ? "is-following" : ""}`} aria-pressed={followed} onClick={onFollow}>{followed ? <><Check size={13} /> Siguiendo</> : "Seguir"}</button>}
+      {post.handle.startsWith("@") && showFollow && <button type="button" className={`home-follow ${followed ? "is-following" : ""}`} aria-pressed={followed} disabled={followDisabled || followBusy} onClick={onFollow}>{followBusy ? "Guardando…" : followed ? <><Check size={13} /> Siguiendo</> : "Seguir"}</button>}
       {onDelete && <button type="button" className="home-post-owner-action" aria-label="Eliminar publicación" onClick={onDelete}><Trash2 size={16} /></button>}
     </header>
     <p className="home-post-copy">{post.text}</p>
@@ -141,7 +147,7 @@ function HomePost({ post, liked, likeCount, saved, followed, comments, onComment
       <button type="button" className={liked ? "is-active" : ""} aria-pressed={liked} aria-label={liked ? "Quitar me gusta" : "Me gusta"} onClick={onLike}><Heart size={19} fill={liked ? "currentColor" : "none"} /><span>{likeCount}</span></button>
       <span className="home-comment-count" aria-label={`${post.comments + comments.length} comentarios`}><MessageCircle size={18} /><span>{post.comments + comments.length}</span></span>
       {(post.demo || post.href) && <button type="button" aria-label="Compartir publicación" onClick={onShare}><Send size={18} /></button>}
-      <button type="button" className={`home-save ${saved ? "is-active" : ""}`} aria-pressed={saved} aria-label={saved ? "Quitar de guardados" : "Guardar publicación"} onClick={onSave}><Bookmark size={18} fill={saved ? "currentColor" : "none"} /></button>
+      <button type="button" className={`home-save ${saved ? "is-active" : ""}`} aria-pressed={saved} aria-label={saveBusy ? "Guardando publicación" : saved ? "Quitar de guardados" : "Guardar publicación"} disabled={saveDisabled || saveBusy} onClick={onSave}><Bookmark size={18} fill={saved ? "currentColor" : "none"} /></button>
       {onReport && <button type="button" className="home-report-action" aria-expanded={reportOpen} onClick={() => setReportOpen(value => !value)}><Flag size={15} />Reportar</button>}
       {post.href && <a className="home-post-open" href={post.href}>{post.kind === "short" ? "Ver Short" : post.kind === "beat" ? "Explorar beats" : "Abrir"}</a>}
     </div>
@@ -152,10 +158,10 @@ function HomePost({ post, liked, likeCount, saved, followed, comments, onComment
     </form>}
     <section className="home-comments" aria-label={`Comentarios de ${post.creator}`}>
       {comments.length > 0 && <div className="home-comment-list">{comments.slice(-3).map(comment => <p key={comment.id}><strong>{comment.authorName || "Tú"}</strong><span>{comment.text}</span></p>)}</div>}
-      <form onSubmit={event => { event.preventDefault(); const text = commentText.trim(); if (!text) return; onComment(text); setCommentText(""); }}>
+      <form onSubmit={async event => { event.preventDefault(); const text = commentText.trim(); if (!text || commentBusy) return; setCommentBusy(true); try { if (await onComment(text)) setCommentText(""); } finally { setCommentBusy(false); } }}>
         <label className="sr-only" htmlFor={`comment-${post.id}`}>Escribe un comentario</label>
         <input id={`comment-${post.id}`} value={commentText} maxLength={500} onChange={event => setCommentText(event.target.value)} placeholder="Escribe un comentario..." />
-        <button type="submit" aria-label="Publicar comentario" disabled={!commentText.trim()}><Send size={16} /></button>
+        <button type="submit" aria-label="Publicar comentario" disabled={!commentText.trim() || commentBusy}><Send size={16} /></button>
       </form>
     </section>
   </article>;
@@ -166,22 +172,23 @@ function PhotoViewer({ post, comments, dialogRef, onClose, onComment }: {
   comments: HomeComment[];
   dialogRef: RefObject<HTMLDialogElement | null>;
   onClose: () => void;
-  onComment: (text: string) => void;
+  onComment: (text: string) => Promise<boolean>;
 }) {
   const [text, setText] = useState("");
+  const [commentBusy, setCommentBusy] = useState(false);
   const image = post.mediaUrl || post.image || "";
   return <dialog ref={dialogRef} className="home-photo-viewer" aria-label={`Foto de ${post.creator}`} onClose={onClose} onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
     <div className="home-photo-viewer-image"><img src={image} alt={`Foto publicada por ${post.creator}`} /></div>
     <aside className="home-photo-viewer-comments">
-      <header><div className="home-photo-viewer-author"><img src={post.avatar} alt="" /><span><strong>{post.creator}</strong><small>{post.handle} · {post.time}</small></span></div><button type="button" className="icon-button" aria-label="Cerrar foto ampliada" onClick={onClose}><X size={19} /></button></header>
+      <header><div className="home-photo-viewer-author"><img src={post.avatar} alt="" style={{ objectPosition: avatarObjectPosition(post) }} /><span><strong>{post.creator}</strong><small>{post.handle} · {post.time}</small></span></div><button type="button" className="icon-button" aria-label="Cerrar foto ampliada" onClick={onClose}><X size={19} /></button></header>
       <p className="home-photo-viewer-copy">{post.text}</p>
       <section className="home-photo-viewer-thread" aria-label="Comentarios">
         {comments.length === 0 ? <p className="home-photo-viewer-empty">Aún no hay comentarios. Inicia la conversación.</p> : comments.map(comment => <p className="home-photo-comment" key={comment.id}><strong>{comment.authorName || "Tú"}</strong><span>{comment.text}</span></p>)}
       </section>
-      <form onSubmit={event => { event.preventDefault(); const value = text.trim(); if (!value) return; onComment(value); setText(""); }}>
+      <form onSubmit={async event => { event.preventDefault(); const value = text.trim(); if (!value || commentBusy) return; setCommentBusy(true); try { if (await onComment(value)) setText(""); } finally { setCommentBusy(false); } }}>
         <label className="sr-only" htmlFor={`viewer-comment-${post.id}`}>Escribe un comentario</label>
         <input id={`viewer-comment-${post.id}`} autoFocus value={text} maxLength={500} onChange={event => setText(event.target.value)} placeholder="Escribe un comentario..." />
-        <button type="submit" aria-label="Publicar comentario" disabled={!text.trim()}><Send size={17} /></button>
+        <button type="submit" aria-label="Publicar comentario" disabled={!text.trim() || commentBusy}><Send size={17} /></button>
       </form>
     </aside>
   </dialog>;
@@ -192,9 +199,16 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
   const [liked, setLiked] = useState(() => readIdSet("beatvault:home-likes", scope));
   const [saved, setSaved] = useState(() => readIdSet("beatvault:home-saves", scope));
   const [followed, setFollowed] = useState(() => readIdSet("beatvault:home-follows", scope));
+  const [localRelationshipScope, setLocalRelationshipScope] = useState(scope);
+  const [accountSocialState, setAccountSocialState] = useState<SocialAccountState>({ followedAccountIds: [], bookmarkedPostIds: [] });
+  const [accountSocialOwner, setAccountSocialOwner] = useState("");
+  const [accountSocialLoading, setAccountSocialLoading] = useState(false);
+  const [accountSocialError, setAccountSocialError] = useState("");
+  const [relationshipBusy, setRelationshipBusy] = useState<Set<string>>(() => new Set());
   const [comments, setComments] = useState(() => readComments(scope));
   const [socialByContentId, setSocialByContentId] = useState<Record<string, CatalogSocial>>({});
   const [socialByPostId, setSocialByPostId] = useState<Record<string, SocialPostInteraction>>({});
+  const [socialInteractionScope, setSocialInteractionScope] = useState(scope);
   const [story, setStory] = useState<Story | null>(null);
   const [photo, setPhoto] = useState<FeedPost | null>(null);
   const [shareMessage, setShareMessage] = useState("");
@@ -209,11 +223,26 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
   const [feedBusy, setFeedBusy] = useState(false);
   const storyDialog = useRef<HTMLDialogElement>(null);
   const photoDialog = useRef<HTMLDialogElement>(null);
+  const localScopeReady = localRelationshipScope === scope;
+  const interactionScopeReady = socialInteractionScope === scope;
 
-  useEffect(() => { writeIdSet("beatvault:home-likes", scope, liked); }, [liked, scope]);
-  useEffect(() => { writeIdSet("beatvault:home-saves", scope, saved); }, [saved, scope]);
-  useEffect(() => { writeIdSet("beatvault:home-follows", scope, followed); }, [followed, scope]);
-  useEffect(() => { try { localStorage.setItem(scopedKey("beatvault:home-comments", scope), JSON.stringify(comments)); } catch { /* Keep commenting available if storage is full. */ } }, [comments, scope]);
+  useEffect(() => { if (localRelationshipScope === scope) writeIdSet("beatvault:home-likes", scope, liked); }, [liked, scope, localRelationshipScope]);
+  useEffect(() => { if (localRelationshipScope === scope) writeIdSet("beatvault:home-saves", scope, saved); }, [saved, scope, localRelationshipScope]);
+  useEffect(() => { if (localRelationshipScope === scope) writeIdSet("beatvault:home-follows", scope, followed); }, [followed, scope, localRelationshipScope]);
+  useEffect(() => {
+    if (localRelationshipScope === scope) return;
+    setLiked(readIdSet("beatvault:home-likes", scope));
+    setSaved(readIdSet("beatvault:home-saves", scope));
+    setFollowed(readIdSet("beatvault:home-follows", scope));
+    setComments(readComments(scope));
+    setLocalRelationshipScope(scope);
+  }, [scope, localRelationshipScope]);
+  useEffect(() => { if (localRelationshipScope === scope) try { localStorage.setItem(scopedKey("beatvault:home-comments", scope), JSON.stringify(comments)); } catch { /* Keep commenting available if storage is full. */ } }, [comments, scope, localRelationshipScope]);
+  useEffect(() => {
+    setSocialByContentId({});
+    setSocialByPostId({});
+    setSocialInteractionScope(scope);
+  }, [scope]);
   useEffect(() => {
     let active = true;
     void readLocalHomePosts(scope).then(posts => { if (active) { setLocalPosts(posts); setPostStorageError(false); } }).catch(() => { if (active) setPostStorageError(true); });
@@ -237,6 +266,18 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
       if (feedError && ownError) setServerError(`${feedError} ${ownError}`);
       else if (feedError || ownError) setServerError(`La sincronización está incompleta: ${feedError || ownError}`);
     }).finally(() => { if (active) setServerLoading(false); });
+    return () => { active = false; };
+  }, [scope]);
+  useEffect(() => {
+    if (scope === "demo") { setAccountSocialState({ followedAccountIds: [], bookmarkedPostIds: [] }); setAccountSocialOwner(""); setAccountSocialLoading(false); setAccountSocialError(""); return; }
+    let active = true;
+    setAccountSocialOwner(""); setAccountSocialLoading(true); setAccountSocialError("");
+    void readSocialAccountState().then(result => {
+      if (!active) return;
+      if (result.ok) { setAccountSocialState(result.data); setAccountSocialOwner(scope); }
+      else setAccountSocialError(result.error.message);
+    }).catch(() => { if (active) setAccountSocialError("No se pudo conectar con el servicio de relaciones."); })
+      .finally(() => { if (active) setAccountSocialLoading(false); });
     return () => { active = false; };
   }, [scope]);
   useEffect(() => {
@@ -265,22 +306,23 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
       text: post.text, tags: [], likes: 0, comments: 0, mediaUrl: mediaUrls.get(post.id), localOnly: true,
     }));
     const accountPosts: FeedPost[] = serverPosts.map(post => ({
-      id: `social-${post.id}`, kind: post.kind, creator: post.author.displayName, handle: `@${post.author.id}`, profileHref: `#/profile?id=${encodeURIComponent(post.author.id)}`,
-      time: new Date(post.createdAt).toLocaleString(), avatar: post.author.avatarUrl || hard808Cover, text: post.body, tags: [], likes: 0, comments: 0,
+      id: `social-${post.id}`, accountId: post.author.id, kind: post.kind, creator: post.author.displayName, handle: `@${post.author.id}`, profileHref: `#/profile?id=${encodeURIComponent(post.author.id)}`,
+      time: new Date(post.createdAt).toLocaleString(), avatar: post.author.avatarUrl || hard808Cover, avatarFocalPoint: post.author.avatarFocalPoint, text: post.body, tags: [], likes: 0, comments: 0,
       ...(post.media ? { mediaUrl: post.media.url } : {}), socialPost: post,
     }));
     const ownPosts: FeedPost[] = uploads.filter(asset => asset.publicationStatus === "published" && creatorType(asset.type)).map(asset => {
       const mine = asset.ownerId === scope;
       const creatorName = mine ? "Tu perfil" : asset.creatorName || "Productor";
       return {
-      id: `own-${asset.id}`, kind: "beat", creator: creatorName, handle: mine ? "Tu publicación" : `@${creatorName.toLowerCase().replace(/[^a-z0-9]+/g, "")}`, profileHref: mine ? "#/profile" : `#/profile?id=${encodeURIComponent(asset.ownerId || "")}`, time: "publicado", avatar: asset.cover || hard808Cover,
+      id: `own-${asset.id}`, accountId: asset.ownerId, kind: "beat", creator: creatorName, handle: mine ? "Tu publicación" : `@${creatorName.toLowerCase().replace(/[^a-z0-9]+/g, "")}`, profileHref: mine ? "#/profile" : `#/profile?id=${encodeURIComponent(asset.ownerId || "")}`, time: "publicado", avatar: asset.cover || hard808Cover,
       text: asset.name, image: asset.cover || hard808Cover, tags: asset.tags.map(tag => tag.label), likes: 0, comments: 0,
       beat: asset.name, href: "#/beats", asset,
     }; });
-    return [...createdPosts, ...accountPosts, ...ownPosts, ...samplePosts];
+    const demoPosts = scope === "demo" && import.meta.env.DEV ? samplePosts : [];
+    return [...createdPosts, ...accountPosts, ...ownPosts, ...demoPosts];
   }, [uploads, localPosts, mediaUrls, scope, serverPosts]);
   useEffect(() => {
-    if (scope === "demo") return;
+    if (scope === "demo" || socialInteractionScope !== scope) return;
     let active = true;
     const entries = posts.filter(post => post.asset).map(post => post.asset!);
     void Promise.all(entries.map(async asset => {
@@ -290,19 +332,21 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
       if (active) setSocialByContentId(Object.fromEntries(results.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))));
     });
     return () => { active = false; };
-  }, [posts, scope]);
+  }, [posts, scope, socialInteractionScope]);
   useEffect(() => {
-    if (scope === "demo") { setSocialByPostId({}); return; }
+    if (scope === "demo" || socialInteractionScope !== scope) return;
     let active = true;
-    const remotePosts = serverPosts.filter(post => post.visibility === "published");
-    void Promise.all(remotePosts.map(async post => {
-      const result = await readSocialPostInteractions(post.id);
-      return result.ok ? [post.id, result.data] as const : undefined;
-    })).then(results => {
-      if (active) setSocialByPostId(current => ({ ...current, ...Object.fromEntries(results.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))) }));
+    const remotePostIds = [...new Set(serverPosts.filter(post => post.visibility === "published" && !socialByPostId[post.id]).map(post => post.id))];
+    const batches: string[][] = [];
+    for (let index = 0; index < remotePostIds.length; index += 30) batches.push(remotePostIds.slice(index, index + 30));
+    if (!batches.length) return;
+    void Promise.all(batches.map(readSocialPostInteractionsBatch)).then(results => {
+      if (!active) return;
+      const received = Object.assign({}, ...results.filter(result => result.ok).map(result => result.data.items));
+      if (Object.keys(received).length) setSocialByPostId(current => ({ ...current, ...received }));
     });
     return () => { active = false; };
-  }, [scope, serverPosts]);
+  }, [scope, serverPosts, socialByPostId, socialInteractionScope]);
   useEffect(() => {
     const query = window.location.hash.split("?")[1];
     const contentId = query ? new URLSearchParams(query).get("post") : null;
@@ -310,12 +354,12 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     const timer = window.setTimeout(() => document.getElementById(`feed-post-own-${contentId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
     return () => window.clearTimeout(timer);
   }, [posts]);
-  const addPostComment = async (post: FeedPost, text: string) => {
+  const addPostComment = async (post: FeedPost, text: string): Promise<boolean> => {
     if (post.socialPost && scope !== "demo") {
       const result = await createSocialPostComment(post.socialPost.id, text);
       if (result.ok) setSocialByPostId(current => ({ ...current, [post.socialPost!.id]: result.data }));
       else setShareMessage(result.error.message);
-      return;
+      return result.ok;
     }
     if (post.asset && scope !== "demo") {
       const result = await createCatalogComment(post.asset.id, text);
@@ -323,9 +367,10 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
         const social = result.data;
         setSocialByContentId(current => ({ ...current, [post.asset!.id]: social }));
       } else setShareMessage(result.error.message);
-      return;
+      return result.ok;
     }
     addComment(post.id, text);
+    return true;
   };
   const togglePostLike = async (post: FeedPost) => {
     if (post.socialPost && scope !== "demo") {
@@ -340,6 +385,55 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
       return;
     }
     setLiked(current => toggleId(current, post.id));
+  };
+  const toggleFollowPost = async (post: FeedPost) => {
+    if (scope !== "demo" && post.accountId) {
+      if (post.accountId === scope || accountSocialOwner !== scope || accountSocialError) return;
+      const key = `follow:${post.accountId}`;
+      const following = !accountSocialState.followedAccountIds.includes(post.accountId);
+      setRelationshipBusy(current => new Set(current).add(key)); setAccountSocialError("");
+      try {
+        const result = await setSocialFollow(post.accountId, following);
+        if (!result.ok) { setAccountSocialError(result.error.message); return; }
+        setAccountSocialState(current => ({ ...current, followedAccountIds: result.data.following
+          ? [...new Set([...current.followedAccountIds, post.accountId!])].sort()
+          : current.followedAccountIds.filter(id => id !== post.accountId) }));
+      } catch { setAccountSocialError("No se pudo actualizar el seguimiento. Inténtalo de nuevo."); }
+      finally { setRelationshipBusy(current => { const next = new Set(current); next.delete(key); return next; }); }
+      return;
+    }
+    setFollowed(current => toggleId(current, post.handle));
+  };
+  const toggleSavedPost = async (post: FeedPost) => {
+    if (scope !== "demo" && post.socialPost) {
+      if (accountSocialOwner !== scope || accountSocialError) return;
+      const postId = post.socialPost.id;
+      const key = `bookmark:${postId}`;
+      const bookmarked = !accountSocialState.bookmarkedPostIds.includes(postId);
+      setRelationshipBusy(current => new Set(current).add(key)); setAccountSocialError("");
+      try {
+        const result = await setSocialPostBookmark(postId, bookmarked);
+        if (!result.ok) { setAccountSocialError(result.error.message); return; }
+        setAccountSocialState(current => ({ ...current, bookmarkedPostIds: result.data.bookmarked
+          ? [...new Set([...current.bookmarkedPostIds, postId])].sort()
+          : current.bookmarkedPostIds.filter(id => id !== postId) }));
+      } catch { setAccountSocialError("No se pudo actualizar Guardados. Inténtalo de nuevo."); }
+      finally { setRelationshipBusy(current => { const next = new Set(current); next.delete(key); return next; }); }
+      return;
+    }
+    setSaved(current => toggleId(current, post.id));
+  };
+  const isPostFollowed = (post: FeedPost) => scope !== "demo" && post.accountId
+    ? accountSocialOwner === scope && accountSocialState.followedAccountIds.includes(post.accountId)
+    : localScopeReady && followed.has(post.handle);
+  const isPostSaved = (post: FeedPost) => scope !== "demo" && post.socialPost
+    ? accountSocialOwner === scope && accountSocialState.bookmarkedPostIds.includes(post.socialPost.id)
+    : localScopeReady && saved.has(post.id);
+  const followDisabled = (post: FeedPost) => scope !== "demo" && Boolean(post.accountId) && (accountSocialOwner !== scope || Boolean(accountSocialError));
+  const saveDisabled = (post: FeedPost) => scope !== "demo" && Boolean(post.socialPost) && (accountSocialOwner !== scope || Boolean(accountSocialError));
+  const relationshipBusyFor = (kind: "follow" | "bookmark", post: FeedPost) => {
+    const id = kind === "follow" ? post.accountId : post.socialPost?.id;
+    return Boolean(id && relationshipBusy.has(`${kind}:${id}`));
   };
   const deletePost = async (post: FeedPost) => {
     if (!post.socialPost) return;
@@ -372,7 +466,7 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     if (ownResult && !ownResult.ok) setServerError(ownResult.error.message);
     setFeedBusy(false);
   };
-  const visiblePosts = posts.filter(post => filter === "Para ti" || (filter === "Siguiendo" && followed.has(post.handle)) || (filter === "Beats" && post.kind === "beat") || (filter === "Fotos" && post.kind === "photo") || (filter === "Videos" && post.kind === "video") || (filter === "Shorts" && post.kind === "short") || (filter === "Estados" && post.kind === "status"));
+  const visiblePosts = posts.filter(post => filter === "Para ti" || (filter === "Siguiendo" && isPostFollowed(post)) || (filter === "Beats" && post.kind === "beat") || (filter === "Fotos" && post.kind === "photo") || (filter === "Videos" && post.kind === "video") || (filter === "Shorts" && post.kind === "short") || (filter === "Estados" && post.kind === "status"));
 
   const share = async (post: FeedPost) => {
     const url = new URL(window.location.href);
@@ -385,11 +479,15 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
   };
 
   return <main className="home-page">
-    <section className="home-stories" aria-label="Estados de productores">
+    {scope === "demo" && import.meta.env.DEV ? <section className="home-stories" aria-label="Estados de productores">
       <a className="home-story home-story-own" href="#/upload"><span><CirclePlus size={21} /><small>Tu estado</small></span></a>
       {stories.map(item => <button className="home-story" type="button" key={item.creator} onClick={() => setStory(item)}><span><img src={item.image} alt="" />{item.kind === "short" && <Video size={15} />}<small>{item.creator}</small></span></button>)}
       <a className="home-story home-story-more" href="#/shorts"><span><Video size={20} /><small>Ver Shorts</small></span></a>
-    </section>
+    </section> : scope !== "demo" ? <HomeStories posts={serverPosts} onCreate={() => {
+      const composer = document.querySelector<HTMLTextAreaElement>("#home-post-text");
+      composer?.scrollIntoView({ behavior: "smooth", block: "center" });
+      composer?.focus({ preventScroll: true });
+    }} /> : null}
     <div className="home-layout">
       <section className="home-feed" aria-label="Feed de BeatVault">
         <HomeComposer scope={scope} onPublish={post => {
@@ -398,28 +496,32 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
         }} />
         {postStorageError && <p className="home-composer-error" role="status">El almacenamiento local de publicaciones no está disponible en este navegador.</p>}
         {serverError && <p className="home-composer-error" role="alert">No se pudieron sincronizar las publicaciones: {serverError}</p>}
+        {scope !== "demo" && accountSocialLoading && accountSocialOwner !== scope && <p className="home-feed-status" role="status">Cargando tus seguidos y publicaciones guardadas…</p>}
+        {scope !== "demo" && accountSocialError && <p className="home-composer-error" role="alert">No se pudieron sincronizar Seguir y Guardar: {accountSocialError}</p>}
         <div className="home-feed-toolbar"><div className="home-feed-tabs" role="group" aria-label="Filtrar publicaciones">{["Para ti", "Siguiendo", "Beats", "Fotos", "Videos", "Shorts", "Estados"].map(item => <button type="button" key={item} className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}</button>)}</div><span>{visiblePosts.length} publicaciones</span></div>
         {shareMessage && <p className="home-feedback" role="status"><Check size={14} />{shareMessage}</p>}
         {visiblePosts.length === 0 && <div className="home-empty"><h2>Aún no sigues a productores</h2><p>Explora el feed y sigue perfiles para verlos aquí.</p><button className="button ghost" type="button" onClick={() => setFilter("Para ti")}>Volver a Para ti</button></div>}
         {serverLoading && <p className="home-feed-status" role="status">Sincronizando publicaciones de la comunidad…</p>}
         {visiblePosts.map(post => {
-          const social = post.asset ? socialByContentId[post.asset.id] : undefined;
-          const postInteraction = post.socialPost ? socialByPostId[post.socialPost.id] : undefined;
-          const postComments = postInteraction ? postInteraction.comments.map(comment => ({ id: comment.id, text: comment.body, createdAt: comment.createdAt, authorName: comment.authorName })) : social ? social.comments.map(comment => ({ id: comment.id, text: comment.body, createdAt: comment.createdAt, authorName: comment.authorName })) : comments[post.id] || [];
+          const social = interactionScopeReady && post.asset ? socialByContentId[post.asset.id] : undefined;
+          const postInteraction = interactionScopeReady && post.socialPost ? socialByPostId[post.socialPost.id] : undefined;
+          const localComments = localScopeReady ? comments[post.id] || [] : [];
+          const postComments = postInteraction ? postInteraction.comments.map(comment => ({ id: comment.id, text: comment.body, createdAt: comment.createdAt, authorName: comment.authorName })) : social ? social.comments.map(comment => ({ id: comment.id, text: comment.body, createdAt: comment.createdAt, authorName: comment.authorName })) : localComments;
           const own = post.socialPost?.author.id === scope;
-          return <HomePost key={post.id} post={post} liked={postInteraction?.reactedByMe ?? social?.reactedByMe ?? liked.has(post.id)} likeCount={postInteraction?.reactionCount ?? social?.reactionCount ?? post.likes + (liked.has(post.id) ? 1 : 0)} saved={saved.has(post.id)} followed={followed.has(post.handle)} comments={postComments} onComment={text => { void addPostComment(post, text); }} onExpandPhoto={() => setPhoto(post)} onFollow={() => setFollowed(current => toggleId(current, post.handle))} onLike={() => { void togglePostLike(post); }} onSave={() => setSaved(current => toggleId(current, post.id))} onPlay={onPlay} onShare={() => void share(post)} onDelete={own ? () => void deletePost(post) : undefined} onReport={post.socialPost && !own && scope !== "demo" ? (reason, details) => submitReport(post, reason, details) : undefined} />;
+          const localLiked = localScopeReady && liked.has(post.id);
+          return <HomePost key={post.id} post={post} liked={postInteraction?.reactedByMe ?? social?.reactedByMe ?? localLiked} likeCount={postInteraction?.reactionCount ?? social?.reactionCount ?? post.likes + (localLiked ? 1 : 0)} saved={isPostSaved(post)} followed={isPostFollowed(post)} showFollow={post.accountId !== scope} saveBusy={relationshipBusyFor("bookmark", post)} followBusy={relationshipBusyFor("follow", post)} saveDisabled={saveDisabled(post)} followDisabled={followDisabled(post)} comments={postComments} onComment={text => addPostComment(post, text)} onExpandPhoto={() => setPhoto(post)} onFollow={() => { void toggleFollowPost(post); }} onLike={() => { void togglePostLike(post); }} onSave={() => { void toggleSavedPost(post); }} onPlay={onPlay} onShare={() => void share(post)} onDelete={own ? () => void deletePost(post) : undefined} onReport={post.socialPost && !own && scope !== "demo" ? (reason, details) => submitReport(post, reason, details) : undefined} />;
         })}
         {(nextCursor || ownNextCursor) && <button type="button" className="button ghost home-load-more" disabled={feedBusy} onClick={() => void loadMore()}>{feedBusy ? "Cargando…" : "Cargar más publicaciones"}</button>}
       </section>
       <aside className="home-rail">
         <section className="home-rail-card home-upload-cta"><span className="home-rail-icon"><CirclePlus size={18} /></span><div><h2>¿Tienes algo nuevo?</h2><p>Sube un beat o un one-shot a tu espacio.</p></div><a className="button" href="#/upload">Subir audio</a></section>
-        <section className="home-rail-card"><div className="home-rail-title"><h2>En el radar</h2><span>DEMO</span></div><a className="home-trend" href="#/beats"><img src={hard808Cover} alt="" /><span><strong>808s con carácter</strong><small>Beats · Trap</small></span><Music2 size={16} /></a><a className="home-trend" href="#/shorts"><img src={loFiCover} alt="" /><span><strong>Texturas lo-fi</strong><small>Shorts · Producción</small></span><Video size={16} /></a><a className="home-explore-link" href="#/beats">Explorar sonidos <span>→</span></a></section>
+        {import.meta.env.DEV && <section className="home-rail-card"><div className="home-rail-title"><h2>En el radar</h2><span>DEMO</span></div><a className="home-trend" href="#/beats"><img src={hard808Cover} alt="" /><span><strong>808s con carácter</strong><small>Beats · Trap</small></span><Music2 size={16} /></a><a className="home-trend" href="#/shorts"><img src={loFiCover} alt="" /><span><strong>Texturas lo-fi</strong><small>Shorts · Producción</small></span><Video size={16} /></a><a className="home-explore-link" href="#/beats">Explorar sonidos <span>→</span></a></section>}
         <section className="home-rail-card home-join-card"><ImageIcon size={18} /><p>Comparte una idea, encuentra tu próximo sonido y conecta con otros productores.</p><a href="#/profile">Completar perfil <span>→</span></a></section>
       </aside>
     </div>
     <dialog ref={storyDialog} className="home-story-dialog" aria-labelledby="home-story-title" onClose={() => setStory(null)} onClick={event => { if (event.target === storyDialog.current) storyDialog.current?.close(); }}>
       {story && <><button className="home-story-close" type="button" aria-label="Cerrar estado" onClick={() => storyDialog.current?.close()}>×</button><img src={story.image} alt="" /><div><span className="eyebrow">{story.kind === "short" ? "SHORT · DEMO" : "ESTADO · DEMO"}</span><h2 id="home-story-title">{story.title}</h2><p>{story.creator} está compartiendo una idea desde su estudio.</p><a className="button" href={story.kind === "short" ? "#/shorts" : "#/beats"}>{story.kind === "short" ? "Ver Shorts" : "Explorar beats"}</a></div></>}
     </dialog>
-    {photo && <PhotoViewer post={photo} comments={photo.socialPost ? (socialByPostId[photo.socialPost.id]?.comments || []).map(comment => ({ id: comment.id, text: comment.body, createdAt: comment.createdAt, authorName: comment.authorName })) : comments[photo.id] || []} dialogRef={photoDialog} onClose={() => { photoDialog.current?.close(); setPhoto(null); }} onComment={text => { void addPostComment(photo, text); }} />}
+    {photo && <PhotoViewer post={photo} comments={photo.socialPost ? (interactionScopeReady ? socialByPostId[photo.socialPost.id]?.comments || [] : []).map(comment => ({ id: comment.id, text: comment.body, createdAt: comment.createdAt, authorName: comment.authorName })) : localScopeReady ? comments[photo.id] || [] : []} dialogRef={photoDialog} onClose={() => { photoDialog.current?.close(); setPhoto(null); }} onComment={text => addPostComment(photo, text)} />}
   </main>;
 }

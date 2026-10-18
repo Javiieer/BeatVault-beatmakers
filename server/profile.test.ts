@@ -72,10 +72,12 @@ describe('creator profile privacy and persistence', () => {
     const invalid = await call(privateImage, { method: 'POST', headers: { ...owner, 'content-type': 'image/png' }, body: new Uint8Array(bytes) });
     expect(invalid.status).toBe(400);
 
-    const uploaded = await call(privateImage, { method: 'POST', headers: { ...owner, 'content-type': 'image/jpeg' }, body: new Uint8Array(bytes) });
+    const preflight = await call(privateImage, { method: 'OPTIONS', headers: { origin: 'http://localhost', 'access-control-request-headers': 'x-profile-focal-point' } });
+    expect(preflight.headers.get('access-control-allow-headers')).toContain('X-Profile-Focal-Point');
+    const uploaded = await call(privateImage, { method: 'POST', headers: { ...owner, 'content-type': 'image/jpeg', 'x-profile-focal-point': '24,68' }, body: new Uint8Array(bytes) });
     expect(uploaded.status, await uploaded.clone().text()).toBe(200);
     const uploadedProfile = (await uploaded.json()).data;
-    expect(uploadedProfile).toMatchObject({ avatarId: 'custom', avatarUrl: `/api/profiles/${ownerId}/images/avatar/thumbnail` });
+    expect(uploadedProfile).toMatchObject({ avatarId: 'custom', avatarUrl: `/api/profiles/${ownerId}/images/avatar/thumbnail`, avatarFocalPoint: { x: 24, y: 68 } });
     expect(uploadedProfile).not.toHaveProperty('avatarImage');
     const privateThumb = await call(uploadedProfile.avatarUrl, { headers: owner });
     expect(privateThumb.status).toBe(200);
@@ -83,9 +85,11 @@ describe('creator profile privacy and persistence', () => {
     expect((await call(uploadedProfile.avatarUrl, { headers: { cookie: other.cookie } })).status).toBe(404);
     expect((await call(uploadedProfile.avatarUrl)).status).toBe(404);
 
-    const uploadedCover = await call('/api/profile/images/cover', { method: 'POST', headers: { ...owner, 'content-type': 'image/jpeg' }, body: new Uint8Array(bytes) });
+    const invalidFocalPoint = await call('/api/profile/images/cover', { method: 'POST', headers: { ...owner, 'content-type': 'image/jpeg', 'x-profile-focal-point': '150,50' }, body: new Uint8Array(bytes) });
+    expect(invalidFocalPoint.status).toBe(400);
+    const uploadedCover = await call('/api/profile/images/cover', { method: 'POST', headers: { ...owner, 'content-type': 'image/jpeg', 'x-profile-focal-point': '74,36' }, body: new Uint8Array(bytes) });
     expect(uploadedCover.status, await uploadedCover.clone().text()).toBe(200);
-    expect((await uploadedCover.json()).data).toMatchObject({ coverId: 'custom', coverUrl: `/api/profiles/${ownerId}/images/cover/thumbnail` });
+    expect((await uploadedCover.json()).data).toMatchObject({ coverId: 'custom', coverUrl: `/api/profiles/${ownerId}/images/cover/thumbnail`, coverFocalPoint: { x: 74, y: 36 } });
 
     await call('/api/profile', { method: 'PUT', headers: owner, body: JSON.stringify({ ...data, avatarId: 'custom', coverId: 'custom', publicProfile: true }) });
     const publicProfileResponse = await call(`/api/profiles/${ownerId}`);
@@ -93,6 +97,7 @@ describe('creator profile privacy and persistence', () => {
     const publicProfile = (await publicProfileResponse.json()).data;
     expect(publicProfile.avatarUrl).toBe(uploadedProfile.avatarUrl);
     expect(publicProfile.coverUrl).toBe(`/api/profiles/${ownerId}/images/cover/thumbnail`);
+    expect(publicProfile).toMatchObject({ avatarFocalPoint: { x: 24, y: 68 }, coverFocalPoint: { x: 74, y: 36 } });
     expect(publicProfile).not.toHaveProperty('avatarImage');
     expect((await call(publicProfile.avatarUrl)).status).toBe(200);
     expect((await call(publicProfile.avatarUrl.replace('/thumbnail', ''))).headers.get('content-type')).toBe('image/jpeg');
@@ -132,6 +137,7 @@ describe('creator profile privacy and persistence', () => {
   });
   it('validates lengths, genres and boolean visibility', () => {
     expect(_id).toBe('');
-    for (const patch of [{ displayName: '' }, { bio: 'x'.repeat(321) }, { genres: Array(9).fill('Trap') }, { publicProfile: 'yes' }]) expect(() => validateProfile({ ...data, ...patch })).toThrow();
+    for (const patch of [{ displayName: '' }, { bio: 'x'.repeat(321) }, { genres: Array(9).fill('Trap') }, { publicProfile: 'yes' }, { avatarFocalPoint: { x: 101, y: 50 } }, { coverFocalPoint: { x: 50.5, y: 50 } }, { coverFocalPoint: { x: 50, y: 50, scale: 2 } }]) expect(() => validateProfile({ ...data, ...patch })).toThrow();
+    expect(validateProfile({ ...data, avatarFocalPoint: { x: 0, y: 100 } })).toMatchObject({ avatarFocalPoint: { x: 0, y: 100 } });
   });
 });

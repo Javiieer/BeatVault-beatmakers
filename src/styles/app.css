@@ -3810,6 +3810,9 @@ body,
 
 .admin-review-row { border-top: 1px solid var(--border); padding: 12px 0; }
 .admin-review-row .admin-row { border-top: 0; padding: 0 0 12px; }
+.admin-review-audio { margin: 0 0 12px; }
+.admin-review-audio audio { display: block; width: min(100%, 460px); height: 38px; }
+.admin-preview-unavailable { margin: 0 0 12px; color: var(--text-muted); font-size: 12px; }
 .admin-review-actions { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 12px; align-items: end; }
 .admin-review-actions > div { display: flex; gap: 8px; }
 .admin-review-actions .button { white-space: nowrap; }

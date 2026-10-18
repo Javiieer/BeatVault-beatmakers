@@ -72,8 +72,6 @@ function readReviewEvents(scope: string): Array<{ id: string; name: string; stat
 
 export function NotificationCenter({ userId }: { userId?: string }) {
   const scope = userId || "demo";
-  const notificationSettings = userId ? readUserSettings(userId).notifications : defaultUserSettings.notifications;
-  const settings = notificationSettings;
   const catalogRepository = useMemo(() => new CatalogRepository(undefined, scope), [scope]);
   const [open, setOpen] = useState(false);
   const [overview, setOverview] = useState<FriendOverview>();
@@ -81,6 +79,7 @@ export function NotificationCenter({ userId }: { userId?: string }) {
   const [seen, setSeen] = useState(() => readSeen(scope));
   const [toast, setToast] = useState("");
   const [settingsRevision, setSettingsRevision] = useState(0);
+  const [settings, setSettings] = useState(() => userId ? readUserSettings(userId).notifications : defaultUserSettings.notifications);
   const [loading, setLoading] = useState(Boolean(userId));
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<"all" | "social" | "beats">("all");
@@ -134,6 +133,11 @@ export function NotificationCenter({ userId }: { userId?: string }) {
     window.addEventListener('beatvault:settings-changed', refreshSettings);
     return () => window.removeEventListener('beatvault:settings-changed', refreshSettings);
   }, [userId]);
+
+  useEffect(() => {
+    const next = userId ? readUserSettings(userId).notifications : defaultUserSettings.notifications;
+    setSettings(current => current.messages === next.messages && current.friendRequests === next.friendRequests && current.comments === next.comments && current.reactions === next.reactions && current.reviews === next.reviews ? current : next);
+  }, [userId, settingsRevision]);
 
   useEffect(() => {
     let live = true;

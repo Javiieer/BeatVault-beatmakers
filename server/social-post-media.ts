@@ -67,7 +67,7 @@ export function validateSocialVideoMetadata(metadata: { format?: { format_name?:
   if (!metadata.format?.format_name?.split(',').some(name => name === 'mov' || name === 'mp4') || !video || video.codec_name !== 'h264' || !Number.isSafeInteger(video.width) || !Number.isSafeInteger(video.height) || (video.width || 0) < 1 || (video.height || 0) < 1 || (video.width || 0) > socialVideoMaxWidth || (video.height || 0) > socialVideoMaxHeight || !Number.isFinite(duration) || duration <= 0 || duration > socialVideoMaxDurationSeconds) throw new HttpInputError(400, 'SOCIAL_VIDEO_LIMITS', 'El video debe ser MP4/H.264, durar hasta 3 minutos y no exceder 1920x1080.')
 }
 
-export type ReceivedSocialMedia = { media: SocialPostMedia; originalName: string; body: string; audience: 'public' | 'friends' | 'private' }
+export type ReceivedSocialMedia = { media: SocialPostMedia; body: string; audience: 'public' | 'friends' | 'private' }
 export async function receiveSocialPostMedia(req: IncomingMessage, ownerId: string, kind: 'photo' | 'video'): Promise<ReceivedSocialMedia> {
   if (req.headers['content-type']?.split(';')[0]?.toLowerCase() !== 'multipart/form-data') throw new HttpInputError(415, 'MULTIPART_REQUIRED', 'Se requiere una carga multipart.')
   const maxFile = kind === 'photo' ? socialPhotoMaxBytes : socialVideoMaxBytes
@@ -76,7 +76,6 @@ export async function receiveSocialPostMedia(req: IncomingMessage, ownerId: stri
   const id = randomUUID()
   const temporary = join(config.uploadDirectory, `.social-${id}.tmp`)
   let declaredMime = ''
-  let originalName = ''
   let sizeBytes = 0
   let body = ''
   let audience = ''
@@ -97,7 +96,6 @@ export async function receiveSocialPostMedia(req: IncomingMessage, ownerId: stri
         if (field !== 'file' || fileSeen) { stream.resume(); finish(new HttpInputError(400, 'SOCIAL_MEDIA_FILE_REQUIRED', 'Carga un solo archivo en el campo file.')); return }
         fileSeen = true
         declaredMime = info.mimeType.toLowerCase()
-        originalName = info.filename.replace(/[\\/\0\r\n]/g, '_').slice(0, 180)
         output = createWriteStream(temporary, { flags: 'wx', mode: 0o600 })
         stream.on('data', chunk => { sizeBytes += Buffer.byteLength(chunk) }).on('limit', () => finish(new HttpInputError(413, 'SOCIAL_MEDIA_TOO_LARGE', 'El archivo excede el tamaño permitido.'))).on('error', error => finish(error))
         output.on('error', error => finish(error))
@@ -142,7 +140,7 @@ export async function receiveSocialPostMedia(req: IncomingMessage, ownerId: stri
     await rename(temporary, destination)
     const hash = createHash('sha256')
     for await (const chunk of createReadStream(destination)) hash.update(chunk as Buffer)
-    return { media: { storageKey, mimeType: mimeType!, sizeBytes, sha256: hash.digest('hex') }, originalName, body: body.trim(), audience: audience as 'public' | 'friends' | 'private' }
+    return { media: { storageKey, mimeType: mimeType!, sizeBytes, sha256: hash.digest('hex') }, body: body.trim(), audience: audience as 'public' | 'friends' | 'private' }
   } catch (error) {
     await unlink(temporary).catch(() => undefined)
     await unlink(artworkPath(config.uploadDirectory, `social-posts/${safeOwner(ownerId)}/${id}`)).catch(() => undefined)
@@ -177,7 +175,17 @@ export async function readSocialPostMedia(post: SocialPost) {
 export async function reconcileSocialPostMedia(repo: ServerRepository) {
   const root = join(config.uploadDirectory, 'social-posts')
   const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
-  const referenced = new Set((await repo.listSocialPosts({ limit: 100000 })).flatMap(post => post.media ? [post.media.storageKey] : []))
+  const referenced = new Set<string>()
+  const pageSize = 1000
+  let cursor: { createdAt: string; id: string } | undefined
+  while (true) {
+    const posts = await repo.listSocialPosts({ limit: pageSize, ...(cursor ? { cursor } : {}) })
+    for (const post of posts) if (post.media) referenced.add(post.media.storageKey)
+    if (posts.length < pageSize) break
+    const last = posts.at(-1)
+    if (!last || last.createdAt === cursor?.createdAt && last.id === cursor.id) throw new Error('SOCIAL_MEDIA_RECONCILIATION_CURSOR_STALLED')
+    cursor = { createdAt: last.createdAt, id: last.id }
+  }
   for (const name of await readdir(config.uploadDirectory).catch(() => [])) {
     if (!/^\.social-[a-f0-9-]{36}\.tmp$/i.test(name)) continue
     const path = join(config.uploadDirectory, name)

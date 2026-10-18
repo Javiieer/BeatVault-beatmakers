@@ -18,6 +18,14 @@ describe('local API routes', () => {
     expect((await fetch(`${origin}/api/marketplace?type=admin`)).status).toBe(400)
     expect((await fetch(`${origin}/api/marketplace?creatorId=not-an-account-id`)).status).toBe(400)
   })
+  it('rejects malformed social post UUIDs and cursors before repository access', async () => {
+    const malformedId = '000000000-000-0000-0000-000000000000'
+    expect(malformedId).toHaveLength(36)
+    expect((await fetch(`${origin}/api/posts/${malformedId}/social`)).status).toBe(404)
+    const malformedCursor = Buffer.from(JSON.stringify({ createdAt: new Date().toISOString(), id: malformedId })).toString('base64url')
+    expect((await fetch(`${origin}/api/feed?cursor=${encodeURIComponent(malformedCursor)}`)).status).toBe(400)
+    expect((await fetch(`${origin}/api/feed?cursor=${'x'.repeat(513)}`)).status).toBe(400)
+  })
   it('reports storage usage only to the signed-in account', async () => {
     expect((await fetch(`${origin}/api/account/storage`)).status).toBe(401)
     const session = await auth.login('demo@beatvault.local', 'local-demo-password')
@@ -62,6 +70,14 @@ describe('local API routes', () => {
     expect((await fetch(`${origin}/api/posts/${publicPost.id}/comments`, { method: 'POST', headers: stranger.headers, body: JSON.stringify({ body: 'forged', authorId: owner.session.id }) })).status).toBe(400)
     const postReaction = () => fetch(`${origin}/api/posts/${publicPost.id}/reaction`, { method: 'POST', headers: stranger.headers, body: '{}' })
     expect(await postReaction().then(response => response.json())).toMatchObject({ data: { reacted: true, reactionCount: 1 } })
+    const interactionBatchUrl = `${origin}/api/posts/interactions?id=${publicPost.id}`
+    expect((await fetch(interactionBatchUrl)).status).toBe(401)
+    const batchResponse = await fetch(interactionBatchUrl, { headers: { cookie: stranger.headers.cookie } })
+    expect(batchResponse.status).toBe(200)
+    expect(await batchResponse.json()).toMatchObject({ data: { items: { [publicPost.id]: { reactionCount: 1, reactedByMe: true } } } })
+    expect((await fetch(`${origin}/api/posts/interactions?id=invalid`, { headers: { cookie: stranger.headers.cookie } })).status).toBe(400)
+    const oversizedBatch = new URLSearchParams(Array.from({ length: 31 }, () => ['id', publicPost.id] as [string, string]))
+    expect((await fetch(`${origin}/api/posts/interactions?${oversizedBatch}`, { headers: { cookie: stranger.headers.cookie } })).status).toBe(400)
     expect(await postReaction().then(response => response.json())).toMatchObject({ data: { reacted: false, reactionCount: 0 } })
     expect(await fetch(socialUrl, { headers: { cookie: stranger.headers.cookie } }).then(response => response.json())).toMatchObject({ data: { reactionCount: 0, reactedByMe: false } })
     const coverBytes = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover.jpg'))
@@ -86,6 +102,13 @@ describe('local API routes', () => {
     const privateResponse = await create(owner.headers, { kind: 'status', body: 'Owner only', audience: 'private' })
     const privatePost = (await privateResponse.json() as { data: { id: string } }).data
     expect((await fetch(`${origin}/api/posts/${privatePost.id}/social`, { headers: { cookie: stranger.headers.cookie } })).status).toBe(404)
+    const privateInteractionBatch = await fetch(`${origin}/api/posts/interactions?id=${privatePost.id}`, { headers: { cookie: stranger.headers.cookie } }).then(response => response.json()) as { data: { items: Record<string, unknown> } }
+    expect(privateInteractionBatch.data.items).not.toHaveProperty(privatePost.id)
+    const weightedIds = new URLSearchParams(Array.from({ length: 30 }, () => ['id', randomUUID()] as [string, string]))
+    for (let batch = 0; batch < 3; batch += 1) {
+      expect((await fetch(`${origin}/api/posts/interactions?${weightedIds}`, { headers: { cookie: stranger.headers.cookie } })).status).toBe(200)
+    }
+    expect((await fetch(`${origin}/api/posts/interactions?${weightedIds}`, { headers: { cookie: stranger.headers.cookie } })).status).toBe(429)
     expect((await fetch(`${origin}/api/profiles/${owner.session.id}/posts`, { headers: { cookie: `beatvault_session=${stranger.session.token}` } }).then(response => response.json()) as { data: { posts: Array<{ id: string }> } }).data.posts.some(post => post.id === privatePost.id)).toBe(false)
     expect((await fetch(`${origin}/api/profiles/${owner.session.id}/posts`, { headers: { cookie: `beatvault_session=${owner.session.token}` } }).then(response => response.json()) as { data: { posts: Array<{ id: string }> } }).data.posts.some(post => post.id === privatePost.id)).toBe(true)
 
@@ -804,5 +827,59 @@ describe('local API routes', () => {
     expect((await fetch(recommendation, { method: 'POST', headers: { ...managerCookie, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'recommend', note: 'Looks complete for review.' }) })).status).toBe(403)
     expect((await fetch(recommendation, { method: 'POST', headers: { ...managerCookie, 'x-csrf-token': manager!.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'recommend', note: 'ok' }) })).status).toBe(400)
     expect((await fetch(recommendation, { method: 'POST', headers: { ...managerCookie, 'x-csrf-token': manager!.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'recommend', note: 'Looks complete for review.' }) })).status).toBe(404)
+  })
+  it('persists follows and bookmarks per authenticated account with CSRF and visibility checks', async () => {
+    const password = 'Social-relations-test-password'
+    const makeUser = async (prefix: string) => {
+      const email = `${prefix}-${randomUUID()}@test.local`
+      await auth.register(email, password)
+      const session = await auth.login(email, password)
+      expect(session).toBeTruthy()
+      return { session: session!, headers: { cookie: `beatvault_session=${session!.token}`, 'x-csrf-token': session!.csrfToken, 'content-type': 'application/json' } }
+    }
+    const owner = await makeUser('relations-owner')
+    const target = await makeUser('relations-target')
+    const outsider = await makeUser('relations-outsider')
+    const privateTarget = await makeUser('relations-private')
+    const runtime = createRepository()
+    await runtime.repository.saveProfile({ ...emptyProfile(target.session.id), displayName: 'Public Creator', publicProfile: true })
+    await runtime.repository.saveProfile({ ...emptyProfile(privateTarget.session.id), displayName: 'Private Creator', publicProfile: false })
+    const stateUrl = `${origin}/api/account/social-state`
+    const stateFor = async (user: typeof owner) => fetch(stateUrl, { headers: user.headers }).then(response => response.json()) as Promise<{ data: { followedAccountIds: string[]; bookmarkedPostIds: string[] } }>
+    const followUrl = `${origin}/api/follows/${target.session.id}`
+    expect((await fetch(stateUrl)).status).toBe(401)
+    expect((await fetch(followUrl, { method: 'PUT', headers: { cookie: owner.headers.cookie, 'content-type': 'application/json' }, body: '{}' })).status).toBe(403)
+    expect((await fetch(`${origin}/api/follows/${owner.session.id}`, { method: 'PUT', headers: owner.headers, body: '{}' })).status).toBe(400)
+    expect((await fetch(`${origin}/api/follows/${privateTarget.session.id}`, { method: 'PUT', headers: owner.headers, body: '{}' })).status).toBe(404)
+    expect((await fetch(`${origin}/api/follows/@public-creator`, { method: 'PUT', headers: owner.headers, body: '{}' })).status).toBe(404)
+
+    const follow = () => fetch(followUrl, { method: 'PUT', headers: owner.headers, body: JSON.stringify({ followerId: outsider.session.id }) })
+    expect((await follow()).status).toBe(200)
+    expect((await follow()).status).toBe(200)
+    expect((await stateFor(owner)).data.followedAccountIds).toEqual([target.session.id])
+    expect((await stateFor(outsider)).data.followedAccountIds).toEqual([])
+
+    const postResponse = await fetch(`${origin}/api/posts`, { method: 'POST', headers: target.headers, body: JSON.stringify({ kind: 'status', body: 'Bookmarkable post', audience: 'public' }) })
+    expect(postResponse.status).toBe(201)
+    const publicPost = (await postResponse.json() as { data: { id: string } }).data
+    const privateResponse = await fetch(`${origin}/api/posts`, { method: 'POST', headers: target.headers, body: JSON.stringify({ kind: 'status', body: 'Private post', audience: 'private' }) })
+    const privatePost = (await privateResponse.json() as { data: { id: string } }).data
+    expect((await fetch(`${origin}/api/posts/${privatePost.id}/bookmark`, { method: 'PUT', headers: owner.headers, body: '{}' })).status).toBe(404)
+    expect((await fetch(`${origin}/api/posts/${publicPost.id}/bookmark`, { method: 'PUT', headers: { cookie: owner.headers.cookie, 'content-type': 'application/json' }, body: '{}' })).status).toBe(403)
+
+    const bookmarkUrl = `${origin}/api/posts/${publicPost.id}/bookmark`
+    const bookmark = () => fetch(bookmarkUrl, { method: 'PUT', headers: owner.headers, body: '{}' })
+    expect((await bookmark()).status).toBe(200)
+    expect((await bookmark()).status).toBe(200)
+    expect((await stateFor(owner)).data.bookmarkedPostIds).toEqual([publicPost.id])
+    expect((await fetch(`${stateUrl}?accountId=${owner.session.id}`, { headers: outsider.headers }).then(response => response.json()) as { data: { bookmarkedPostIds: string[] } }).data.bookmarkedPostIds).toEqual([])
+    expect((await fetch(bookmarkUrl, { method: 'DELETE', headers: { cookie: owner.headers.cookie } })).status).toBe(403)
+    expect((await fetch(bookmarkUrl, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
+    expect((await fetch(bookmarkUrl, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
+    expect((await stateFor(owner)).data.bookmarkedPostIds).toEqual([])
+    expect((await fetch(`${origin}/api/follows/${target.session.id}`, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
+    expect((await fetch(`${origin}/api/follows/${target.session.id}`, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
+    expect((await stateFor(owner)).data.followedAccountIds).toEqual([])
+    await runtime.close()
   })
 })

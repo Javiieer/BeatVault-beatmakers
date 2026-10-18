@@ -1,6 +1,6 @@
 # BeatVault BeatMakers Roadmap
 
-**Status date:** 2026-10-14
+**Status date:** 2026-10-15
 **Purpose:** Current product and engineering memory for contributors and AI assistants.
 **Authority:** This document describes the current intended state. When older phase reports or docs disagree, verify against the current code and the focused references linked below; do not repeat historical claims as current facts.
 
@@ -56,22 +56,42 @@ Product decisions to preserve:
   processing previews; it is not bundled with the app.
 - Beat upload moderation is open to either a Community Manager or an administrator:
   one approval publishes the Beat, so moderation does not bottleneck on the admin.
-  CM reviews use a private processed preview; both roles' decisions are audited.
+  Both review queues use the same private processed preview; approval is disabled if
+  it is unavailable. CM/admin approvals and rejections are audited.
   Seller-listing review remains a separate CM recommendation followed by an admin
   decision because it controls commercial terms, not basic catalog publication.
 - Admin catalog moderation, seller/admin storage views, configurable storage limits,
   local plan assignment, and audit history.
 
-### Social foundation — Partial/local scope
+### Social foundation — Partial; backend persistence is in place, production readiness remains
 
-- Home composer supports account-scoped browser-local posts and mirrors the owner's
-  posts to their profile on that browser. It is not public or cross-device publishing.
+- Authenticated Home posts and media use the API and support public/friends/private
+  audiences; profile posts read the same server records. Comments/reactions, follows
+  and bookmarks persist by account/post IDs. Migration 028 adds PostgreSQL follow and
+  bookmark tables; clean-schema disposable PostgreSQL and backup/restore checks passed.
+  An existing-volume upgrade rehearsal remains before hosted use.
+- The Home stories rail groups published posts from the past 24 hours. This is a
+  presentation over ordinary posts, not a separate story record with server expiry.
+  Labeled seed posts and the demo radar are limited to local development/guest preview;
+  authenticated feeds contain account data only, and production bundles omit the demo radar.
+- A two-account Playwright test covers public post delivery, private-post isolation,
+  and comment/reaction persistence after reload. The UI remains explicitly partial.
+- Feed interaction reads use an authenticated batch endpoint (up to 30 posts per call),
+  a weighted budget of 120 post IDs per account per minute, and at most 20 comments per
+  post in a batch. This bounds per-account work in the single API process; it is not a
+  shared limiter for multi-instance hosting.
+- PostgreSQL public-feed queries now filter `published` rows in SQL to use the partial
+  feed index; owner profile and moderation queries still retain their required scopes.
 - Friend discovery is opt-in; requests and accepted connections are stored by the API.
 - One-to-one text chat is limited to accepted friends. Messages persist through JSON or
   PostgreSQL repositories; connected clients receive updates over SSE.
 - Published catalog Beats support persisted comments/reactions and in-app notifications. Home-post comments/reactions and friend request/acceptance notifications are persisted with recipient-scoped read state, cursor pagination, private-actor masking, post-persistence SSE signals, and polling fallback. PostgreSQL commits each action and notification together; local JSON recovers pending notification writes through a journal. OS/email push remains future work.
-- No chat attachments/groups, operating-system push, block/report workflow, public Home
-  post distribution/moderation, or multi-instance realtime service.
+- No independent story publishing/expiry, live Home feed updates, chat attachments or
+  groups, operating-system push, or multi-instance shared rate limits/realtime service.
+- Feed reads are rate-limited per client IP within one API process, use canonical UUID
+  validation and cap each page scan. Interaction batch reads use canonical unique UUIDs
+  and weighted per-account limits. Shared limits and load testing remain necessary for
+  multi-instance/public deployment.
 
 ### Catalog and Marketplace — Partial
 
@@ -132,9 +152,10 @@ Product decisions to preserve:
 - `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`, Playwright route and
   workflow tests, security probes, diagnostic scripts, and GitHub workflow automation
   are available.
-- On 2026-10-14, the full Vitest suite passed 250 tests across 51 files with two
-  workers; targeted authenticated artwork upload passed in desktop and mobile
-  Playwright runs. Lint, typecheck, production build, and `npm audit --audit-level=high`
+- On 2026-10-15, the full Vitest suite passed 310 tests across 62 files with two
+  workers. The isolated Playwright workflow uploaded real WAVs and exercised CM
+  approval, rejection with an owner-visible note, and independent admin approval;
+  the site audit passed on desktop and mobile. Lint, typecheck, and production build
   passed. PostgreSQL integration/backup-restore QA passed in an earlier rehearsal;
   this is not a penetration test, OS-isolated media scan, or live Stripe validation.
 
@@ -168,8 +189,12 @@ Product decisions to preserve:
 
 ### P0 — Keep local work reliable
 
-- Continue testing with separate creator and admin accounts; add a Community Manager
-  account for the review workflow.
+- `npm run local:qa-accounts` now provisions separate creator, Community Manager and
+  admin identities and checks their review/panel access boundaries. A disposable
+  browser test now verifies real audio previews, private access, CM approve/reject,
+  creator-only rejection notes, admin approval, audit events, and public delivery.
+  Persistent local accounts were not modified during that test; exercising those
+  accounts remains an explicit local QA operation.
 - Run the full automated suite after each integrated milestone. Fix regressions before
   adding more modules; inspect desktop and mobile routes when UI changes.
 - Keep this roadmap authoritative and synchronize status claims in
@@ -204,8 +229,8 @@ Product decisions to preserve:
 ### P3 — Expand only after the core pilot proves useful
 
 - Complete translations across all application routes.
-- Consider custom profile artwork, public/cross-device Home posts, creator collaboration
-  invitations, chat attachments/groups, push notifications, and richer moderation.
+- Consider custom profile artwork, live Home feed updates, standalone stories, creator
+  collaboration invitations, chat attachments/groups, push notifications, and richer moderation.
 - Revisit Shorts, analytics, and AI only with validated creator needs and clear data,
   consent, cost, and operational plans.
 - Revisit music distribution only as a separate B2B/provider-backed product after
@@ -217,7 +242,8 @@ Product decisions to preserve:
 - Recurring Creator/Studio subscriptions and real plan billing.
 - Individual One-shot checkout, final discount application, final tax calculation, and
   production seller payouts.
-- Public cross-device social feed, video hosting for Shorts, AI services, and analytics.
+- Standalone story publishing, live Home feed updates, video hosting for Shorts, AI
+  services, and analytics.
 - Multi-instance scaling and public launch.
 
 ## Working Rules for Future Contributors

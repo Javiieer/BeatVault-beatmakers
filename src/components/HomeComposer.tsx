@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { Image as ImageIcon, LoaderCircle, Send, Type, Video, X } from "lucide-react";
+import { Check, Globe, Image as ImageIcon, LoaderCircle, LockKeyhole, Send, Type, UsersRound, Video, X } from "lucide-react";
 import { saveLocalHomePost, type LocalHomePost } from "../data/homePosts";
 import { createSocialPost, type SocialAudience, type SocialPostView } from "../data/socialPostRepository";
 
@@ -11,6 +11,7 @@ const mediaTypes: Record<string, { mode: "photo" | "video"; mime: string }> = {
   png: { mode: "photo", mime: "image/png" },
   mp4: { mode: "video", mime: "video/mp4" },
 };
+const audienceLabels: Record<SocialAudience, string> = { private: "Solo yo", friends: "Amigos", public: "Público" };
 
 export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (post: LocalHomePost | SocialPostView) => void }) {
   const authenticated = scope !== "demo";
@@ -21,14 +22,36 @@ export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [audience, setAudience] = useState<SocialAudience>("private");
+  const [audienceMenuOpen, setAudienceMenuOpen] = useState(false);
+  const [audienceMenuPlacement, setAudienceMenuPlacement] = useState<"above" | "below">("above");
   const input = useRef<HTMLInputElement>(null);
+  const audienceControl = useRef<HTMLDivElement>(null);
+  const audienceTrigger = useRef<HTMLButtonElement>(null);
   const limit = mode === "video" ? maxVideoBytes : maxPhotoBytes;
 
   useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
+  useEffect(() => {
+    if (!audienceMenuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!audienceControl.current?.contains(event.target as Node)) setAudienceMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setAudienceMenuOpen(false);
+      audienceTrigger.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [audienceMenuOpen]);
 
   const chooseMode = (next: ComposerMode) => {
     setError("");
     if (next === "status") { clearMedia(); setMode(next); return; }
+    if ((mode === "photo" || mode === "video") && mode !== next) clearMedia();
     setMode(next);
     window.requestAnimationFrame(() => input.current?.click());
   };
@@ -36,6 +59,17 @@ export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (
     setFile(undefined);
     setPreviewUrl("");
     if (input.current) input.current.value = "";
+  };
+  const toggleAudienceMenu = () => {
+    if (audienceMenuOpen) {
+      setAudienceMenuOpen(false);
+      return;
+    }
+    const triggerBounds = audienceTrigger.current?.getBoundingClientRect();
+    const spaceAbove = triggerBounds?.top ?? 0;
+    const spaceBelow = window.innerHeight - (triggerBounds?.bottom ?? 0);
+    setAudienceMenuPlacement(spaceAbove >= 132 || spaceAbove > spaceBelow ? "above" : "below");
+    setAudienceMenuOpen(true);
   };
   const selectMedia = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = event.currentTarget.files?.[0];
@@ -98,7 +132,17 @@ export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (
       <button type="button" className={mode === "photo" ? "selected" : ""} aria-pressed={mode === "photo"} onClick={() => chooseMode("photo")}><ImageIcon size={16} /> Foto</button>
       <button type="button" className={mode === "video" ? "selected" : ""} aria-pressed={mode === "video"} onClick={() => chooseMode("video")}><Video size={16} /> Video</button>
       <input ref={input} className="sr-only" type="file" accept={mode === "photo" ? "image/jpeg,image/png" : "video/mp4"} onChange={selectMedia} />
-    </div><div className="home-composer-submit-row"><label className="home-post-audience">Audiencia<select aria-label="Audiencia de la publicación" value={audience} onChange={event => setAudience(event.target.value as SocialAudience)}><option value="private">Solo yo</option><option value="friends">Amigos</option><option value="public">Público</option></select></label><button className="button home-composer-submit" type="submit" disabled={busy || (mode === "status" ? !text.trim() : !file)}>{busy ? <LoaderCircle size={15} className="home-composer-spinner" /> : <Send size={15} />}{busy ? "Publicando" : "Publicar"}</button></div></div>
+    </div><div className="home-composer-submit-row"><div className="home-audience-control" ref={audienceControl}>
+      <button ref={audienceTrigger} className="home-audience-trigger" type="button" title={`Privacidad: ${audienceLabels[audience]}`} aria-label={`Privacidad de la publicación: ${audienceLabels[audience]}`} aria-expanded={audienceMenuOpen} aria-controls={audienceMenuOpen ? "home-audience-menu" : undefined} onClick={toggleAudienceMenu}>
+        <span className="home-audience-icon" data-audience={audience} aria-hidden="true">{audience === "public" ? <Globe size={17} /> : audience === "friends" ? <UsersRound size={17} /> : <LockKeyhole size={17} />}</span>
+      </button>
+      {audienceMenuOpen && <div className="home-audience-menu" id="home-audience-menu" data-placement={audienceMenuPlacement} role="group" aria-label="Privacidad de la publicación">
+        {(["public", "friends", "private"] as const).map(option => <button key={option} type="button" className="home-audience-option" aria-pressed={audience === option} onClick={() => { setAudience(option); setAudienceMenuOpen(false); audienceTrigger.current?.focus(); }}>
+          {option === "public" ? <Globe size={16} aria-hidden="true" /> : option === "friends" ? <UsersRound size={16} aria-hidden="true" /> : <LockKeyhole size={16} aria-hidden="true" />}
+          <span>{audienceLabels[option]}</span>{audience === option && <Check className="home-audience-check" size={15} aria-hidden="true" />}
+        </button>)}
+      </div>}
+    </div><button className="button home-composer-submit" type="submit" disabled={busy || (mode === "status" ? !text.trim() : !file)}>{busy ? <LoaderCircle size={15} className="home-composer-spinner" /> : <Send size={15} />}{busy ? "Publicando" : "Publicar"}</button></div></div>
     {error && <p className="home-composer-error" role="alert">{error}</p>}
     <p className="home-composer-local">{authenticated ? "La publicación se guarda en tu cuenta." : "Publicación guardada solo en este equipo."} · Texto máx. 600 caracteres{mode === "video" ? " · Video MP4 máx. 100 MB" : mode === "photo" ? " · Foto JPG/PNG máx. 20 MB" : ""}</p>
   </form>;

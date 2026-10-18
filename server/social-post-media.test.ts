@@ -4,10 +4,10 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import type { IncomingMessage } from 'node:http'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
 import { config } from './config'
-import { LocalRepository } from './store'
+import { LocalRepository, type ServerRepository } from './store'
 import { reconcileSocialPostMedia, receiveSocialPostMedia, validateSocialVideoMetadata } from './social-post-media'
 
 describe('social media validation and reconciliation', () => {
@@ -148,5 +148,49 @@ describe('social media validation and reconciliation', () => {
     expect((await readFile(referenced, 'utf8'))).toBe('referenced')
     await expect(stat(staleTemp)).rejects.toThrow()
     expect(await readFile(freshTemp, 'utf8')).toBe('active')
+  })
+
+  it('paginates through more than 100,000 posts before deleting unreferenced media', async () => {
+    priorUploads = config.uploadDirectory
+    uploadsDir = await mkdtemp(join(tmpdir(), 'beatvault-social-large-uploads-'))
+    config.uploadDirectory = uploadsDir
+    const ownerId = 'social-large-owner'
+    const mediaId = randomUUID()
+    const mediaDirectory = join(uploadsDir, 'social-posts', ownerId)
+    const referenced = join(mediaDirectory, mediaId)
+    const orphan = join(mediaDirectory, randomUUID())
+    await mkdir(mediaDirectory, { recursive: true })
+    await writeFile(referenced, 'referenced beyond the first 100,000 rows')
+    await writeFile(orphan, 'orphan')
+
+    const total = 100_001
+    const indexById = new Map<string, number>()
+    const makePost = (index: number) => {
+      const id = `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`
+      indexById.set(id, index)
+      return {
+        id,
+        authorId: ownerId,
+        kind: 'photo' as const,
+        body: 'Reconciliation test',
+        audience: 'private' as const,
+        visibility: 'published' as const,
+        ...(index === total - 1 ? { media: { storageKey: `social-posts/${ownerId}/${mediaId}`, mimeType: 'image/jpeg' as const, sizeBytes: 40, sha256: 'a'.repeat(64) } } : {}),
+        createdAt: new Date(Date.UTC(2026, 0, 1) - index * 1000).toISOString(),
+        updatedAt: new Date(Date.UTC(2026, 0, 1) - index * 1000).toISOString(),
+      }
+    }
+    const repo = {
+      listSocialPosts: vi.fn(async ({ cursor, limit }: { cursor?: { id: string }; limit: number }) => {
+        const start = cursor ? (indexById.get(cursor.id) ?? -1) + 1 : 0
+        return Array.from({ length: Math.min(limit, total - start) }, (_, offset) => makePost(start + offset))
+      }),
+    } as unknown as ServerRepository
+
+    await reconcileSocialPostMedia(repo)
+
+    expect(repo.listSocialPosts).toHaveBeenCalledTimes(101)
+    expect((await readFile(referenced, 'utf8'))).toContain('beyond the first')
+    await expect(stat(orphan)).rejects.toThrow()
   })
 })

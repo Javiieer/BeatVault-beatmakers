@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import { HttpInputError, parseByteRange, readJson, readRawBody } from './http'
 import type { CatalogEntry } from '../src/domains/catalog/types'
-import { emptyProfile, type CreatorProfile, type ProfileImageKind, type ProfileImageRecord } from '../src/domains/profile'
+import { defaultAvatarFocalPoint, defaultCoverFocalPoint, emptyProfile, type CreatorProfile, type ProfileImageKind, type ProfileImageRecord } from '../src/domains/profile'
 import { validateProfile } from './profile'
 import { closeChatStreams, isChatOnline, publishChatEvent, subscribeToChat } from './chat'
 import { getEffectiveStorageLimit, getPlanCatalog, isPlanId } from './plans'
@@ -29,7 +29,7 @@ import Stripe from 'stripe'
 import { StripeConnectService } from './stripe-connect'
 import { StripePaymentsService } from './stripe-payments'
 import { artworkExists, artworkPath, maxArtworkBytes, persistArtwork, persistArtworkThumbnail, removeArtwork, validateArtwork, type ArtworkRecord } from './artwork'
-import { persistProfileImage, profileImageMaxAccountBytes, profileImageMaxBytes, readProfileImage, removeProfileImage, validateProfileImageUpload } from './profile-images'
+import { parseProfileImageFocalPoint, persistProfileImage, profileImageMaxAccountBytes, profileImageMaxBytes, readProfileImage, removeProfileImage, validateProfileImageUpload } from './profile-images'
 import { socialPostView, type SocialAudience, type SocialPost, type SocialPostCursor, type SocialPostInteractionSnapshot, type SocialPostReactionResult, type SocialPostReport } from './social-posts'
 import { readSocialPostMedia, reconcileSocialPostMedia, receiveSocialPostMedia, removeSocialPostMedia, socialMediaAccountMaxBytes } from './social-post-media'
 import { isNotificationCursor, type NotificationCursor, type NotificationRecord, type NotificationSeed, type NotificationType } from './notifications'
@@ -40,7 +40,14 @@ const previewRetryLimiter = new RateLimiter(3, 60000)
 const uploadConcurrencyLimiter = new ConcurrencyLimiter(2)
 const profileImageConcurrencyLimiter = new ConcurrencyLimiter(1)
 const socialPostLimiter = new RateLimiter(30, 60000)
+const socialFeedLimiter = new RateLimiter(120, 60000)
 const socialPostInteractionLimiter = new RateLimiter(60, 60000)
+const socialPostInteractionBatchLimiter = new RateLimiter(120, 60000)
+const socialPostInteractionBatchCommentLimit = 20
+const socialPostInteractionBatchLimit = 30
+const socialRelationshipLimiter = new RateLimiter(90, 60000)
+const socialFollowLimit = 500
+const socialBookmarkLimit = 1000
 const socialReportLimiter = new RateLimiter(10, 60000)
 const socialMediaConcurrency = new ConcurrencyLimiter(2)
 const socialMediaAccountConcurrency = new ConcurrencyLimiter(1)
@@ -69,7 +76,7 @@ const catalogForAccount = async (entry: CatalogEntry, ownerId?: string, canRevie
   return { ...publicEntry, assetId, previewUrl: asset ? `/api/assets/${encodeURIComponent(asset.id)}/preview` : undefined, audio: asset ? { originalName: asset.originalName, mimeType: asset.mimeType, sizeBytes: asset.sizeBytes, state: asset.state, previewReady } : undefined }
 }
 const cookie = (req: IncomingMessage, name: string) => req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(`${name}=`))?.slice(name.length + 1)
-const json = (res: ServerResponse, status: number, value: unknown, id: string, origin: string | undefined, cookies: string[] = []) => { const headers: Record<string, string | string[] | number> = { 'Content-Type': 'application/json; charset=utf-8', ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}), 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, X-Request-Id, X-CSRF-Token, Idempotency-Key', 'Vary': 'Origin', 'X-Request-Id': id, 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer' }; if (cookies.length) headers['Set-Cookie'] = cookies; res.writeHead(status, headers); res.end(status === 204 ? undefined : JSON.stringify(value)) }
+const json = (res: ServerResponse, status: number, value: unknown, id: string, origin: string | undefined, cookies: string[] = []) => { const headers: Record<string, string | string[] | number> = { 'Content-Type': 'application/json; charset=utf-8', ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}), 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, X-Request-Id, X-CSRF-Token, X-Profile-Focal-Point, Idempotency-Key', 'Vary': 'Origin', 'X-Request-Id': id, 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer' }; if (cookies.length) headers['Set-Cookie'] = cookies; res.writeHead(status, headers); res.end(status === 204 ? undefined : JSON.stringify(value)) }
 const body = readJson
 const profileImageUrl = (accountId: string, kind: ProfileImageKind, image?: ProfileImageRecord) => image ? `/api/profiles/${encodeURIComponent(accountId)}/images/${kind}/thumbnail` : undefined
 const profileForClient = (profile: CreatorProfile, packageBadges?: Array<'creator' | 'studio'>) => {
@@ -88,19 +95,22 @@ const privateFriendProfileForClient = (profile: CreatorProfile) => ({
   genres: profile.genres,
   coverId: profile.coverId,
   avatarId: profile.avatarId,
+  avatarFocalPoint: profile.avatarFocalPoint,
+  coverFocalPoint: profile.coverFocalPoint,
   avatarUrl: profileImageUrl(profile.accountId, 'avatar', profile.avatarImage),
   coverUrl: profileImageUrl(profile.accountId, 'cover', profile.coverImage),
   publicProfile: false,
 })
-const directoryProfile = (profile: NonNullable<Awaited<ReturnType<typeof repo.findProfile>>>) => ({ accountId: profile.accountId, displayName: profile.displayName, bio: profile.bio, genres: profile.genres, avatarId: profile.avatarId, coverId: profile.coverId, avatarUrl: profileImageUrl(profile.accountId, 'avatar', profile.avatarImage), coverUrl: profileImageUrl(profile.accountId, 'cover', profile.coverImage) })
+const directoryProfile = (profile: NonNullable<Awaited<ReturnType<typeof repo.findProfile>>>) => ({ accountId: profile.accountId, displayName: profile.displayName, bio: profile.bio, genres: profile.genres, avatarId: profile.avatarId, coverId: profile.coverId, avatarFocalPoint: profile.avatarFocalPoint, coverFocalPoint: profile.coverFocalPoint, avatarUrl: profileImageUrl(profile.accountId, 'avatar', profile.avatarImage), coverUrl: profileImageUrl(profile.accountId, 'cover', profile.coverImage) })
 const unauthorized = (res: ServerResponse, id: string, origin?: string) => json(res, 401, { ok: false, error: { code: 'UNAUTHORIZED', message: 'Autenticación requerida.' }, requestId: id }, id, origin)
 const adminOnly = (account: Awaited<ReturnType<typeof auth.accountFor>>, res: ServerResponse, id: string, origin?: string): boolean => { if (!account) { unauthorized(res, id, origin); return false }; if (account.role !== 'admin') { json(res, 403, { ok: false, error: { code: 'FORBIDDEN', message: 'Acceso no autorizado.' }, requestId: id }, id, origin); return false }; return true }
 const staffOnly = (account: Awaited<ReturnType<typeof auth.accountFor>>, res: ServerResponse, id: string, origin?: string): boolean => { if (!account) { unauthorized(res, id, origin); return false }; if (account.role !== 'admin' && account.role !== 'community_manager') { json(res, 403, { ok: false, error: { code: 'FORBIDDEN', message: 'Acceso no autorizado.' }, requestId: id }, id, origin); return false }; return true }
 const socialCursor = (value: string | null): SocialPostCursor | undefined => {
   if (!value) return undefined
+  if (value.length > 512) throw new ValidationError('cursor', 'Cursor de publicaciones inválido.')
   try {
     const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<SocialPostCursor>
-    if (typeof parsed.createdAt !== 'string' || !Number.isFinite(Date.parse(parsed.createdAt)) || typeof parsed.id !== 'string' || !/^[a-f0-9-]{36}$/i.test(parsed.id)) throw new Error()
+    if (typeof parsed.createdAt !== 'string' || !Number.isFinite(Date.parse(parsed.createdAt)) || typeof parsed.id !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(parsed.id)) throw new Error()
     return { createdAt: parsed.createdAt, id: parsed.id }
   } catch { throw new ValidationError('cursor', 'Cursor de publicaciones inválido.') }
 }
@@ -218,8 +228,8 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     const author = await repo.findProfile(post.authorId)
     return Boolean(author?.publicProfile) || isAcceptedFriend(viewerId, post.authorId)
   }
-  const socialPostInteractions = async (postId: string, actorId: string): Promise<SocialPostInteractionSnapshot> => {
-    const [comments, reactions] = await Promise.all([repo.listSocialPostComments(postId), repo.listSocialPostReactions(postId)])
+  const socialPostInteractions = async (postId: string, actorId: string, commentLimit = 100): Promise<SocialPostInteractionSnapshot> => {
+    const [comments, reactions] = await Promise.all([repo.listSocialPostComments(postId, commentLimit), repo.getSocialPostReactionSummary(postId, actorId)])
     const visibleComments = await Promise.all(comments.map(async comment => {
       const profile = await repo.findProfile(comment.authorId)
       const canIdentifyAuthor = comment.authorId === actorId || Boolean(profile?.publicProfile) || await isAcceptedFriend(actorId, comment.authorId)
@@ -231,23 +241,68 @@ export const server = createServer(async (req, res) => { const id = req.headers[
         createdAt: comment.createdAt,
       }
     }))
-    return { comments: visibleComments, reactionCount: reactions.length, reactedByMe: reactions.includes(actorId) }
+    return { comments: visibleComments, reactionCount: reactions.reactionCount, reactedByMe: reactions.reactedByMe }
   }
   const socialPostPage = async (posts: SocialPost[], viewerId?: string, viewerRole?: string) => {
     const visible = []
     for (const post of posts) if (await socialCanRead(post, viewerId, viewerRole)) visible.push(socialPostView(post, await repo.findProfile(post.authorId)))
     return visible
   }
-  const collectSocialPage = async (options: { authorId?: string; cursor?: SocialPostCursor; limit: number; viewerId?: string; viewerRole?: string }) => {
-    const pageSize = 100
-    const scanCap = 1000
+  if (path === '/api/account/social-state' && req.method === 'GET') {
+    if (!account) return unauthorized(res, id, requestOrigin)
+    const data = await repo.getSocialAccountState(account.id)
+    return json(res, 200, { ok: true, data, requestId: id }, id, requestOrigin)
+  }
+  const followMatch = path?.match(/^\/api\/follows\/([a-zA-Z0-9_-]{1,80})$/)
+  if (followMatch && ['PUT', 'DELETE'].includes(req.method || '')) {
+    if (!account) return unauthorized(res, id, requestOrigin)
+    if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+    if (!socialRelationshipLimiter.allow(account.id)) return limited(res, id, requestOrigin)
+    const followingId = followMatch[1]
+    if (req.method === 'PUT') {
+      if (followingId === account.id) return json(res, 400, { ok: false, error: { code: 'SOCIAL_SELF_FOLLOW', message: 'No puedes seguir tu propia cuenta.' }, requestId: id }, id, requestOrigin)
+      const target = await repo.findAccountById(followingId)
+      const targetProfile = target ? await repo.findProfile(followingId) : undefined
+      if (!target || !targetProfile || !(await canViewProfile(targetProfile, account.id))) return json(res, 404, { ok: false, error: { code: 'PROFILE_NOT_FOUND', message: 'Perfil no disponible para seguir.' }, requestId: id }, id, requestOrigin)
+      try { await repo.followSocialAccount(account.id, followingId, socialFollowLimit) }
+      catch (error) {
+        if (error instanceof Error && error.message === 'SOCIAL_FOLLOW_LIMIT') return json(res, 409, { ok: false, error: { code: 'SOCIAL_FOLLOW_LIMIT', message: 'Alcanzaste el límite de 500 cuentas seguidas.' }, requestId: id }, id, requestOrigin)
+        throw error
+      }
+      return json(res, 200, { ok: true, data: { following: true }, requestId: id }, id, requestOrigin)
+    }
+    await repo.unfollowSocialAccount(account.id, followingId)
+    return json(res, 200, { ok: true, data: { following: false }, requestId: id }, id, requestOrigin)
+  }
+  const bookmarkMatch = path?.match(/^\/api\/posts\/([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})\/bookmark$/i)
+  if (bookmarkMatch && ['PUT', 'DELETE'].includes(req.method || '')) {
+    if (!account) return unauthorized(res, id, requestOrigin)
+    if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
+    if (!socialRelationshipLimiter.allow(account.id)) return limited(res, id, requestOrigin)
+    const postId = bookmarkMatch[1]
+    if (req.method === 'PUT') {
+      const post = await repo.findSocialPost(postId)
+      if (!post || post.visibility !== 'published' || !(await socialCanRead(post, account.id, account.role))) return json(res, 404, { ok: false, error: { code: 'POST_NOT_FOUND', message: 'Publicación no disponible para guardar.' }, requestId: id }, id, requestOrigin)
+      try { await repo.bookmarkSocialPost(account.id, post.id, socialBookmarkLimit) }
+      catch (error) {
+        if (error instanceof Error && error.message === 'SOCIAL_BOOKMARK_LIMIT') return json(res, 409, { ok: false, error: { code: 'SOCIAL_BOOKMARK_LIMIT', message: 'Alcanzaste el límite de 1,000 publicaciones guardadas.' }, requestId: id }, id, requestOrigin)
+        throw error
+      }
+      return json(res, 200, { ok: true, data: { bookmarked: true }, requestId: id }, id, requestOrigin)
+    }
+    await repo.unbookmarkSocialPost(account.id, postId)
+    return json(res, 200, { ok: true, data: { bookmarked: false }, requestId: id }, id, requestOrigin)
+  }
+  const collectSocialPage = async (options: { authorId?: string; cursor?: SocialPostCursor; limit: number; viewerId?: string; viewerRole?: string; publishedOnly?: boolean }) => {
+    const pageSize = 50
+    const scanCap = 200
     let scanned = 0
     let cursor = options.cursor
     let hasMore = false
     const posts: ReturnType<typeof socialPostView>[] = []
     while (scanned < scanCap && posts.length <= options.limit) {
       const take = Math.min(pageSize, scanCap - scanned)
-      const batch = await repo.listSocialPosts({ authorId: options.authorId, cursor, limit: take })
+      const batch = await repo.listSocialPosts({ authorId: options.authorId, cursor, limit: take, publishedOnly: options.publishedOnly })
       if (!batch.length) break
       for (const post of batch) {
         if (post.visibility === 'published' && await socialCanRead(post, options.viewerId, options.viewerRole)) {
@@ -264,15 +319,33 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     return { posts: posts.slice(0, options.limit), ...(hasMore && cursor ? { nextCursor: encodeSocialCursor(cursor) } : {}) }
   }
   if ((path === '/api/feed' || path === '/api/posts') && req.method === 'GET') {
+    if (!socialFeedLimiter.allow(clientAddress(req, config.trustProxyHeaders))) return limited(res, id, requestOrigin)
     const params = new URL(req.url || '/', 'http://localhost').searchParams
     const limit = Number(params.get('limit') || 20)
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new ValidationError('limit', 'El límite debe estar entre 1 y 50.')
     const cursor = socialCursor(params.get('cursor'))
-    const data = await collectSocialPage({ limit, cursor, viewerId: account?.id, viewerRole: account?.role })
+    const data = await collectSocialPage({ limit, cursor, viewerId: account?.id, viewerRole: account?.role, publishedOnly: true })
     return json(res, 200, { ok: true, data, requestId: id }, id, requestOrigin)
+  }
+  if (path === '/api/posts/interactions' && req.method === 'GET') {
+    if (!account) return unauthorized(res, id, requestOrigin)
+    const params = new URL(req.url || '/', 'http://localhost').searchParams
+    const ids = params.getAll('id')
+    const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i
+    if ([...params.keys()].some(key => key !== 'id') || ids.length < 1 || ids.length > socialPostInteractionBatchLimit || ids.some(postId => !uuid.test(postId)) || new Set(ids).size !== ids.length) {
+      throw new ValidationError('ids', `Se requieren de 1 a ${socialPostInteractionBatchLimit} IDs de publicación únicos y válidos.`)
+    }
+    if (!socialPostInteractionBatchLimiter.allow(account.id, ids.length)) return limited(res, id, requestOrigin)
+    const entries = await Promise.all(ids.map(async postId => {
+      const post = await repo.findSocialPost(postId)
+      if (!post || post.visibility !== 'published' || !(await socialCanRead(post, account!.id, account!.role))) return undefined
+      return [post.id, await socialPostInteractions(post.id, account!.id, socialPostInteractionBatchCommentLimit)] as const
+    }))
+    return json(res, 200, { ok: true, data: { items: Object.fromEntries(entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))) }, requestId: id }, id, requestOrigin)
   }
   const profilePostsMatch = path?.match(/^\/api\/profiles\/([a-zA-Z0-9_-]{1,80})\/posts$/)
   if (profilePostsMatch && req.method === 'GET') {
+    if (!socialFeedLimiter.allow(clientAddress(req, config.trustProxyHeaders))) return limited(res, id, requestOrigin)
     const authorId = profilePostsMatch[1]
     const profile = await repo.findProfile(authorId)
     if (!profile || !(await canViewProfile(profile, account?.id))) return json(res, 404, { ok: false, error: { code: 'PROFILE_NOT_FOUND', message: 'Perfil no disponible.' }, requestId: id }, id, requestOrigin)
@@ -332,7 +405,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     } catch (error) { await repo.deleteSocialPost(post.id, account.id); if (media) await removeSocialPostMedia({ media }); throw error }
     return json(res, 201, { ok: true, data: socialPostView(post, profile), requestId: id }, id, requestOrigin)
   }
-  const socialPostInteractionMatch = path?.match(/^\/api\/posts\/([a-f0-9-]{36})\/(social|comments|reaction)$/i)
+  const socialPostInteractionMatch = path?.match(/^\/api\/posts\/([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})\/(social|comments|reaction)$/i)
   if (socialPostInteractionMatch && (req.method === 'GET' && socialPostInteractionMatch[2] === 'social' || req.method === 'POST' && ['comments', 'reaction'].includes(socialPostInteractionMatch[2]))) {
     if (!account) return unauthorized(res, id, requestOrigin)
     if (!socialPostInteractionLimiter.allow(account.id)) return limited(res, id, requestOrigin)
@@ -364,11 +437,11 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     const reacted = result.value
     await audit.recordAndWait('update', id, account.id, post.id, true, { resource: 'social-post-reaction', reacted })
     publishNotifications(result.notifications)
-    const reactions = await repo.listSocialPostReactions(post.id)
-    const data: SocialPostReactionResult = { reacted, reactionCount: reactions.length }
+    const reactions = await repo.getSocialPostReactionSummary(post.id, account.id)
+    const data: SocialPostReactionResult = { reacted, reactionCount: reactions.reactionCount }
     return json(res, 200, { ok: true, data, requestId: id }, id, requestOrigin)
   }
-  const socialMediaMatch = path?.match(/^\/api\/posts\/([a-f0-9-]{36})\/media$/i)
+  const socialMediaMatch = path?.match(/^\/api\/posts\/([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})\/media$/i)
   if (socialMediaMatch && (req.method === 'GET' || req.method === 'HEAD')) {
     const post = await repo.findSocialPost(socialMediaMatch[1])
     if (!post?.media || !(await socialCanRead(post, account?.id, account?.role))) return json(res, 404, { ok: false, error: { code: 'POST_MEDIA_NOT_FOUND', message: 'Contenido no disponible.' }, requestId: id }, id, requestOrigin)
@@ -378,7 +451,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     if (req.method === 'HEAD') return res.end()
     const stream = createReadStream(media.path); stream.on('error', () => res.destroy()); res.once('close', () => stream.destroy()); return stream.pipe(res)
   }
-  const socialPostMatch = path?.match(/^\/api\/posts\/([a-f0-9-]{36})$/i)
+  const socialPostMatch = path?.match(/^\/api\/posts\/([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/i)
   if (socialPostMatch && req.method === 'DELETE') {
     if (!account) return unauthorized(res, id, requestOrigin)
     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
@@ -388,7 +461,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     await audit.recordAndWait('delete', id, account.id, deleted.id, true, { resource: 'social-post' })
     return json(res, 200, { ok: true, data: { id: deleted.id }, requestId: id }, id, requestOrigin)
   }
-  const socialPostReportMatch = path?.match(/^\/api\/posts\/([a-f0-9-]{36})\/reports$/i)
+  const socialPostReportMatch = path?.match(/^\/api\/posts\/([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})\/reports$/i)
   if (socialPostReportMatch && req.method === 'POST') {
     if (!account) return unauthorized(res, id, requestOrigin)
     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
@@ -409,7 +482,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     const posts = await repo.listSocialPosts({ limit: 100, moderationOnly: true })
     return json(res, 200, { ok: true, data: { posts: await socialPostPage(posts, account!.id, account!.role) }, requestId: id }, id, requestOrigin)
   }
-  const socialModerationPostMatch = path?.match(/^\/api\/social-moderation\/posts\/([a-f0-9-]{36})$/i)
+  const socialModerationPostMatch = path?.match(/^\/api\/social-moderation\/posts\/([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/i)
   if (socialModerationPostMatch && req.method === 'PATCH') {
     if (!staffOnly(account, res, id, requestOrigin)) return
     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
@@ -426,7 +499,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     const data = await Promise.all(reports.map(async report => { const post = await repo.findSocialPost(report.postId); return { ...report, post: post ? socialPostView(post, await repo.findProfile(post.authorId)) : undefined } }))
     return json(res, 200, { ok: true, data: { reports: data }, requestId: id }, id, requestOrigin)
   }
-  const socialReportReviewMatch = path?.match(/^\/api\/social-moderation\/reports\/([a-f0-9-]{36})$/i)
+  const socialReportReviewMatch = path?.match(/^\/api\/social-moderation\/reports\/([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/i)
   if (socialReportReviewMatch && req.method === 'PATCH') {
     if (!staffOnly(account, res, id, requestOrigin)) return
     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
@@ -509,7 +582,9 @@ export const server = createServer(async (req, res) => { const id = req.headers[
    if (req.method === 'GET' && path === '/api/account/storage') { if (!account) return unauthorized(res, id, requestOrigin); const usedBytes = await repo.getStorageUsage(account.id); const accountLimit = await repo.getStorageQuota(account.id); const planId = account.planId || 'free'; const planLimit = getPlanCatalog(config).find(item => item.id === planId)?.storageLimitBytes; const effective = getEffectiveStorageLimit({ accountLimit, planLimit, serverLimit: config.storageQuotaBytes }); return json(res, 200, { ok: true, data: { usedBytes, limitBytes: effective.limitBytes, availableBytes: effective.limitBytes === null ? null : Math.max(0, effective.limitBytes - usedBytes), quotaSource: effective.source, planId }, requestId: id }, id, requestOrigin) }
    if (path === '/api/staff/catalog-review' || path?.startsWith('/api/staff/catalog-review/')) {
      if (!staffOnly(account, res, id, requestOrigin)) return
-     if (account!.role !== 'community_manager') return json(res, 403, { ok: false, error: { code: 'COMMUNITY_MANAGER_REQUIRED', message: 'Solo una cuenta Community Manager puede usar esta ruta de revisión.' }, requestId: id }, id, requestOrigin)
+      const previewMatch = path?.match(/^\/api\/staff\/catalog-review\/([a-zA-Z0-9_-]{1,80})\/preview$/)
+      const adminPreviewRequest = account!.role === 'admin' && (req.method === 'GET' || req.method === 'HEAD') && Boolean(previewMatch)
+      if (account!.role !== 'community_manager' && !adminPreviewRequest) return json(res, 403, { ok: false, error: { code: 'COMMUNITY_MANAGER_REQUIRED', message: 'Solo una cuenta Community Manager puede usar esta ruta de revisión.' }, requestId: id }, id, requestOrigin)
      if (req.method === 'GET' && path === '/api/staff/catalog-review') {
        const entries = (await repo.listCatalog()).filter(item => item.type === 'beat' && item.publicationStatus === 'pending-review' && item.creatorId !== account!.id)
        const data = await Promise.all(entries.map(async entry => {
@@ -522,9 +597,8 @@ export const server = createServer(async (req, res) => { const id = req.headers[
        }))
        return json(res, 200, { ok: true, data, requestId: id }, id, requestOrigin)
      }
-     const previewMatch = path?.match(/^\/api\/staff\/catalog-review\/([a-zA-Z0-9_-]{1,80})\/preview$/)
      if ((req.method === 'GET' || req.method === 'HEAD') && previewMatch) {
-       const entry = (await repo.listCatalog()).find(item => item.contentId === previewMatch[1] && item.type === 'beat' && item.publicationStatus === 'pending-review')
+        const entry = (await repo.listCatalog()).find(item => item.contentId === previewMatch[1] && item.type === 'beat' && item.publicationStatus === 'pending-review' && item.creatorId !== account!.id)
        const asset = entry?.assetId ? await repo.findAsset(entry.assetId, entry.creatorId) : undefined
        if (!entry || !asset?.previewStorageKey || asset.state !== 'available') return json(res, 404, { ok: false, error: { code: 'PREVIEW_NOT_FOUND', message: 'El preview de revisión no está disponible.' }, requestId: id }, id, requestOrigin)
        const previewPath = previewArtifactPath(config.uploadDirectory, asset.previewStorageKey)
@@ -775,7 +849,13 @@ export const server = createServer(async (req, res) => { const id = req.headers[
       if (path === '/api/admin/accounts') return json(res, 200, { ok: true, data: data.accounts, requestId: id }, id, requestOrigin)
       if (path === '/api/admin/audit') { const query = new URL(req.url || '/', 'http://localhost').searchParams; const limit = Math.min(Number(query.get('limit') || 100), 500); const page = Math.max(Number(query.get('page') || 1), 1); const events = data.audit.slice().reverse(); return json(res, 200, { ok: true, data: events.slice((page - 1) * limit, page * limit), pagination: { page, limit, total: events.length }, requestId: id }, id, requestOrigin) }
       if (path === '/api/admin/catalog-review') {
-        const pending = data.catalog.filter(entry => entry.publicationStatus === 'pending-review')
+        const pendingEntries = all[2].filter(entry => entry.publicationStatus === 'pending-review' && entry.creatorId !== account!.id)
+        const pending = await Promise.all(pendingEntries.map(async entry => {
+          const adminEntry = data.catalog.find(item => item.contentId === entry.contentId)!
+          const asset = entry.type === 'beat' && entry.assetId ? await repo.findAsset(entry.assetId, entry.creatorId) : undefined
+          const previewAvailable = Boolean(asset?.previewStorageKey && await stat(previewArtifactPath(config.uploadDirectory, asset.previewStorageKey)).then(info => info.isFile() && info.size > 0, () => false))
+          return { ...adminEntry, previewAvailable, ...(previewAvailable ? { previewUrl: `/api/staff/catalog-review/${encodeURIComponent(entry.contentId)}/preview` } : {}) }
+        }))
         return json(res, 200, { ok: true, data: pending, requestId: id }, id, requestOrigin)
       }
       return json(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'Ruta no encontrada.' }, requestId: id }, id, requestOrigin)
@@ -959,10 +1039,12 @@ export const server = createServer(async (req, res) => { const id = req.headers[
      const kind = profileImageUploadMatch[1] as ProfileImageKind
      try {
        if (Number(req.headers['content-length']) > profileImageMaxBytes) return json(res, 413, { ok: false, error: { code: 'PROFILE_IMAGE_TOO_LARGE', message: 'La imagen debe pesar como maximo 8 MB.' }, requestId: id }, id, requestOrigin)
+       const current = await repo.findProfile(account.id) || emptyProfile(account.id)
+       const fallback = kind === 'avatar' ? current.avatarFocalPoint || defaultAvatarFocalPoint : current.coverFocalPoint || defaultCoverFocalPoint
+       const focalPoint = parseProfileImageFocalPoint(req.headers['x-profile-focal-point'], fallback)
        const bytes = await readRawBody(req, profileImageMaxBytes)
        const mimeType = req.headers['content-type']?.split(';', 1)[0].trim().toLowerCase()
-       validateProfileImageUpload(bytes, mimeType, kind)
-       const current = await repo.findProfile(account.id) || emptyProfile(account.id)
+       validateProfileImageUpload(bytes, mimeType)
        const previous = kind === 'avatar' ? current.avatarImage : current.coverImage
        const other = kind === 'avatar' ? current.coverImage : current.avatarImage
        const usedProfileBytes = (other?.sizeBytes ?? 0) + (other?.thumbnailSizeBytes ?? 0)
@@ -979,7 +1061,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
        }
        let updated: CreatorProfile
        try {
-         updated = await repo.saveProfile({ ...current, ...(kind === 'avatar' ? { avatarId: 'custom', avatarImage: image } : { coverId: 'custom', coverImage: image }) })
+         updated = await repo.saveProfile({ ...current, ...(kind === 'avatar' ? { avatarId: 'custom', avatarImage: image, avatarFocalPoint: focalPoint } : { coverId: 'custom', coverImage: image, coverFocalPoint: focalPoint }) })
        } catch (error) {
          await removeProfileImage(image, account.id, kind)
          throw error
@@ -1013,6 +1095,8 @@ export const server = createServer(async (req, res) => { const id = req.headers[
        profile = await repo.saveProfile({ ...input, accountId: account.id,
          ...(input.avatarId === 'custom' && current.avatarImage ? { avatarImage: current.avatarImage } : {}),
          ...(input.coverId === 'custom' && current.coverImage ? { coverImage: current.coverImage } : {}),
+         ...((input.avatarFocalPoint || current.avatarFocalPoint) ? { avatarFocalPoint: input.avatarFocalPoint || current.avatarFocalPoint } : {}),
+         ...((input.coverFocalPoint || current.coverFocalPoint) ? { coverFocalPoint: input.coverFocalPoint || current.coverFocalPoint } : {}),
        })
        if (input.avatarId !== 'custom') await removeProfileImage(current.avatarImage, account.id, 'avatar')
        if (input.coverId !== 'custom') await removeProfileImage(current.coverImage, account.id, 'cover')
@@ -1398,5 +1482,5 @@ export const server = createServer(async (req, res) => { const id = req.headers[
    return json(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'Ruta no encontrada.' }, requestId: id }, id, requestOrigin)
    } catch (error) { if (error instanceof HttpInputError) return json(res, error.status, { ok: false, error: { code: error.code, message: error.message }, requestId: id }, id, requestOrigin); if (error instanceof ValidationError) return json(res, 400, { ok: false, error: { code: 'VALIDATION_ERROR', message: error.message, field: error.field }, requestId: id }, id, requestOrigin); if (error instanceof StorageQuotaExceededError && path === '/api/posts' || error instanceof Error && 'code' in error && error.code === '23514' && path === '/api/posts') return json(res, 409, { ok: false, error: { code: 'SOCIAL_MEDIA_QUOTA_EXCEEDED', message: 'Alcanzaste el límite de almacenamiento social de 512 MB.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && (error.message === 'SOCIAL_REPORT_EXISTS' || (path?.includes('/reports') && 'code' in error && error.code === '23505'))) return json(res, 409, { ok: false, error: { code: 'SOCIAL_REPORT_EXISTS', message: 'Ya reportaste esta publicación.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'EVIDENCE_TOO_LARGE') return json(res, 413, { ok: false, error: { code: error.message, message: 'Evidence files must not exceed 10 MB.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'EVIDENCE_LIMIT') return json(res, 409, { ok: false, error: { code: error.message, message: 'This beat already has the maximum number of evidence files.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && ['EVIDENCE_CONTENT_TYPE', 'EVIDENCE_FILE_REQUIRED', 'EVIDENCE_SIGNATURE', 'EVIDENCE_EMPTY', 'EVIDENCE_ABORTED', 'EVIDENCE_INVALID_MULTIPART', 'EVIDENCE_PARSE_FAILED'].includes(error.message)) return json(res, 400, { ok: false, error: { code: error.message, message: 'The evidence file is invalid or has an unsupported format.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && (error.message === 'FRIENDSHIP_EXISTS' || (path === '/api/friend-requests' && 'code' in error && error.code === '23505'))) return json(res, 409, { ok: false, error: { code: 'FRIENDSHIP_EXISTS', message: 'Ya hay una solicitud o conexión con ese creador.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && ['UPLOAD_LIMIT', 'UPLOAD_CONTENT_TYPE', 'UPLOAD_FILE_REQUIRED', 'UPLOAD_MIME', 'UPLOAD_SIGNATURE', 'UPLOAD_EMPTY', 'UPLOAD_ABORTED'].includes(error.message)) return json(res, 400, { ok: false, error: { code: error.message, message: 'Upload inválido o excede los límites configurados.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'DUPLICATE_ASSET') return json(res, 409, { ok: false, error: { code: 'DUPLICATE_ASSET', message: 'Este archivo ya existe en tu biblioteca.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'DUPLICATE') return json(res, 409, { ok: false, error: { code: 'DUPLICATE_PROJECT', message: 'Ya existe un proyecto con ese título.' }, requestId: id, }, id, requestOrigin); if (error instanceof Error && error.message === 'DUPLICATE_CATALOG') return json(res, 409, { ok: false, error: { code: 'DUPLICATE_CATALOG', message: 'Ya existe un asset con ese título y tipo.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'NOT_FOUND') return json(res, 404, { ok: false, error: { code: 'PROJECT_NOT_FOUND', message: 'Proyecto no encontrado.' }, requestId: id }, id, requestOrigin); if (error instanceof Error && error.message === 'CATALOG_NOT_FOUND') return json(res, 404, { ok: false, error: { code: 'CATALOG_NOT_FOUND', message: 'Asset no encontrado.' }, requestId: id }, id, requestOrigin); return json(res, 500, { ok: false, error: { code: 'INTERNAL_ERROR', message: 'Error interno del servidor.' }, requestId: id }, id, requestOrigin) } })
 let notificationOutboxTimer: NodeJS.Timeout | undefined
-export const shutdown = () => { if (notificationOutboxTimer) clearInterval(notificationOutboxTimer); limiter.clear(); closeChatStreams(); server.close(); void runtime.close() }
+export const shutdown = () => { if (notificationOutboxTimer) clearInterval(notificationOutboxTimer); limiter.clear(); socialFeedLimiter.clear(); closeChatStreams(); server.close(); void runtime.close() }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) { void Promise.all([auth.initialize(), audit.initialize()]).then(async () => { await reconcileUploads(repo); await reconcileSocialPostMedia(repo); await flushNotificationOutbox().catch(() => undefined); notificationOutboxTimer = setInterval(() => { void flushNotificationOutbox().catch(() => undefined) }, 5000); notificationOutboxTimer.unref(); server.listen(config.port, config.host, () => console.log(`BeatVault API listening on ${config.host}:${config.port}`)); process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown) }).catch(error => { console.error(error instanceof Error ? error.message : 'Configuración inválida'); process.exit(1) }) }

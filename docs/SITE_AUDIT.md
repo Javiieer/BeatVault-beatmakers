@@ -61,7 +61,7 @@ captures are
 
 | Section | Route | Current state | Product decision |
 | --- | --- | --- | --- |
-| Home | `/home` | Partial | Keep; cross-device posts remain future work |
+| Home | `/home` | Partial | Keep; server-backed publishing, privacy, comments/reactions and creator relationships are implemented; native stories, live feed updates and scale testing remain |
 | Amigos | `/friends` | Partial | Keep; collaboration invitations are future work |
 | Mensajes | `/chat` | Partial | Keep; text-only one-to-one chat works for accepted friends |
 | Mis subidas | `/studio` | Partial | Keep; creator audio workflow is the core release path |
@@ -100,8 +100,9 @@ captures are
   checks and retry authorization passed disposable-PostgreSQL integration checks.
 - Browser tests use temporary local data and synthetic fixtures. They are regression
   checks, not a penetration test, production load test, or security certification.
-- Payment, licensing, payout, public cross-device Home publishing, push notifications,
-  chat attachments, groups, and block/report workflows are not implemented.
+- Payment, licensing and seller payout are not live. Native story records, live Home
+  feed updates, push notifications, chat attachments/groups and user block controls are
+  also outstanding; social report submission and staff moderation are implemented.
 
 ## Evidence
 
@@ -113,6 +114,23 @@ also passed against the actual disposable API. The next full sweep will include 
 in its browser count. Re-run
 `npm run diagnose:full` to refresh the machine report; this document is a dated
 summary and must be updated when the product inventory or test coverage changes.
+
+## Home Follow-up: 2026-10-15
+
+Authenticated posts and media now publish through the API rather than relying on
+IndexedDB. A real two-account browser test verifies public delivery, private-post
+isolation, and comment/reaction persistence after reload. Follows and bookmarks also
+persist by account/post ID. The recent-stories rail projects published posts from the
+last 24 hours; it is not a separate expiring story service. Feed reads now have an
+IP-based process-local rate limit, strict post UUID validation and a bounded scan
+window. The latest focused Home/backend verification passed 66 tests across eight files;
+after the batch-limit hardening, the real two-account Playwright journey also passed.
+The earlier complete unit/integration sweep passed 307 tests across 62 files. Latest
+typecheck, lint and production build passed. The build still warns that the minified
+JavaScript bundle is about 540 KB and three theme backgrounds are 2.1-2.8 MB; optimize
+these before a public pilot. Disposable PostgreSQL QA applied
+migrations 001-028 and passed follows/bookmarks isolation plus backup/restore;
+production-scale behavior and existing-volume migration remain to be validated.
 
 ## Next implementation
 

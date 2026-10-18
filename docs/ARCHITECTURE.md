@@ -22,22 +22,32 @@ public; accepted friends can read eligible friend posts but currently cannot ope
 that private profile or its custom images. This is a known privacy/UX inconsistency
 for a future access-matrix change.
 
-### Home posts and friends (2026-10-09)
+### Home posts and friends (2026-10-15)
 
 Authenticated Home and CreatorProfile now use server-backed text/photo/video posts
 through JSON and PostgreSQL repositories (migration 025); comments and reactions use
-migration 026. Posts publish immediately. Public posts require an opted-in public
+migration 026, and follows/bookmarks use migration 028. Posts publish immediately.
+Public posts require an opted-in public
 profile, friends-only posts require an accepted friendship, and private posts are
 owner-only; media access is rechecked on each request. Existing IndexedDB posts remain
-device-local and are not automatically imported. Stories/Shorts and some feed examples
-remain demo/local flows. Friends uses authenticated API routes (`GET /api/creators`,
+device-local and are not automatically imported. The 24-hour stories rail groups
+recent published posts; it is not a separate story record or expiry service. Labeled
+seed examples exist only in the local development guest preview; authenticated feeds and
+production bundles exclude them. Shorts remains a separate demo/local flow. Friends uses authenticated API routes (`GET /api/creators`,
 `GET /api/friends`, `POST/DELETE /api/friend-requests`,
 `POST /api/friend-requests/:id/accept`, and `DELETE /api/friends/:id`). Creator search
 and friend lists return an allowlisted profile DTO without email or credentials.
 Search is limited to opted-in public profiles. Mutations require the existing session
 and CSRF checks. Friend rows persist in `friendships.json`; Postgres uses migration
-006. Feed/profile posts synchronize through the server, but there is no live push
-refresh for social post changes yet.
+006. Feed/profile posts synchronize through the server, with persisted account-scoped
+follows/bookmarks. Public feed reads filter to `published` in the PostgreSQL query so
+the partial feed index can be used; owner profile and moderation reads retain their
+needed visibility scope. Feed scans and IP limits remain process-local. Interaction
+snapshots load in authenticated batches of up to 30 posts; work is charged by post ID
+(120 per account per minute) and returns at most 20 comments per post. Live Home feed
+refresh, shared multi-instance rate limits and an existing-volume migration rehearsal
+remain open. Two-account browser and clean disposable PostgreSQL backup/restore checks
+cover public/private posts and social relationships.
 
 ### Direct chat (2026-10-10)
 
@@ -51,7 +61,8 @@ streams per account. Presence is visible only to accepted friends and remains on
 while at least one stream for the account is connected.
 Events are process-local, so a multi-instance deployment needs a shared pub/sub
 adapter. No attachments, group chats, blocking, reporting, or end-to-end encryption
-are implemented. Apply migrations 001-027 and validate live PostgreSQL before hosting.
+are implemented. Apply migrations 001-028 and validate an existing-volume upgrade and
+production deployment before hosting.
 
 ### Social activity and notifications (2026-10-15)
 
@@ -111,13 +122,14 @@ email provider is configured yet, so deployed recovery requires email delivery.
 
 
 The runtime includes React/Vite, a Node HTTP API, session auth, JSON/Postgres
-adapters, private audio uploads and an admin review queue. Review mutations require
-an authenticated admin session and CSRF token, transition only pending entries, and
-record decisions in the audit log. Rejection notes are returned only to the owning
-creator and admins; public catalog responses exclude rejected entries. Beats lists
-only published Beat records. Original audio downloads remain owner-only. Migration
-007 adds the bounded review note field; 008 adds direct messages; 009 adds catalog
-comments, reactions and activity. Historical sections
+adapters, private audio uploads and separate Community Manager/admin review queues.
+Either role may approve or reject another creator's pending Beat; each mutation
+requires CSRF, checks the processed preview before approval, and records the decision
+in the audit log. Both queues expose only a private processed preview, never the
+original download. Rejection notes are returned to the owning creator; public catalog
+responses exclude rejected entries. Beats lists only published Beat records. Original
+audio downloads remain owner-only. Migration 007 adds the bounded review note field;
+008 adds direct messages; 009 adds catalog comments, reactions and activity. Historical sections
 below describe earlier phases; "future backend" wording is not the current status.
 See README.md in this directory for the authoritative handoff.
 

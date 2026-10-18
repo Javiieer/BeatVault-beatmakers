@@ -8,7 +8,7 @@ export type AdminCatalogEntry = Pick<CatalogEntry, 'contentId' | 'creatorId' | '
 export type AdminOverview = { accounts: number; creators: number; admins: number; projects: number; catalog: number; auditEntries: number }
 export type AdminData = { overview: AdminOverview; accounts: AdminAccount[]; projects: ProjectRecord[]; catalog: AdminCatalogEntry[]; audit: AuditEvent[] }
 
-export const redactAccount = (account: Account): AdminAccount => ({ id: account.id, email: account.email, role: account.role, verificationState: account.verificationState, planId: account.planId || 'free' })
+export const redactAccount = (account: Account): AdminAccount => ({ id: account.id, email: account.email, role: account.role, verificationState: account.verificationState || 'unverified', planId: account.planId || 'free' })
 export const adminData = (accounts: Account[], projects: ProjectRecord[], catalog: CatalogEntry[], audit: AuditEvent[]): AdminData => ({
   overview: { accounts: accounts.length, creators: accounts.filter(item => item.role === 'creator').length, admins: accounts.filter(item => item.role === 'admin').length, projects: projects.length, catalog: catalog.length, auditEntries: audit.length },
   accounts: accounts.map(redactAccount), projects, catalog: catalog.map(({ contentId, creatorId, type, title, publicationStatus }) => ({ contentId, creatorId, type, title, publicationStatus })), audit,

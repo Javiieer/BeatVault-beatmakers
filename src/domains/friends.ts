@@ -1,7 +1,7 @@
 import { isCreatorProfile, type CreatorProfile } from './profile';
 
 export type FriendRequest = { id: string; requesterId: string; recipientId: string; createdAt: string };
-export type FriendDirectoryEntry = Pick<CreatorProfile, 'accountId' | 'displayName' | 'bio' | 'genres' | 'avatarId' | 'coverId' | 'avatarUrl' | 'coverUrl'>;
+export type FriendDirectoryEntry = Pick<CreatorProfile, 'accountId' | 'displayName' | 'bio' | 'genres' | 'avatarId' | 'coverId' | 'avatarUrl' | 'coverUrl' | 'avatarFocalPoint' | 'coverFocalPoint'>;
 export type FriendLink = { id: string; profile: FriendDirectoryEntry };
 export type FriendOverview = { friends: FriendLink[]; incoming: Array<FriendRequest & { profile: FriendDirectoryEntry }>; outgoing: Array<FriendRequest & { profile: FriendDirectoryEntry }> };
 

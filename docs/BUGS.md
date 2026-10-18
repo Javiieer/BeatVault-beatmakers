@@ -1,6 +1,6 @@
 # Known issues
 
-Current record: 2026-10-14. Older claims that BeatVault has no backend,
+Current record: 2026-10-15. Older claims that BeatVault has no backend,
 authentication, ESLint or automated tests are obsolete.
 
 ## Confirmed release blockers
@@ -11,6 +11,9 @@ authentication, ESLint or automated tests are obsolete.
   verification messages cannot reach users.
 - Production admin provisioning and real Postgres migration/restore behavior are
   not yet established. The Oracle Compose profile is a private-pilot scaffold only.
+- Social video uploads are decode-validated but the original MP4 is stored with its
+  metadata. Strip identifying container/stream metadata before enabling public video,
+  or disable video posts for the initial hosted pilot.
 
 ## Implemented corrections in this milestone
 
@@ -21,8 +24,11 @@ authentication, ESLint or automated tests are obsolete.
 - Authenticated API failures do not expose cached lists or simulate successful local writes.
 - Fixed the browser fetch receiver that silently forced demo mode; a same-origin development proxy keeps cookies and CSRF on the frontend host.
 - Studio is now Mis subidas; new content is restricted to Beats and One-shots.
+- Beat publication review is independently available to Community Managers and admins.
+  Both queues use a private processed preview, approvals fail closed when it is missing,
+  and disposable browser coverage verifies approval/rejection, note privacy and audit events.
 - Catalog success is awaited, duplicate submissions are blocked and partially failed queues can be retried in the same session.
-- Home posts now appear in the owner's Publications tab from the same account-scoped IndexedDB store; no cross-device or public post delivery is implied.
+- Authenticated Home posts/media, comments, reactions, follows and bookmarks now use the API; profile publications read the same server records. A two-account browser test covers public delivery and private isolation. Unauthenticated demo content remains local and labeled.
 - Friends discovery exposes only opted-in public profile fields; request actions are session/CSRF protected and distinguish pending requests from accepted connections.
 - Friends now has an explicit API-offline state and retry action instead of presenting a misleading empty directory.
 - Marketplace includes private seller offer drafts, evidence upload, separate Community Manager/admin decisions, seller-visible current/stale review state, and a test-mode one-time Stripe checkout/order/refund slice. This is not live commerce or legal rights clearance.
@@ -47,10 +53,22 @@ authentication, ESLint or automated tests are obsolete.
 Security regression assertions are in server/security-probes.test.ts.
 See SECURITY_FINDINGS.md for severity and unresolved security work.
 
+## Home Status Update: 2026-10-15
+
+Authenticated Home media is now server-backed, and posts, comments, reactions, follows
+and bookmarks persist through the API. The older bullet below that calls Home composer
+media browser-local is superseded; local-only behavior applies to unauthenticated demo
+content. The 24-hour stories rail is a post projection, not a separate story service.
+Interaction reads are batched for the feed, charged by post ID (120 IDs per account per
+minute in one process), and return at most 20 comments per post. A two-account browser
+test covers publishing, privacy, comments, reactions and the mobile composer layout.
+The PostgreSQL public feed query now filters to published rows before scanning, allowing
+the partial feed index to serve it; profile and moderation reads retain their wider scope.
+
 ## Remaining limitations
 
 - Creator profiles support bundled cover/avatar presets, not custom image uploads.
-- Public profiles display published project metadata; public audio previews and cross-device Home posts are not implemented. Catalog moderation is implemented.
+- Public profiles display published project metadata and permitted Home posts. Standalone story records/expiry and live feed updates are not implemented. Catalog moderation is implemented.
 - The profile editor warns before page unload and explicit cancellation; in-app navigation can still discard unsaved changes.
 - Profile JSON writes are serialized within one repository instance only; this does not resolve global or multi-process JSON concurrency.
 - Password recovery has no email delivery provider yet. Local development can expose the one-time link only when `BEATVAULT_DEV_AUTH_TOKENS=true`; never enable this on a public deployment.
@@ -61,9 +79,9 @@ See SECURITY_FINDINGS.md for severity and unresolved security work.
 - Admin reads and publication review actions are protected by server-side role/CSRF checks and passed disposable-PostgreSQL integration; the running local app still uses JSON.
 - Audio header checks are not full media decoding; malformed files with valid headers
   still need isolated media validation before public delivery.
-- Home includes explicitly labeled demo posts alongside locally published catalog content; it is not cross-device Home publishing or a complete marketplace.
+- Labeled seed posts and radar content are limited to the local development guest preview; authenticated feeds and production bundles do not include them. Home is not a complete marketplace, and its 24-hour story rail is a view over recent posts rather than a separate story service.
 - Desktop/mobile browser tests cover two accounts and the authenticated JSON-backed upload/reload/retry/playback workflow; real media conversion has passed with an external FFmpeg executable.
 - Browser storage can be unavailable or cleared; draft metadata is not an audio backup.
 - Shorts remains a local prototype. Selected video files cannot be restored after reload.
-- Home composer media remains local to the browser. Direct chat is limited to text between accepted friends; attachments, groups, OS push notifications and block/report workflow remain unimplemented. Home-post comments/reactions and friend requests/acceptances now persist their notifications atomically in PostgreSQL and recoverably in local JSON. Notifications are in-app and have no email or OS push delivery; a lost reaction response can still be toggled off by a client retry.
+- Unauthenticated demo composer media remains local to the browser; authenticated Home photo/video posts persist through the API. Direct chat is limited to text between accepted friends; attachments, groups, OS push notifications and block/report workflow remain unimplemented. Home-post comments/reactions and friend requests/acceptances now persist their notifications atomically in PostgreSQL and recoverably in local JSON. Notifications are in-app and have no email or OS push delivery; a lost reaction response can still be toggled off by a client retry.
 - Stripe Connect onboarding, one-time Beat checkout, buyer-scoped paid download, refund requests and dispute flags exist in test mode only. No live payments/payouts, recurring billing, final license service, cloud sync or music distribution exists.

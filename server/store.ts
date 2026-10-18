@@ -33,6 +33,22 @@ const isSocialPostReactionRecord = (value: unknown): value is SocialPostReaction
   const reaction = value as Partial<SocialPostReactionRecord>
   return typeof reaction.postId === 'string' && /^[a-f0-9-]{36}$/i.test(reaction.postId) && typeof reaction.actorId === 'string' && reaction.actorId.length > 0 && typeof reaction.createdAt === 'string'
 }
+type SocialFollowRecord = { followerId: string; followingId: string; createdAt: string }
+type SocialPostBookmarkRecord = { accountId: string; postId: string; createdAt: string }
+export type SocialAccountState = { followedAccountIds: string[]; bookmarkedPostIds: string[] }
+const isSocialFollowRecord = (value: unknown): value is SocialFollowRecord => {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Partial<SocialFollowRecord>
+  return typeof record.followerId === 'string' && record.followerId.length > 0 && record.followerId.length <= 80 &&
+    typeof record.followingId === 'string' && record.followingId.length > 0 && record.followingId.length <= 80 &&
+    record.followerId !== record.followingId && typeof record.createdAt === 'string'
+}
+const isSocialPostBookmarkRecord = (value: unknown): value is SocialPostBookmarkRecord => {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Partial<SocialPostBookmarkRecord>
+  return typeof record.accountId === 'string' && record.accountId.length > 0 && record.accountId.length <= 80 &&
+    typeof record.postId === 'string' && /^[a-f0-9-]{36}$/i.test(record.postId) && typeof record.createdAt === 'string'
+}
 type NotificationOutboxAction = 'social_post_comment' | 'social_post_reaction' | 'friend_request' | 'friend_request_accepted'
 type NotificationOutboxRecord = { action: NotificationOutboxAction; notification: NotificationRecord }
 const isNotificationOutboxRecord = (value: unknown): value is NotificationOutboxRecord => {
@@ -116,12 +132,18 @@ export interface ServerRepository {
   listSocialActivity(recipientId: string): Promise<SocialActivity[]>
   createSocialPost(post: SocialPost, mediaLimitBytes: number): Promise<SocialPost>
   findSocialPost(id: string): Promise<SocialPost | undefined>
-  listSocialPosts(options: { authorId?: string; cursor?: SocialPostCursor; limit: number; moderationOnly?: boolean }): Promise<SocialPost[]>
+  listSocialPosts(options: { authorId?: string; cursor?: SocialPostCursor; limit: number; moderationOnly?: boolean; publishedOnly?: boolean }): Promise<SocialPost[]>
+  getSocialAccountState(accountId: string): Promise<SocialAccountState>
+  followSocialAccount(followerId: string, followingId: string, maxFollows: number): Promise<void>
+  unfollowSocialAccount(followerId: string, followingId: string): Promise<void>
+  bookmarkSocialPost(accountId: string, postId: string, maxBookmarks: number): Promise<void>
+  unbookmarkSocialPost(accountId: string, postId: string): Promise<void>
   deleteSocialPost(id: string, authorId: string): Promise<SocialPost | undefined>
   reviewSocialPost(id: string, status: Extract<SocialPostVisibility, 'published' | 'rejected' | 'removed'>, staffId: string, note?: string): Promise<SocialPost | undefined>
-  listSocialPostComments(postId: string): Promise<SocialPostComment[]>
+  listSocialPostComments(postId: string, limit?: number): Promise<SocialPostComment[]>
   createSocialPostComment(comment: SocialPostComment): Promise<SocialPostComment>
   listSocialPostReactions(postId: string): Promise<string[]>
+  getSocialPostReactionSummary(postId: string, actorId: string): Promise<{ reactionCount: number; reactedByMe: boolean }>
   toggleSocialPostReaction(postId: string, actorId: string): Promise<boolean>
   createSocialPostReport(report: SocialPostReport): Promise<SocialPostReport>
   deleteSocialPostReport(id: string, reporterId: string): Promise<boolean>
@@ -200,6 +222,8 @@ export class LocalRepository implements ServerRepository {
   private readonly socialPostReports = new JsonStore(`${config.dataDirectory}/social-post-reports.json`)
   private readonly socialPostComments = new JsonStore(`${config.dataDirectory}/social-post-comments.json`)
   private readonly socialPostReactions = new JsonStore(`${config.dataDirectory}/social-post-reactions.json`)
+  private readonly socialFollows = new JsonStore(`${config.dataDirectory}/social-follows.json`)
+  private readonly socialPostBookmarks = new JsonStore(`${config.dataDirectory}/social-post-bookmarks.json`)
   private readonly storageQuotas = new JsonStore(`${config.dataDirectory}/storage-quotas.json`)
   private readonly promotions = new JsonStore(`${config.dataDirectory}/promotions.json`)
   private readonly beatListingDrafts = new JsonStore(`${config.dataDirectory}/beat-listing-drafts.json`)
@@ -501,12 +525,44 @@ export class LocalRepository implements ServerRepository {
     return { value: [...items, post], result: post }
   }) }
   findSocialPost(id: string) { return this.socialPosts.read<SocialPost[]>([], isSocialPost).then(items => items.find(item => item.id === id)) }
-  listSocialPosts(options: { authorId?: string; cursor?: SocialPostCursor; limit: number; moderationOnly?: boolean }) {
+  listSocialPosts(options: { authorId?: string; cursor?: SocialPostCursor; limit: number; moderationOnly?: boolean; publishedOnly?: boolean }) {
     return this.socialPosts.read<SocialPost[]>([], isSocialPost).then(items => items
       .filter(item => options.authorId === undefined || item.authorId === options.authorId)
       .filter(item => !options.moderationOnly || item.visibility === 'pending-review')
+      .filter(item => !options.publishedOnly || item.visibility === 'published')
       .filter(item => !options.cursor || item.createdAt < options.cursor.createdAt || item.createdAt === options.cursor.createdAt && item.id < options.cursor.id)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, options.limit))
+  }
+  async getSocialAccountState(accountId: string): Promise<SocialAccountState> {
+    const [follows, bookmarks] = await Promise.all([
+      this.socialFollows.read<SocialFollowRecord[]>([], isSocialFollowRecord),
+      this.socialPostBookmarks.read<SocialPostBookmarkRecord[]>([], isSocialPostBookmarkRecord),
+    ])
+    return {
+      followedAccountIds: follows.filter(item => item.followerId === accountId).map(item => item.followingId).sort(),
+      bookmarkedPostIds: bookmarks.filter(item => item.accountId === accountId).map(item => item.postId).sort(),
+    }
+  }
+  followSocialAccount(followerId: string, followingId: string, maxFollows: number) {
+    if (followerId === followingId) return Promise.reject(new Error('SOCIAL_SELF_FOLLOW'))
+    return this.socialFollows.update<SocialFollowRecord[], void>([], isSocialFollowRecord, items => {
+      if (items.some(item => item.followerId === followerId && item.followingId === followingId)) return { value: items, result: undefined }
+      if (items.filter(item => item.followerId === followerId).length >= maxFollows) throw new Error('SOCIAL_FOLLOW_LIMIT')
+      return { value: [...items, { followerId, followingId, createdAt: new Date().toISOString() }], result: undefined }
+    })
+  }
+  unfollowSocialAccount(followerId: string, followingId: string) {
+    return this.socialFollows.update<SocialFollowRecord[], void>([], isSocialFollowRecord, items => ({ value: items.filter(item => item.followerId !== followerId || item.followingId !== followingId), result: undefined }))
+  }
+  bookmarkSocialPost(accountId: string, postId: string, maxBookmarks: number) {
+    return this.socialPostBookmarks.update<SocialPostBookmarkRecord[], void>([], isSocialPostBookmarkRecord, items => {
+      if (items.some(item => item.accountId === accountId && item.postId === postId)) return { value: items, result: undefined }
+      if (items.filter(item => item.accountId === accountId).length >= maxBookmarks) throw new Error('SOCIAL_BOOKMARK_LIMIT')
+      return { value: [...items, { accountId, postId, createdAt: new Date().toISOString() }], result: undefined }
+    })
+  }
+  unbookmarkSocialPost(accountId: string, postId: string) {
+    return this.socialPostBookmarks.update<SocialPostBookmarkRecord[], void>([], isSocialPostBookmarkRecord, items => ({ value: items.filter(item => item.accountId !== accountId || item.postId !== postId), result: undefined }))
   }
   async deleteSocialPost(id: string, authorId: string) {
     const deleted = await this.socialPosts.update<SocialPost[], SocialPost | undefined>([], isSocialPost, items => {
@@ -516,11 +572,16 @@ export class LocalRepository implements ServerRepository {
     if (deleted) await this.socialPostReports.update<SocialPostReport[], void>([], isSocialPostReport, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
     if (deleted) await this.socialPostComments.update<SocialPostComment[], void>([], isSocialPostComment, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
     if (deleted) await this.socialPostReactions.update<SocialPostReactionRecord[], void>([], isSocialPostReactionRecord, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
+    if (deleted) await this.socialPostBookmarks.update<SocialPostBookmarkRecord[], void>([], isSocialPostBookmarkRecord, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
     return deleted
   }
-  listSocialPostComments(postId: string) { return this.socialPostComments.read<SocialPostComment[]>([], isSocialPostComment).then(items => items.filter(item => item.postId === postId).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)).slice(-100)) }
+  listSocialPostComments(postId: string, limit = 100) { const safeLimit = Number.isSafeInteger(limit) ? Math.min(100, Math.max(1, limit)) : 100; return this.socialPostComments.read<SocialPostComment[]>([], isSocialPostComment).then(items => items.filter(item => item.postId === postId).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)).slice(-safeLimit)) }
   createSocialPostComment(comment: SocialPostComment) { return this.socialPostComments.update<SocialPostComment[], SocialPostComment>([], isSocialPostComment, items => ({ value: [...items, comment], result: comment })) }
   listSocialPostReactions(postId: string) { return this.socialPostReactions.read<SocialPostReactionRecord[]>([], isSocialPostReactionRecord).then(items => [...new Set(items.filter(item => item.postId === postId).map(item => item.actorId))]) }
+  getSocialPostReactionSummary(postId: string, actorId: string) { return this.socialPostReactions.read<SocialPostReactionRecord[]>([], isSocialPostReactionRecord).then(items => {
+    const active = items.filter(item => item.postId === postId)
+    return { reactionCount: active.length, reactedByMe: active.some(item => item.actorId === actorId) }
+  }) }
   toggleSocialPostReaction(postId: string, actorId: string) { return this.socialPostReactions.update<SocialPostReactionRecord[], boolean>([], isSocialPostReactionRecord, items => {
     const exists = items.some(item => item.postId === postId && item.actorId === actorId)
     return { value: exists ? items.filter(item => item.postId !== postId || item.actorId !== actorId) : [...items, { postId, actorId, createdAt: new Date().toISOString() }], result: !exists }

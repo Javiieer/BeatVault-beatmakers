@@ -1,11 +1,12 @@
 import { authClient } from '../api/client';
+import { isProfileImageFocalPoint, type ProfileImageFocalPoint } from '../domains/profile';
 
 export type SocialPostKind = 'status' | 'photo' | 'video';
 export type SocialAudience = 'public' | 'friends' | 'private';
 export type SocialPostVisibility = 'pending-review' | 'published' | 'rejected' | 'removed';
 export type SocialPostView = {
   id: string;
-  author: { id: string; displayName: string; avatarId?: string; avatarUrl?: string };
+  author: { id: string; displayName: string; avatarId?: string; avatarUrl?: string; avatarFocalPoint?: ProfileImageFocalPoint };
   kind: SocialPostKind;
   body: string;
   audience: SocialAudience;
@@ -16,8 +17,10 @@ export type SocialPostView = {
 export type SocialPostPage = { posts: SocialPostView[]; nextCursor?: string };
 export type SocialPostComment = { id: string; authorId: string; authorName: string; body: string; createdAt: string };
 export type SocialPostInteraction = { comments: SocialPostComment[]; reactionCount: number; reactedByMe: boolean };
+export type SocialPostInteractionBatch = { items: Record<string, SocialPostInteraction> };
 export type SocialPostReportReason = 'spam' | 'harassment' | 'copyright' | 'nudity' | 'violence' | 'other';
 export type SocialPostReportView = { id: string; postId: string; reporterId: string; reason: SocialPostReportReason; details: string; status: 'open' | 'reviewed' | 'dismissed'; createdAt: string; post?: SocialPostView };
+export type SocialAccountState = { followedAccountIds: string[]; bookmarkedPostIds: string[] };
 
 const isPost = (value: unknown): value is SocialPostView => {
   if (!value || typeof value !== 'object') return false;
@@ -25,6 +28,7 @@ const isPost = (value: unknown): value is SocialPostView => {
   const author = post.author as Record<string, unknown> | undefined;
   const media = post.media as Record<string, unknown> | undefined;
   return typeof post.id === 'string' && !!author && typeof author.id === 'string' && typeof author.displayName === 'string' &&
+    (author.avatarFocalPoint === undefined || isProfileImageFocalPoint(author.avatarFocalPoint)) &&
     ['status', 'photo', 'video'].includes(post.kind as string) && typeof post.body === 'string' &&
     ['public', 'friends', 'private'].includes(post.audience as string) &&
     ['pending-review', 'published', 'rejected', 'removed'].includes(post.visibility as string) &&
@@ -43,8 +47,16 @@ const isInteraction = (value: unknown): value is SocialPostInteraction => {
     return typeof entry.id === 'string' && typeof entry.authorId === 'string' && typeof entry.authorName === 'string' && typeof entry.body === 'string' && typeof entry.createdAt === 'string';
   }) && Number.isSafeInteger(interaction.reactionCount) && Number(interaction.reactionCount) >= 0 && typeof interaction.reactedByMe === 'boolean';
 };
+const isInteractionBatch = (value: unknown): value is SocialPostInteractionBatch => !!value && typeof value === 'object' &&
+  !!(value as Record<string, unknown>).items && typeof (value as Record<string, unknown>).items === 'object' && !Array.isArray((value as Record<string, unknown>).items) &&
+  Object.entries((value as SocialPostInteractionBatch).items).every(([id, interaction]) => /^[a-f0-9-]{36}$/i.test(id) && isInteraction(interaction));
 const isReaction = (value: unknown): value is { reacted: boolean; reactionCount: number } => !!value && typeof value === 'object' && typeof (value as Record<string, unknown>).reacted === 'boolean' && Number.isSafeInteger((value as Record<string, unknown>).reactionCount) && Number((value as Record<string, unknown>).reactionCount) >= 0;
 const isReported = (value: unknown): value is { id: string; status: 'open' } => !!value && typeof value === 'object' && typeof (value as Record<string, unknown>).id === 'string' && (value as Record<string, unknown>).status === 'open';
+const isSocialAccountState = (value: unknown): value is SocialAccountState => !!value && typeof value === 'object' &&
+  Array.isArray((value as Record<string, unknown>).followedAccountIds) && (value as { followedAccountIds: unknown[] }).followedAccountIds.length <= 500 && (value as { followedAccountIds: unknown[] }).followedAccountIds.every(item => typeof item === 'string') &&
+  Array.isArray((value as Record<string, unknown>).bookmarkedPostIds) && (value as { bookmarkedPostIds: unknown[] }).bookmarkedPostIds.length <= 1000 && (value as { bookmarkedPostIds: unknown[] }).bookmarkedPostIds.every(item => typeof item === 'string');
+const isFollowing = (value: unknown): value is { following: boolean } => !!value && typeof value === 'object' && typeof (value as Record<string, unknown>).following === 'boolean';
+const isBookmarked = (value: unknown): value is { bookmarked: boolean } => !!value && typeof value === 'object' && typeof (value as Record<string, unknown>).bookmarked === 'boolean';
 const isSocialPostList = (value: unknown): value is { posts: SocialPostView[] } => !!value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).posts) && ((value as { posts: unknown[] }).posts).every(isPost);
 const isSocialPostReport = (value: unknown): value is SocialPostReportView => {
   if (!value || typeof value !== 'object') return false;
@@ -65,6 +77,10 @@ const query = (limit: number, cursor?: string) => {
 export const readSocialFeed = (limit = 30, cursor?: string) =>
   authClient.request(`/api/feed?${query(limit, cursor)}`, { method: 'GET' }, isPage);
 
+export const readSocialAccountState = () => authClient.request('/api/account/social-state', { method: 'GET' }, isSocialAccountState);
+export const setSocialFollow = (accountId: string, following: boolean) => authClient.request(`/api/follows/${encodeURIComponent(accountId)}`, { method: following ? 'PUT' : 'DELETE', body: JSON.stringify({}) }, isFollowing);
+export const setSocialPostBookmark = (postId: string, bookmarked: boolean) => authClient.request(`/api/posts/${encodeURIComponent(postId)}/bookmark`, { method: bookmarked ? 'PUT' : 'DELETE', body: JSON.stringify({}) }, isBookmarked);
+
 export const readProfileSocialPosts = (profileId: string, limit = 30, cursor?: string) =>
   authClient.request(`/api/profiles/${encodeURIComponent(profileId)}/posts?${query(limit, cursor)}`, { method: 'GET' }, isPage);
 
@@ -84,6 +100,11 @@ export const reportSocialPost = (postId: string, reason: SocialPostReportReason,
 
 export const readSocialPostInteractions = (postId: string) =>
   authClient.request(`/api/posts/${encodeURIComponent(postId)}/social`, { method: 'GET' }, isInteraction);
+export const readSocialPostInteractionsBatch = (postIds: string[]) => {
+  const params = new URLSearchParams();
+  postIds.forEach(postId => params.append('id', postId));
+  return authClient.request(`/api/posts/interactions?${params.toString()}`, { method: 'GET' }, isInteractionBatch);
+};
 export const createSocialPostComment = (postId: string, body: string) =>
   authClient.request(`/api/posts/${encodeURIComponent(postId)}/comments`, { method: 'POST', body: JSON.stringify({ body }) }, isInteraction);
 export const toggleSocialPostReaction = (postId: string) =>

@@ -14,24 +14,26 @@ export const clientAddress = (request: Pick<IncomingMessage, 'headers' | 'socket
   return isIP(candidate) ? candidate : remoteAddress
 }
 export class RateLimiter {
-  private readonly hits = new Map<string, number[]>()
+  private readonly hits = new Map<string, Array<{ timestamp: number; cost: number }>>()
   private nextPruneAt = 0
   constructor(private readonly limitOrConfig: number | ServerConfig = 5, private readonly configuredWindowMs = 60000) {}
   private get limit(): number { return typeof this.limitOrConfig === 'number' ? this.limitOrConfig : this.limitOrConfig.rateLimit.limit }
   private get windowMs(): number { return typeof this.limitOrConfig === 'number' ? this.configuredWindowMs : this.limitOrConfig.rateLimit.windowMs }
-  allow(key: string): boolean {
+  allow(key: string, cost = 1): boolean {
+    if (!Number.isSafeInteger(cost) || cost < 1 || cost > this.limit) return false
     const now = Date.now()
     if (now >= this.nextPruneAt) {
-      for (const [trackedKey, times] of this.hits) {
-        const active = times.filter(time => now - time < this.windowMs)
+      for (const [trackedKey, events] of this.hits) {
+        const active = events.filter(event => now - event.timestamp < this.windowMs)
         if (active.length) this.hits.set(trackedKey, active)
         else this.hits.delete(trackedKey)
       }
       this.nextPruneAt = now + Math.max(1000, Math.min(this.windowMs, 60000))
     }
-    const valid = (this.hits.get(key) || []).filter(time => now - time < this.windowMs)
-    if (valid.length >= this.limit) { this.hits.set(key, valid); return false }
-    valid.push(now)
+    const valid = (this.hits.get(key) || []).filter(event => now - event.timestamp < this.windowMs)
+    const used = valid.reduce((total, event) => total + event.cost, 0)
+    if (used + cost > this.limit) { this.hits.set(key, valid); return false }
+    valid.push({ timestamp: now, cost })
     this.hits.set(key, valid)
     return true
   }

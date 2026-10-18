@@ -1,6 +1,6 @@
-import electronic from '../../assets/profile/studio-electronic.png';
-import acoustic from '../../assets/profile/studio-acoustic.png';
-import vinyl from '../../assets/profile/studio-vinyl.png';
+import electronic from '../../assets/profile/studio-electronic.webp';
+import acoustic from '../../assets/profile/studio-acoustic.webp';
+import vinyl from '../../assets/profile/studio-vinyl.webp';
 import type { ProfileCover } from '../domains/profile';
 
 export const profileCovers: { id: ProfileCover; name: string; url: string }[] = [

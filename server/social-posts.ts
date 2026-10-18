@@ -46,7 +46,7 @@ export const isSocialPostReport = (value: unknown): value is SocialPostReport =>
 }
 export const socialPostView = (post: SocialPost, author: CreatorProfile | undefined) => ({
   id: post.id,
-  author: { id: post.authorId, displayName: author?.displayName || 'BeatVault creator', avatarId: author?.avatarId, avatarUrl: author?.avatarUrl },
+  author: { id: post.authorId, displayName: author?.displayName || 'BeatVault creator', avatarId: author?.avatarId, avatarUrl: author?.avatarUrl, avatarFocalPoint: author?.avatarFocalPoint },
   kind: post.kind,
   body: post.body,
   audience: post.audience === 'public' && !author?.publicProfile ? 'friends' : post.audience,

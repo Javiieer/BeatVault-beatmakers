@@ -1,18 +1,18 @@
 # First release scope
 
-Decision date: 2026-10-08. Status reviewed: 2026-10-14. Goal: a creator can sign in, upload their audio,
+Decision date: 2026-10-08. Status reviewed: 2026-10-15. Goal: a creator can sign in, upload their audio,
 find it in Library after reloading, play it, manage metadata and submit it for review.
 This loop takes priority over adding more top-level modules.
 
 | Section | Decision | Reason and remaining work |
 | --- | --- | --- |
-| Home | Keep and reshape | Inspiration and discovery feed for statuses, photos, Shorts and beats. Composer saves text, photos and videos locally in account-scoped IndexedDB; posts also appear on the author's own profile in this browser, but are not public or cross-device. Feed interactions are browser-persisted and sample posts are marked DEMO. |
+| Home | Keep and reshape | Authenticated users publish statuses, photos and videos through the local API with public/friends/private audiences; posts, comments, reactions, follows and bookmarks persist by account across reloads. Public feed delivery, profile sync and privacy are covered by a real two-account browser test. Seed posts/radar are limited to local development preview and do not appear in authenticated feeds or production bundles. The 24-hour story rail is a view over recent posts, not a distinct expiring story service; live feed updates and production-scale validation remain. |
 | Amigos and Mensajes | Keep as a small social foundation | Discover creators who opted into public profiles, manage friend requests and use one-to-one text chat with accepted friends. Messages persist in the local API (JSON; PostgreSQL requires migrations 008-009) and connected clients receive updates over SSE. Published catalog Beats support persisted comments/reactions and in-app notifications. No attachments, groups, push notifications, block/report tools or multi-instance realtime service. This does not replace the first-release audio workflow. |
 | Mis subidas (formerly Studio) | Keep | Own Beats and One-shots with search, filters, preview, edit, archive and restore. Legacy project records remain untouched. |
 | Library | Keep | Restores owned audio after reload; discovery still needs real published content. |
 | Beats / Beat Detail | Keep | Beats shows only approved, published catalog entries. Legacy project detail links remain local references. |
 | Upload | Keep | Beats and One-shots, durable audio/cover references and retries after reload with file reselection. Stronger media validation remains pending. |
-| Admin | Keep for admins | Admins can approve/reject pending entries; the server enforces role and CSRF, saves rejection notes for owners and audits decisions. Category-scoped discount rules persist locally or in PostgreSQL but are not yet applied to product prices or checkout. |
+| Admin | Keep for admins | Admins and Community Managers can independently approve/reject pending Beats after listening to a private processed preview; the server enforces role, ownership and CSRF, saves rejection notes for owners and audits decisions. Category-scoped discount rules persist locally or in PostgreSQL but are not yet applied to product prices or checkout. |
 | Marketplace intake review | Private seller intake and least-privilege staff review | Implemented: community managers can recommend/request changes, and a different admin can make a reasoned final decision after a current positive recommendation. Sellers can see current/stale status. Approval does not itself publish offers or authorize a sale; evidence is not legal clearance. |
 | Shorts | Defer | Promising discovery feature; video infrastructure would delay the audio release. |
 | Plans / Subscription | Partial | Local Free/Creator/Studio assignment and configurable storage enforcement; displayed prices and feature bundles are proposals only. Recurring Stripe subscriptions and paid entitlement changes are not implemented. |
@@ -22,7 +22,7 @@ This loop takes priority over adding more top-level modules.
 | AI Lab | Defer | No defined, validated creator workflow. |
 | Releases | Defer | Music distribution is a separate product capability. |
 | Analytics | Defer | Real events and consent rules must precede dashboards. |
-| Mi perfil | Keep | Creator identity and public/private visibility. Own Home posts appear in a separate Publications tab only on the local device; beats/one-shots remain in Projects. Public audio previews and server-published Home posts are not implemented. |
+| Mi perfil | Keep | Creator identity and public/private visibility. Home posts synchronize with the author's profile through the API; beats/one-shots remain in Projects. Public audio previews and live Home updates remain separate work. |
 | Settings | Keep as Editar perfil | Persisted creator metadata, cover/avatar presets and links; local account email/password changes and client-side preferences are available. Email verification and transactional recovery delivery are not configured. Role is never user-editable. |
 
 Navigation now shows Home, Friends, Messages, My uploads, Library, Beats, Marketplace, Upload and Plans in English by default; Spanish translations currently cover navigation and Marketplace. Translation coverage for the remaining screens is still in progress. Admin is shown
@@ -39,6 +39,8 @@ not a claim that source scanning can determine whether a feature is complete.
 
 - The authenticated upload/reload/playback workflow and account cache isolation are covered locally; validate production storage and recovery separately.
 - PostgreSQL repository/migrations through 023 (including server-persisted catalog artwork) and disposable QA tooling exist. Validate a clean 001-023 schema run, current marketplace/order/session flows, existing-volume migrations, and an off-host database+audio restore before hosting real users.
+- Home relationship persistence adds migration 028 for follows/bookmarks. Clean-schema disposable PostgreSQL QA, account isolation and backup/restore passed; run an existing-volume upgrade rehearsal before a hosted pilot.
+- Social video decoding is validated, but original MP4 container/stream metadata is not stripped yet; disable public video posts or sanitize metadata before the hosted pilot.
 - The default local app uses JSON. JSON is not safe for concurrent multi-user production writes; a hosted pilot must use PostgreSQL.
 - Sessions have durable JSON/PostgreSQL repository support; rate limits remain process-local. Email delivery and a secure production admin-provisioning procedure are still required.
 - Oracle Compose/Caddy is a private-pilot scaffold. A real VPS deployment, migration procedure, and off-host backup/restore drill are not yet proven.

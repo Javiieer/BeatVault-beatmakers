@@ -25,8 +25,17 @@ describe('social posts JSON repository contract', () => {
     expect(isSocialPost(first)).toBe(true)
     expect(await repository.createSocialPost(first, 1024)).toEqual(first)
     await repository.createSocialPost(second, 1024)
+    const pending = { ...first, id: randomUUID(), body: 'Not in public feed', visibility: 'pending-review' as const, createdAt: '2026-10-14T09:00:00.000Z', updatedAt: '2026-10-14T09:00:00.000Z' }
+    await repository.createSocialPost(pending, 1024)
+    expect((await repository.listSocialPosts({ limit: 10, publishedOnly: true })).map(post => post.id)).toEqual([second.id, first.id])
+    const comments = ['First recent', 'Second recent', 'Third recent'].map((body, index) => ({ id: randomUUID(), postId: first.id, authorId, body, createdAt: new Date(Date.parse(createdAt) + index * 1000).toISOString() }))
+    for (const comment of comments) await repository.createSocialPostComment(comment)
+    expect((await repository.listSocialPostComments(first.id, 2)).map(comment => comment.body)).toEqual(['Second recent', 'Third recent'])
+    await repository.toggleSocialPostReaction(first.id, 'account-a')
+    await repository.toggleSocialPostReaction(first.id, 'account-b')
+    expect(await repository.getSocialPostReactionSummary(first.id, 'account-a')).toEqual({ reactionCount: 2, reactedByMe: true })
     expect((await repository.listSocialPosts({ limit: 1 })).map(post => post.id)).toEqual([second.id])
-    expect((await repository.listSocialPosts({ limit: 2, cursor: { createdAt: second.createdAt, id: second.id } })).map(post => post.id)).toEqual([first.id])
+    expect((await repository.listSocialPosts({ limit: 2, cursor: { createdAt: second.createdAt, id: second.id }, publishedOnly: true })).map(post => post.id)).toEqual([first.id])
     expect(await repository.deleteSocialPost(first.id, randomUUID())).toBeUndefined()
     const report = { id: randomUUID(), postId: second.id, reporterId: randomUUID(), reason: 'spam' as const, details: 'Repeated spam', status: 'open' as const, createdAt }
     expect(await repository.createSocialPostReport(report)).toEqual(report)
@@ -52,9 +61,10 @@ describe('social posts JSON repository contract', () => {
 
   it('shows the effective friends-only audience for posts on private profiles', () => {
     const post = { id: randomUUID(), authorId: randomUUID(), kind: 'status' as const, body: 'Friends only', audience: 'public' as const, visibility: 'published' as const, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
-    const privateProfile = { ...emptyProfile(post.authorId), publicProfile: false }
+    const privateProfile = { ...emptyProfile(post.authorId), publicProfile: false, avatarFocalPoint: { x: 24, y: 68 } }
     const publicProfile = { ...privateProfile, publicProfile: true }
     expect(socialPostView(post, privateProfile).audience).toBe('friends')
+    expect(socialPostView(post, privateProfile).author.avatarFocalPoint).toEqual({ x: 24, y: 68 })
     expect(socialPostView(post, publicProfile).audience).toBe('public')
   })
 })

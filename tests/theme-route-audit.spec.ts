@@ -26,6 +26,8 @@ test('navigation QA bot renders every menu URL in dark, light and custom RGB on 
       : path === '/api/profile' ? profile
         : path === '/api/catalog' ? { entries: [], total: 0 }
           : path === '/api/projects' ? []
+            : path === '/api/feed' || path.startsWith('/api/profiles/') && path.endsWith('/posts') ? { posts: [] }
+              : path === '/api/account/social-state' ? { followedAccountIds: [], bookmarkedPostIds: [] }
             : path === '/api/friends' ? { friends: [], incoming: [], outgoing: [] }
               : path === '/api/chat/conversations' || path === '/api/notifications/social' ? [] : null
     return route.fulfill({ json: { ok: true, data, requestId: 'theme-route-audit' } })

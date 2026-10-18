@@ -1,6 +1,9 @@
 export const profileCoverIds = ['808', 'orchestra', 'lo-fi'] as const;
 export type ProfileCover = typeof profileCoverIds[number];
 export type ProfileImageKind = 'avatar' | 'cover';
+export interface ProfileImageFocalPoint { x: number; y: number }
+export const defaultAvatarFocalPoint: ProfileImageFocalPoint = { x: 50, y: 50 };
+export const defaultCoverFocalPoint: ProfileImageFocalPoint = { x: 50, y: 44 };
 export interface ProfileImageRecord {
   storageKey: string;
   thumbnailStorageKey: string;
@@ -24,6 +27,8 @@ export interface CreatorProfile {
   coverImage?: ProfileImageRecord;
   avatarUrl?: string;
   coverUrl?: string;
+  avatarFocalPoint?: ProfileImageFocalPoint;
+  coverFocalPoint?: ProfileImageFocalPoint;
   publicProfile: boolean;
   packageBadges?: PackageBadge[];
 }
@@ -39,7 +44,14 @@ export function isCreatorProfile(value: unknown): value is CreatorProfile {
     (profileCoverIds.includes(p.coverId as ProfileCover) || p.coverId === 'custom') && (['initials', ...profileCoverIds].includes(p.avatarId as string) || p.avatarId === 'custom') && typeof p.publicProfile === 'boolean' &&
     (p.avatarImage === undefined || isProfileImageRecord(p.avatarImage)) && (p.coverImage === undefined || isProfileImageRecord(p.coverImage)) &&
     (p.avatarUrl === undefined || typeof p.avatarUrl === 'string') && (p.coverUrl === undefined || typeof p.coverUrl === 'string') &&
+    (p.avatarFocalPoint === undefined || isProfileImageFocalPoint(p.avatarFocalPoint)) && (p.coverFocalPoint === undefined || isProfileImageFocalPoint(p.coverFocalPoint)) &&
     (p.packageBadges === undefined || Array.isArray(p.packageBadges) && p.packageBadges.every(badge => badge === 'creator' || badge === 'studio'));
+}
+
+export function isProfileImageFocalPoint(value: unknown): value is ProfileImageFocalPoint {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const point = value as Record<string, unknown>;
+  return Object.keys(point).length === 2 && typeof point.x === 'number' && Number.isInteger(point.x) && point.x >= 0 && point.x <= 100 && typeof point.y === 'number' && Number.isInteger(point.y) && point.y >= 0 && point.y <= 100;
 }
 
 export function isProfileImageRecord(value: unknown): value is ProfileImageRecord {

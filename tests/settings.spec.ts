@@ -5,6 +5,10 @@ const profile = { accountId: account.id, displayName: 'Productor QA', bio: '', l
 
 test('settings controls persist account preferences and fit on mobile', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
+  const renderLoopErrors: string[] = []
+  page.on('console', message => {
+    if (message.type() === 'error' && message.text().includes('Maximum update depth exceeded')) renderLoopErrors.push(message.text())
+  })
   await page.route(url => new URL(url).pathname.startsWith('/api/'), async route => {
     const path = new URL(route.request().url()).pathname
     const method = route.request().method()
@@ -57,4 +61,5 @@ test('settings controls persist account preferences and fit on mobile', async ({
   await expect(page.locator('.theme-picker')).toHaveCount(0)
   expect(await page.evaluate(() => document.elementFromPoint(120, 110)?.closest('.notification-panel') !== null)).toBe(true)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  expect(renderLoopErrors).toEqual([])
 })

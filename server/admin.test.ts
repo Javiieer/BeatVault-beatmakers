@@ -7,4 +7,9 @@ describe('admin redaction', () => {
     expect(redactAccount(account)).toEqual({ id: 'a', email: 'a@test.local', role: 'admin', verificationState: 'verified', planId: 'free' })
     expect(JSON.stringify(adminData([account], [], [], []))).not.toContain('secret')
   })
+
+  it('normalizes legacy accounts missing verification state', () => {
+    const legacyAccount = { id: 'legacy', email: 'legacy@test.local', passwordHash: 'hash', role: 'creator' } as Parameters<typeof redactAccount>[0]
+    expect(redactAccount(legacyAccount)).toEqual({ id: 'legacy', email: 'legacy@test.local', role: 'creator', verificationState: 'unverified', planId: 'free' })
+  })
 })

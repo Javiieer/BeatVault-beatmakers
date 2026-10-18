@@ -6,20 +6,22 @@
 
 ## Current milestone
 
-Home now replaces the old dashboard at /home, with /dashboard retained as an alias.
-Its local feed combines demo statuses, photos, beat cards and Shorts links; likes,
-saves and follows persist per local account. Own audio appears only after publication.
-The demo creator posts are explicitly labeled and are not connected to a social API.
-Home also has a local composer for text, photos and videos; posts and media persist in
-account-scoped IndexedDB on this browser only. It is not cross-device/social publishing.
+Home replaces the old dashboard at /home, with /dashboard retained as an alias. Signed-in
+posts and media use the API, support public/friends/private audiences, and synchronize
+with the creator's profile. Comments, reactions, follows and bookmarks persist server-side.
+Labeled seed posts are available only in local development guest preview; authenticated
+feeds and production builds exclude them. A recent-stories rail displays published
+posts from the last 24 hours; it is not yet an independent story lifecycle. Authenticated
+interaction reads are batched and bounded. A two-account browser test covers public
+delivery, private isolation, and interaction persistence.
 
 Creator profiles and metadata editing are implemented at /profile and /settings.
 Profiles default to private; public links exclude private drafts and authentication
 data. Own Home posts appear on the profile in this browser. Amigos supports opted-in
 creator discovery and friend requests through the local API. The direct chat at /chat
 supports persistent one-to-one text messages between accepted friends, unread/read
-state, and live updates over SSE. Home posts still do not publish cross-device. Chat
-attachments, groups, and multi-instance event delivery are deferred. PostgreSQL
+state, and live updates over SSE. Chat attachments, groups, and multi-instance event
+delivery are deferred. PostgreSQL
 migrations 001-013 and live PostgreSQL checks have passed on a disposable PostgreSQL
 16 instance: two-account friend authorization, CSRF enforcement, message/read-state
 persistence across API restart, SSE reconnect/event delivery, WAV upload and ranged

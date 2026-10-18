@@ -6,6 +6,7 @@ import { markChatRead, readChatConversations, readChatMessages, readChatPresence
 import type { DirectMessage } from '../domains/chat';
 import type { FriendDirectoryEntry } from '../domains/friends';
 import { uploadCovers } from '../data/creatorUploads';
+import { defaultAvatarFocalPoint } from '../domains/profile';
 import '../styles/chat.css';
 
 type Contact = { profile: FriendDirectoryEntry; conversation?: ChatConversationView };
@@ -25,7 +26,7 @@ function ChatErrorNotice({ error, onAction }: { error: ChatError; onAction: () =
 
 function Avatar({ profile, className = '', online = false }: { profile: FriendDirectoryEntry; className?: string; online?: boolean }) {
   const image = profile.avatarId === 'custom' ? profile.avatarUrl : avatarFor(profile.avatarId);
-  return <span className={`chat-avatar ${className}`} title={`${profile.displayName}: ${online ? 'En línea' : 'Desconectado'}`}>{image ? <img src={image} alt="" /> : initials(profile.displayName)}<i className={online ? 'is-online' : 'is-offline'} /></span>;
+  return <span className={`chat-avatar ${className}`} title={`${profile.displayName}: ${online ? 'En línea' : 'Desconectado'}`}>{image ? <img src={image} alt="" style={{ objectPosition: `${profile.avatarFocalPoint?.x ?? defaultAvatarFocalPoint.x}% ${profile.avatarFocalPoint?.y ?? defaultAvatarFocalPoint.y}%` }} /> : initials(profile.displayName)}<i className={online ? 'is-online' : 'is-offline'} /></span>;
 }
 
 export function Chat({ userId, initialPeerId }: { userId?: string; initialPeerId?: string }) {

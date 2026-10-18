@@ -29,11 +29,27 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await page.getByRole('link', { name: 'Editar perfil', exact: true }).click();
     const profileJpeg = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover-qa.jpg'));
     await page.getByLabel('Subir foto de perfil').setInputFiles({ name: 'avatar.jpg', mimeType: 'image/jpeg', buffer: profileJpeg });
+    await expect(page.getByLabel('Encuadre horizontal del avatar')).toBeVisible();
+    await page.getByLabel('Encuadre horizontal del avatar').evaluate(element => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, '24');
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    });
     await page.getByRole('button', { name: 'Guardar foto', exact: true }).click();
     await expect(page.locator('.producer-settings-preview .producer-avatar img')).toHaveAttribute('src', new RegExp(`/api/profiles/${me.id}/images/avatar/thumbnail`));
+    await expect.poll(async () => (await (await page.request.get('/api/profile')).json()).data.avatarFocalPoint).toEqual({ x: 24, y: 50 });
     await page.getByLabel('Subir portada personalizada').setInputFiles({ name: 'profile-cover.jpg', mimeType: 'image/jpeg', buffer: profileJpeg });
+    await expect(page.getByLabel('Encuadre vertical de la portada')).toBeVisible();
+    await page.getByLabel('Encuadre vertical de la portada').evaluate(element => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, '36');
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect(page.locator('.profile-crop-desktop img')).toBeVisible();
+    await expect(page.locator('.profile-crop-mobile img')).toBeVisible();
     await page.getByRole('button', { name: 'Guardar portada', exact: true }).click();
     await expect(page.locator('.producer-preview-cover')).toHaveAttribute('src', new RegExp(`/api/profiles/${me.id}/images/cover/thumbnail`));
+    await expect.poll(async () => (await (await page.request.get('/api/profile')).json()).data.coverFocalPoint).toEqual({ x: 50, y: 36 });
     await page.getByLabel('Nombre artistico').fill('Northside Audio');
     await page.getByLabel('Biografia').fill('Beats nocturnos. Texturas analogicas y percusion original.');
     await page.getByLabel('Ubicacion').fill('Ciudad de Mexico');
@@ -58,6 +74,8 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await expect(page).toHaveURL(/#\/profile$/);
     await expect(page.locator('.producer-avatar img')).toHaveAttribute('src', new RegExp(`/api/profiles/${me.id}/images/avatar/thumbnail`));
     await expect(page.locator('.producer-banner img')).toHaveAttribute('src', new RegExp(`/api/profiles/${me.id}/images/cover/thumbnail`));
+    await expect(page.locator('.producer-avatar img')).toHaveCSS('object-position', '24% 50%');
+    await expect(page.locator('.producer-banner img')).toHaveCSS('object-position', '50% 36%');
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Northside Audio', exact: true })).toBeVisible();

@@ -3,13 +3,14 @@ import { Check, Clock3, Search, UserMinus, UserPlus, Users, X } from 'lucide-rea
 import type { FriendDirectoryEntry, FriendOverview } from '../domains/friends';
 import { acceptFriendRequest, readFriendOverview, removeFriend, removeFriendRequest, searchCreators, sendFriendRequest } from '../data/friendRepository';
 import { uploadCovers } from '../data/creatorUploads';
+import { defaultAvatarFocalPoint } from '../domains/profile';
 import '../styles/friends.css';
 
 type View = 'discover' | 'requests' | 'friends';
 const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase() || 'BV';
 function CreatorAvatar({ profile }: { profile: FriendDirectoryEntry }) {
   const image = profile.avatarId === 'custom' ? profile.avatarUrl : profile.avatarId === 'initials' ? undefined : uploadCovers.find(cover => cover.id === profile.avatarId)?.url;
-  return <span className="friends-avatar">{image ? <img src={image} alt="" /> : initials(profile.displayName)}</span>;
+  return <span className="friends-avatar">{image ? <img src={image} alt="" style={{ objectPosition: `${profile.avatarFocalPoint?.x ?? defaultAvatarFocalPoint.x}% ${profile.avatarFocalPoint?.y ?? defaultAvatarFocalPoint.y}%` }} /> : initials(profile.displayName)}</span>;
 }
 
 export function Friends({ userId }: { userId?: string }) {

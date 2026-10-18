@@ -1,6 +1,6 @@
 import type { CatalogEntry, CatalogInput } from '../src/domains/catalog/types'
 import type { ProjectRecord, ProjectStatus } from '../src/domains/core/contracts'
-import { StorageQuotaExceededError, type AssetRecord, type AssetState, type BeatOrder, type Friendship, type ServerRepository, type SessionRecord, type StorageQuotaRecord, type StripeConnectRecord } from './store'
+import { StorageQuotaExceededError, type AssetRecord, type AssetState, type BeatOrder, type Friendship, type ServerRepository, type SessionRecord, type SocialAccountState, type StorageQuotaRecord, type StripeConnectRecord } from './store'
 import type { Account } from './auth'
 import type { CreatorProfile } from '../src/domains/profile'
 import type { ChatConversation, DirectMessage } from '../src/domains/chat'
@@ -13,8 +13,13 @@ import type { SocialPost, SocialPostComment, SocialPostCursor, SocialPostReport,
 import { isValidNotificationTimestamp, normalizeNotificationCursor, normalizeNotificationRecord, notificationLimit, type NotificationPage, type NotificationPageOptions, type NotificationRecord, type NotificationSeed } from './notifications'
 
 export type SqlResult<Row> = { rows: Row[] }
+export interface SqlConnection {
+  query<Row>(text: string, values?: readonly unknown[]): Promise<SqlResult<Row>>
+  release(): void
+}
 export interface SqlClient {
   query<Row>(text: string, values?: readonly unknown[]): Promise<SqlResult<Row>>
+  connect?(): Promise<SqlConnection>
 }
 
 type ProjectRow = { id: string; owner_id: string; title: string; status: ProjectStatus; updated_at: string }
@@ -54,6 +59,19 @@ const normalizedNotificationSeed = (seed: NotificationSeed | undefined, type: No
 /** SQL-only adapter. A PostgreSQL driver and transaction boundary are injected by a later platform phase. */
 export class PostgresRepository implements ServerRepository {
   constructor(private readonly db: SqlClient) {}
+  private async withTransaction<T>(action: (client: SqlClient) => Promise<T>): Promise<T> {
+    if (!this.db.connect) return action(this.db)
+    const client = await this.db.connect()
+    try {
+      await client.query('BEGIN')
+      const result = await action(client)
+      await client.query('COMMIT')
+      return result
+    } catch (error) {
+      try { await client.query('ROLLBACK') } catch { /* Keep the original database error. */ }
+      throw error
+    } finally { client.release() }
+  }
   async findProfile(accountId: string) {
     const result = await this.db.query<{ account_id: string; metadata: Omit<CreatorProfile, 'accountId'> }>('SELECT account_id, metadata FROM creator_profiles WHERE account_id = $1', [accountId])
     const row = result.rows[0]
@@ -204,17 +222,53 @@ export class PostgresRepository implements ServerRepository {
     return socialPost(result.rows[0])
   }
   async findSocialPost(id: string) { const result = await this.db.query<SocialPostRow>(`SELECT ${socialPostColumns} FROM social_posts WHERE id = $1`, [id]); return result.rows[0] ? socialPost(result.rows[0]) : undefined }
-  async listSocialPosts(options: { authorId?: string; cursor?: SocialPostCursor; limit: number; moderationOnly?: boolean }) {
-    const result = await this.db.query<SocialPostRow>(`SELECT ${socialPostColumns} FROM social_posts WHERE ($1::text IS NULL OR author_id = $1) AND (NOT $2::boolean OR visibility = 'pending-review') AND ($3::timestamptz IS NULL OR created_at < $3 OR (created_at = $3 AND id < $4::uuid)) ORDER BY created_at DESC, id DESC LIMIT $5`, [options.authorId ?? null, options.moderationOnly ?? false, options.cursor?.createdAt ?? null, options.cursor?.id ?? null, options.limit])
+  async listSocialPosts(options: { authorId?: string; cursor?: SocialPostCursor; limit: number; moderationOnly?: boolean; publishedOnly?: boolean }) {
+    const visibilityFilter = options.moderationOnly ? "visibility = 'pending-review'" : options.publishedOnly ? "visibility = 'published'" : 'TRUE'
+    const result = await this.db.query<SocialPostRow>(`SELECT ${socialPostColumns} FROM social_posts WHERE ($1::text IS NULL OR author_id = $1) AND ${visibilityFilter} AND ($2::timestamptz IS NULL OR created_at < $2 OR (created_at = $2 AND id < $3::uuid)) ORDER BY created_at DESC, id DESC LIMIT $4`, [options.authorId ?? null, options.cursor?.createdAt ?? null, options.cursor?.id ?? null, options.limit])
     return result.rows.map(socialPost)
+  }
+  async getSocialAccountState(accountId: string): Promise<SocialAccountState> {
+    const [follows, bookmarks] = await Promise.all([
+      this.db.query<{ following_id: string }>('SELECT following_id FROM social_account_follows WHERE follower_id = $1 ORDER BY following_id ASC LIMIT 500', [accountId]),
+      this.db.query<{ post_id: string }>('SELECT post_id FROM social_post_bookmarks WHERE account_id = $1 ORDER BY created_at DESC, post_id DESC LIMIT 1000', [accountId]),
+    ])
+    return { followedAccountIds: follows.rows.map(row => row.following_id), bookmarkedPostIds: bookmarks.rows.map(row => row.post_id) }
+  }
+  followSocialAccount(followerId: string, followingId: string, maxFollows: number): Promise<void> {
+    if (followerId === followingId) return Promise.reject(new Error('SOCIAL_SELF_FOLLOW'))
+    return this.withTransaction(async client => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('social-follows'))", [followerId])
+      const existing = await client.query<{ exists: boolean }>('SELECT EXISTS (SELECT 1 FROM social_account_follows WHERE follower_id = $1 AND following_id = $2) AS exists', [followerId, followingId])
+      if (existing.rows[0]?.exists) return
+      const count = await client.query<{ count: number | string }>('SELECT count(*)::int AS count FROM social_account_follows WHERE follower_id = $1', [followerId])
+      if (Number(count.rows[0]?.count || 0) >= maxFollows) throw new Error('SOCIAL_FOLLOW_LIMIT')
+      await client.query('INSERT INTO social_account_follows (follower_id, following_id) VALUES ($1, $2) ON CONFLICT (follower_id, following_id) DO NOTHING', [followerId, followingId])
+    })
+  }
+  async unfollowSocialAccount(followerId: string, followingId: string): Promise<void> {
+    await this.db.query('DELETE FROM social_account_follows WHERE follower_id = $1 AND following_id = $2', [followerId, followingId])
+  }
+  bookmarkSocialPost(accountId: string, postId: string, maxBookmarks: number): Promise<void> {
+    return this.withTransaction(async client => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('social-bookmarks'))", [accountId])
+      const existing = await client.query<{ exists: boolean }>('SELECT EXISTS (SELECT 1 FROM social_post_bookmarks WHERE account_id = $1 AND post_id = $2) AS exists', [accountId, postId])
+      if (existing.rows[0]?.exists) return
+      const count = await client.query<{ count: number | string }>('SELECT count(*)::int AS count FROM social_post_bookmarks WHERE account_id = $1', [accountId])
+      if (Number(count.rows[0]?.count || 0) >= maxBookmarks) throw new Error('SOCIAL_BOOKMARK_LIMIT')
+      await client.query('INSERT INTO social_post_bookmarks (account_id, post_id) VALUES ($1, $2) ON CONFLICT (account_id, post_id) DO NOTHING', [accountId, postId])
+    })
+  }
+  async unbookmarkSocialPost(accountId: string, postId: string): Promise<void> {
+    await this.db.query('DELETE FROM social_post_bookmarks WHERE account_id = $1 AND post_id = $2', [accountId, postId])
   }
   async deleteSocialPost(id: string, authorId: string) { const result = await this.db.query<SocialPostRow>(`DELETE FROM social_posts WHERE id = $1 AND author_id = $2 RETURNING ${socialPostColumns}`, [id, authorId]); return result.rows[0] ? socialPost(result.rows[0]) : undefined }
   async reviewSocialPost(id: string, status: Extract<SocialPostVisibility, 'published' | 'rejected' | 'removed'>, staffId: string, note?: string) {
     const result = await this.db.query<SocialPostRow>(`UPDATE social_posts SET visibility = $1, reviewed_by = $2, reviewed_at = NOW(), review_note = $3, updated_at = NOW() WHERE id = $4 AND visibility <> 'removed' AND ($1 <> 'published' OR visibility = 'pending-review') RETURNING ${socialPostColumns}`, [status, staffId, note?.slice(0, 500) ?? null, id])
     return result.rows[0] ? socialPost(result.rows[0]) : undefined
   }
-  async listSocialPostComments(postId: string): Promise<SocialPostComment[]> {
-    const result = await this.db.query<SocialPostCommentRow>('SELECT id, post_id, author_id, body, created_at FROM (SELECT id, post_id, author_id, body, created_at FROM social_post_comments WHERE post_id = $1 ORDER BY created_at DESC, id DESC LIMIT 100) recent ORDER BY created_at ASC, id ASC', [postId])
+  async listSocialPostComments(postId: string, limit = 100): Promise<SocialPostComment[]> {
+    const safeLimit = Number.isSafeInteger(limit) ? Math.min(100, Math.max(1, limit)) : 100
+    const result = await this.db.query<SocialPostCommentRow>('SELECT id, post_id, author_id, body, created_at FROM (SELECT id, post_id, author_id, body, created_at FROM social_post_comments WHERE post_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2) recent ORDER BY created_at ASC, id ASC', [postId, safeLimit])
     return result.rows.map(row => ({ id: row.id, postId: row.post_id, authorId: row.author_id, body: row.body, createdAt: row.created_at }))
   }
   async createSocialPostComment(input: SocialPostComment): Promise<SocialPostComment> {
@@ -245,6 +299,10 @@ export class PostgresRepository implements ServerRepository {
   async listSocialPostReactions(postId: string): Promise<string[]> {
     const result = await this.db.query<{ actor_id: string }>('SELECT actor_id FROM social_post_reactions WHERE post_id = $1 AND active = TRUE ORDER BY created_at ASC, actor_id ASC', [postId])
     return result.rows.map(row => row.actor_id)
+  }
+  async getSocialPostReactionSummary(postId: string, actorId: string) {
+    const result = await this.db.query<{ reaction_count: number | string; reacted_by_me: boolean }>('SELECT COUNT(*) FILTER (WHERE active)::int AS reaction_count, EXISTS (SELECT 1 FROM social_post_reactions mine WHERE mine.post_id = $1 AND mine.actor_id = $2 AND mine.active = TRUE) AS reacted_by_me FROM social_post_reactions WHERE post_id = $1', [postId, actorId])
+    return { reactionCount: Number(result.rows[0]?.reaction_count || 0), reactedByMe: result.rows[0]?.reacted_by_me === true }
   }
   async toggleSocialPostReaction(postId: string, actorId: string): Promise<boolean> {
     const result = await this.db.query<{ active: boolean }>('INSERT INTO social_post_reactions (post_id, actor_id, active, created_at, updated_at) VALUES ($1, $2, TRUE, NOW(), NOW()) ON CONFLICT (post_id, actor_id) DO UPDATE SET active = NOT social_post_reactions.active, updated_at = NOW() RETURNING active', [postId, actorId])

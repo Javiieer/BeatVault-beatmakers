@@ -211,6 +211,10 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
     const restoredCreator = await login(emailFor('creator'))
     const restoredSocial = (await request(restoredCreator, `/api/posts/${socialId}/social`).then(value => value.json()) as { data: { comments: Array<{ body: string }>; reactionCount: number; reactedByMe: boolean } }).data
     assert(restoredSocial.comments.some(comment => comment.body === socialPostComment) && restoredSocial.reactionCount === 1 && !restoredSocial.reactedByMe, 'La interacción social no sobrevivió a la restauración PostgreSQL.')
+    const restoredCreatorState = (await request(restoredCreator, '/api/account/social-state').then(value => value.json()) as { data: { followedAccountIds: string[] } }).data
+    const restoredOutsider = await login(emailFor('outsider'))
+    const restoredOutsiderState = (await request(restoredOutsider, '/api/account/social-state').then(value => value.json()) as { data: { bookmarkedPostIds: string[] } }).data
+    assert(restoredCreatorState.followedAccountIds.includes(adminId) && restoredOutsiderState.bookmarkedPostIds.includes(socialId), 'Los seguimientos o guardados no sobrevivieron al backup/restore PostgreSQL.')
     if (profileAvatarUrl && profileCoverUrl) {
       for (const imageUrl of [profileAvatarUrl, profileCoverUrl]) {
         const restoredImage = await fetch(`${base()}${imageUrl}`, { headers: { cookie: restoredCreator.cookie } })
@@ -302,7 +306,7 @@ async function waitForEvent(reader: ReadableStreamDefaultReader<Uint8Array>, tim
   throw new Error('No llegó el evento SSE esperado.')
 }
 
-const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'auth_sessions', 'beat_orders', 'catalog_artwork', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_beat_listing_drafts', 'marketplace_beat_listing_evidence', 'marketplace_promotions', 'notifications', 'projects', 'social_posts', 'social_post_comments', 'social_post_reactions', 'social_post_reports', 'stripe_connected_accounts', 'stripe_webhook_events']
+const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'auth_sessions', 'beat_orders', 'catalog_artwork', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_beat_listing_drafts', 'marketplace_beat_listing_evidence', 'marketplace_promotions', 'notifications', 'projects', 'social_account_follows', 'social_post_bookmarks', 'social_posts', 'social_post_comments', 'social_post_reactions', 'social_post_reports', 'stripe_connected_accounts', 'stripe_webhook_events']
 try {
   const schema = await pool.query<{ name: string; exists: boolean }>(
     'SELECT name, to_regclass($1 || \'.\' || name) IS NOT NULL AS exists FROM unnest($2::text[]) AS name',
@@ -317,6 +321,7 @@ try {
   assert(planSchema.rows[0]?.exists, 'Falta la columna plan_id de la migracion 013_account_plans.sql.')
   const packageSchema = await pool.query<{ exists: boolean }>("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'accounts' AND column_name = 'purchased_plan_ids') AS exists")
   assert(packageSchema.rows[0]?.exists, 'Falta el historial de paquetes verificados de la migracion 014_verified_package_history.sql.')
+  assert(schema.rows.some(table => table.name === 'social_account_follows' && table.exists) && schema.rows.some(table => table.name === 'social_post_bookmarks' && table.exists), 'Faltan las tablas de relaciones sociales de la migracion 028_social_follows_bookmarks.sql.')
 
   const hash = await hashPassword(password)
   for (const [id, kind, role] of [[creatorId, 'creator', 'creator'], [adminId, 'admin', 'admin'], [outsiderId, 'outsider', 'creator'], [quotaId, 'quota', 'creator']]) {
@@ -406,6 +411,14 @@ try {
   const socialFeed = (await request(outsider, '/api/feed').then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
   const socialProfile = (await request(outsider, `/api/profiles/${creatorId}/posts`).then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
   assert(socialFeed.some(post => post.id === socialPostId) && socialProfile.some(post => post.id === socialPostId), 'El post público no se sincronizó entre Home/feed y el perfil del creador.')
+  response = await request(creator, `/api/follows/${adminId}`, 'PUT', {})
+  assert(response.status === 200, `No se pudo seguir una cuenta en PostgreSQL (${response.status}).`)
+  response = await request(outsider, `/api/posts/${socialPostId}/bookmark`, 'PUT', {})
+  assert(response.status === 200, `No se pudo guardar una publicación en PostgreSQL (${response.status}).`)
+  const creatorSocialState = (await request(creator, '/api/account/social-state').then(value => value.json()) as { data: { followedAccountIds: string[]; bookmarkedPostIds: string[] } }).data
+  const outsiderSocialState = (await request(outsider, '/api/account/social-state').then(value => value.json()) as { data: { followedAccountIds: string[]; bookmarkedPostIds: string[] } }).data
+  assert(creatorSocialState.followedAccountIds.includes(adminId) && !creatorSocialState.bookmarkedPostIds.includes(socialPostId), 'Seguir no quedó aislado de los guardados de otras cuentas en PostgreSQL.')
+  assert(outsiderSocialState.bookmarkedPostIds.includes(socialPostId) && outsiderSocialState.followedAccountIds.length === 0, 'Guardar no quedó aislado de los seguimientos de otras cuentas en PostgreSQL.')
   await pool.query('DROP TRIGGER IF EXISTS beatvault_qa_reject_notification ON notifications')
   await pool.query(`CREATE OR REPLACE FUNCTION beatvault_qa_reject_notification() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'QA notification write failure' USING ERRCODE = '23514'; END $$`)
   await pool.query('CREATE TRIGGER beatvault_qa_reject_notification BEFORE INSERT ON notifications FOR EACH ROW EXECUTE FUNCTION beatvault_qa_reject_notification()')
@@ -756,7 +769,7 @@ try {
   const thumbnailBytes = thumbnailResponse?.ok ? Buffer.from(await thumbnailResponse.arrayBuffer()) : undefined
   if (artworkUpload.thumbnailAvailable) assert(thumbnailBytes && thumbnailBytes.length === artworkUpload.thumbnailSizeBytes && thumbnailBytes.length < artworkBytes.length, 'La miniatura no redujo el peso transferido del artwork.')
   await verifyBackupRestore(asset.id, previewCatalog.contentId, wav, artworkBytes, thumbnailBytes, socialPostId)
-  console.log('PASS: PostgreSQL auth/chat/SSE, creator profile avatar/cover and privacy, transactional notifications and rollback/deduplication, feed/profile sync, social interactions and CM moderation, quota race, audio formats and limits, private Beat artwork/audio review, independent CM/admin Beat approval, and seller listing/evidence review.')
+  console.log('PASS: PostgreSQL auth/chat/SSE, creator profile avatar/cover and privacy, transactional notifications and rollback/deduplication, feed/profile sync, isolated follows/bookmarks, social interactions and CM moderation, quota race, audio formats and limits, private Beat artwork/audio review, independent CM/admin Beat approval, and seller listing/evidence review.')
 } finally {
   await stopApi()
   try {

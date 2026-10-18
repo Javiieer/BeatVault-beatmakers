@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { ProfileImageKind, ProfileImageRecord } from '../src/domains/profile'
+import type { ProfileImageFocalPoint, ProfileImageKind, ProfileImageRecord } from '../src/domains/profile'
 import { artworkPath, validateProfileImage } from './artwork'
 import { config } from './config'
 import { HttpInputError } from './http'
@@ -12,14 +12,19 @@ export const profileImageMaxAccountBytes = 15 * 1024 * 1024
 const profileImageMaxThumbnailBytes = 700 * 1024
 const profileImageMaxDecodeMs = 20_000
 
-export function validateProfileImageUpload(bytes: Buffer, mimeType: string | undefined, kind: ProfileImageKind) {
+export function validateProfileImageUpload(bytes: Buffer, mimeType: string | undefined) {
   if (bytes.length === 0 || bytes.length > profileImageMaxBytes) throw new HttpInputError(413, 'PROFILE_IMAGE_TOO_LARGE', 'La imagen debe pesar como maximo 8 MB.')
   const dimensions = validateProfileImage(bytes, mimeType)
   if (!dimensions) throw new HttpInputError(400, 'INVALID_PROFILE_IMAGE', 'Usa una imagen JPEG o PNG valida de al menos 256 x 256 px y hasta 16 megapixeles.')
-  if (kind === 'avatar' && Math.abs(dimensions.width - dimensions.height) > Math.max(dimensions.width, dimensions.height) * 0.1) {
-    throw new HttpInputError(400, 'AVATAR_MUST_BE_SQUARE', 'La foto de perfil debe ser cuadrada o casi cuadrada.')
-  }
   return dimensions
+}
+
+export function parseProfileImageFocalPoint(value: string | string[] | undefined, fallback: ProfileImageFocalPoint = { x: 50, y: 50 }): ProfileImageFocalPoint {
+  if (value === undefined) return fallback
+  if (typeof value !== 'string') throw new HttpInputError(400, 'INVALID_PROFILE_IMAGE_FOCAL_POINT', 'El encuadre de imagen no es valido.')
+  const match = value.match(/^(100|[1-9]?\d),(100|[1-9]?\d)$/)
+  if (!match) throw new HttpInputError(400, 'INVALID_PROFILE_IMAGE_FOCAL_POINT', 'El encuadre debe usar coordenadas enteras entre 0 y 100.')
+  return { x: Number(match[1]), y: Number(match[2]) }
 }
 
 const safeOwner = (ownerId: string) => ownerId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
@@ -38,7 +43,7 @@ async function runFfmpeg(args: string[], timeoutMs: number): Promise<void> {
 }
 
 export async function persistProfileImage(ownerId: string, kind: ProfileImageKind, bytes: Buffer, mimeType: string | undefined): Promise<ProfileImageRecord> {
-  const dimensions = validateProfileImageUpload(bytes, mimeType, kind)
+  const dimensions = validateProfileImageUpload(bytes, mimeType)
   const format = dimensions.extension
   const storageKey = `${safeOwner(ownerId)}/profile-${kind}-${randomUUID()}.${format}`
   const thumbnailStorageKey = storageKey.replace(/\.(?:jpg|png)$/i, '.thumb.webp')

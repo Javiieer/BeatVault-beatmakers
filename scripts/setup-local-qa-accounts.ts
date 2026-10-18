@@ -15,8 +15,10 @@ if (!['127.0.0.1', 'localhost', '::1'].includes(config.host)) {
 const apiBase = `http://127.0.0.1:${config.port}`
 const suffix = randomBytes(4).toString('hex')
 const creatorEmail = `qa-creator-${suffix}@beatvault.local`
+const managerEmail = `qa-manager-${suffix}@beatvault.local`
 const adminEmail = `qa-admin-${suffix}@beatvault.local`
 const creatorPassword = randomBytes(24).toString('base64url')
+const managerPassword = randomBytes(24).toString('base64url')
 const adminPassword = randomBytes(24).toString('base64url')
 
 type ApiInit = { method?: string; headers?: Record<string, string>; body?: string }
@@ -78,13 +80,38 @@ async function main() {
   })
   if (bootstrap.status !== 0) fail(`No se pudo crear la cuenta admin: ${(bootstrap.stderr || bootstrap.stdout).trim()}`)
 
-  await api('/api/auth/register', {
+  const managerRegistration = await api('/api/auth/register', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: managerEmail, password: managerPassword }),
+  }, 201)
+  const managerData = managerRegistration.payload && typeof managerRegistration.payload === 'object' && 'data' in managerRegistration.payload
+    ? managerRegistration.payload.data
+    : undefined
+  const managerId = managerData && typeof managerData === 'object' && 'id' in managerData && typeof managerData.id === 'string'
+    ? managerData.id
+    : undefined
+  if (typeof managerId !== 'string') throw new Error('El API no devolvió el ID de la cuenta QA Community Manager.')
+
+  const creatorRegistration = await api('/api/auth/register', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: creatorEmail, password: creatorPassword }),
-  })
+  }, 201)
+  const creatorData = creatorRegistration.payload && typeof creatorRegistration.payload === 'object' && 'data' in creatorRegistration.payload
+    ? creatorRegistration.payload.data
+    : undefined
+  const creatorId = creatorData && typeof creatorData === 'object' && 'id' in creatorData && typeof creatorData.id === 'string'
+    ? creatorData.id
+    : undefined
+  if (typeof creatorId !== 'string') throw new Error('El API no devolvió el ID de la cuenta QA creadora.')
 
   const admin = await saveProfile(adminEmail, adminPassword, 'BeatVault QA Admin', false)
+  await api(`/api/admin/accounts/${encodeURIComponent(managerId)}/role`, {
+    method: 'PATCH',
+    headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrf, 'content-type': 'application/json' },
+    body: JSON.stringify({ role: 'community_manager' }),
+  }, 200)
   const creator = await saveProfile(creatorEmail, creatorPassword, 'BeatVault QA Creator', true)
+  const manager = await saveProfile(managerEmail, managerPassword, 'BeatVault QA Community Manager', false)
   const marker = `QA - solicitud de prueba ${suffix}`
   await api('/api/catalog', {
     method: 'POST',
@@ -92,24 +119,33 @@ async function main() {
     body: JSON.stringify({ type: 'beat', title: marker, tagIds: ['qa'], publicationStatus: 'pending-review' }),
   })
 
-  const [, adminOverview, queue] = await Promise.all([
+  const [creatorAdmin, creatorStaff, managerAdmin, managerAdminQueue, managerQueue, adminOverview, adminQueue] = await Promise.all([
     api('/api/admin/overview', { headers: { cookie: creator.cookie } }, 403),
+    api('/api/staff/catalog-review', { headers: { cookie: creator.cookie } }, 403),
+    api('/api/admin/overview', { headers: { cookie: manager.cookie } }, 403),
+    api('/api/admin/catalog-review', { headers: { cookie: manager.cookie } }, 403),
+    api('/api/staff/catalog-review', { headers: { cookie: manager.cookie } }),
     api('/api/admin/overview', { headers: { cookie: admin.cookie } }),
     api('/api/admin/catalog-review', { headers: { cookie: admin.cookie } }),
   ])
-  if (!adminOverview.response.ok || !queue.response.ok || !JSON.stringify(queue.payload).includes(marker)) {
-    fail('La cuenta administradora no pudo leer la cola QA. Revisa la consola local del API.')
+  if (!adminOverview.response.ok || !adminQueue.response.ok || !JSON.stringify(adminQueue.payload).includes(marker) || !managerQueue.response.ok || !JSON.stringify(managerQueue.payload).includes(marker)) {
+    fail('El admin o Community Manager no pudo leer la cola QA. Revisa la consola local del API.')
+  }
+  if (creatorAdmin.response.status !== 403 || creatorStaff.response.status !== 403 || managerAdmin.response.status !== 403 || managerAdminQueue.response.status !== 403) {
+    fail('Una cuenta QA recibió permisos fuera de su rol esperado.')
   }
 
   console.log('\nCuentas QA creadas y verificadas en el API local. No se guardaron contraseñas en archivos.')
   console.log(`Web local: http://127.0.0.1:5188/#/home`)
   console.log(`Usuario:   ${creatorEmail}`)
   console.log(`Clave:     ${creatorPassword}`)
+  console.log(`CM:        ${managerEmail}`)
+  console.log(`Clave:     ${managerPassword}`)
   console.log(`Admin:     ${adminEmail}`)
   console.log(`Clave:     ${adminPassword}`)
   console.log(`Elemento pendiente para revisar: ${marker}`)
-  console.log('Verificación: usuario recibe 403 en Admin; admin accede al resumen y ve la cola.')
-  console.log('Abre cada cuenta en perfiles de navegador distintos para mantener ambas sesiones activas.')
+  console.log('Verificación: creador y CM reciben 403 en Admin; solo el CM accede a la cola de revisión y el admin conserva el panel.')
+  console.log('Abre cada cuenta en un perfil de navegador distinto para mantener las tres sesiones activas.')
 }
 
 main().catch(error => {

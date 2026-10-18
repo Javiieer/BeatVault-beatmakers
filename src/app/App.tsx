@@ -1,13 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ChartNoAxesColumn, Disc3, Grid2X2, Home as HomeIcon, Library as LibraryIcon, Menu, MessageCircle, Music2, Search, Settings, Sparkles, Store, Upload as UploadIcon, Users, Video, CreditCard, ShieldCheck } from "lucide-react";
 import { assets } from "../data/mock";
 import {
   AudioPlayer,
   Icon,
 } from "../components/ui";
-import { Home } from "../components/Home";
-import { ShortsFeed } from "../components/ShortsFeed";
-import { Upload } from "../components/Upload";
 import {
   readCatalog,
   type CatalogAsset,
@@ -19,12 +16,8 @@ import type { AudioAsset, Project } from "../types";
 import { Placeholder } from "../components/Placeholder";
 import { nav, secondary } from "./navigation";
 import { modules } from "./modules";
-import { Studio } from "../components/Studio";
 import { ownedUploads } from "../data/creatorUploads";
 import "../styles/creator-uploads.css";
-import { Beats, BeatDetail } from "../components/Beats";
-import { Marketplace } from "../components/Marketplace";
-import { Library } from "../components/Library";
 import "../styles/app.css";
 import "../styles/marketplace.css";
 import "../styles/themes.css";
@@ -37,19 +30,28 @@ import { ProjectRepository } from "../data/projectRepository";
 import { authClient, isAuthUser, isNull, uploadAsset, uploadArtwork, type AuthUser } from "../api/client";
 import { Login } from "../components/Login";
 import { CatalogRepository, mergeCatalogAssets, type CatalogSource, type MarketplaceFilters } from "../data/catalogRepository";
-import { Plans } from "../components/Plans";
-import { Admin } from "../components/Admin";
 import { ProfileMenu } from "../components/ProfileMenu";
-import { CreatorProfilePage } from '../components/CreatorProfile';
-import { PasswordRecovery } from '../components/PasswordRecovery';
-import { Friends } from '../components/Friends';
 import { createLocalArtworkUrl, readLocalArtwork, releaseLocalArtworkUrls, saveLocalArtwork } from '../data/localArtwork';
 import { NotificationCenter } from '../components/NotificationCenter';
-import { Chat } from '../components/Chat';
 import { navigationLabel, tx } from '../i18n';
 import { SellerListingRepository } from '../data/sellerListingRepository';
 import type { BeatListingInput } from '../domains/marketplace/sellerListings';
-import { MarketplaceReview } from '../components/MarketplaceReview';
+
+const HomePage = lazy(() => import("../components/Home").then(({ Home }) => ({ default: Home })));
+const ShortsPage = lazy(() => import("../components/ShortsFeed").then(({ ShortsFeed }) => ({ default: ShortsFeed })));
+const UploadPage = lazy(() => import("../components/Upload").then(({ Upload }) => ({ default: Upload })));
+const StudioPage = lazy(() => import("../components/Studio").then(({ Studio }) => ({ default: Studio })));
+const BeatsPage = lazy(() => import("../components/Beats").then(({ Beats }) => ({ default: Beats })));
+const BeatDetailPage = lazy(() => import("../components/Beats").then(({ BeatDetail }) => ({ default: BeatDetail })));
+const MarketplacePage = lazy(() => import("../components/Marketplace").then(({ Marketplace }) => ({ default: Marketplace })));
+const LibraryPage = lazy(() => import("../components/Library").then(({ Library }) => ({ default: Library })));
+const PlansPage = lazy(() => import("../components/Plans").then(({ Plans }) => ({ default: Plans })));
+const AdminPage = lazy(() => import("../components/Admin").then(({ Admin }) => ({ default: Admin })));
+const CreatorProfilePage = lazy(() => import("../components/CreatorProfile").then(({ CreatorProfilePage }) => ({ default: CreatorProfilePage })));
+const PasswordRecoveryPage = lazy(() => import("../components/PasswordRecovery").then(({ PasswordRecovery }) => ({ default: PasswordRecovery })));
+const FriendsPage = lazy(() => import("../components/Friends").then(({ Friends }) => ({ default: Friends })));
+const ChatPage = lazy(() => import("../components/Chat").then(({ Chat }) => ({ default: Chat })));
+const MarketplaceReviewPage = lazy(() => import("../components/MarketplaceReview").then(({ MarketplaceReview }) => ({ default: MarketplaceReview })));
 
 const publicStoreCatalog = new CatalogRepository();
 const searchPublicStore = (filters: MarketplaceFilters) => publicStoreCatalog.marketplacePage(filters);
@@ -372,8 +374,10 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
           </div>
         </header>
         <div className="content">
-          {renderPage(path, setActiveAsset, allProjects, catalogAssets, catalogSource, catalogError,
-            publishAsset, sessionPreviews, updateCatalogAsset, deleteCatalogAsset, user, refreshCatalog, retryCatalogPreview, searchMarketplace, loadBeatListings, saveBeatListing, catalogLoading)}
+          <Suspense fallback={<p className="muted" role="status">Loading BeatVault...</p>}>
+            {renderPage(path, setActiveAsset, allProjects, catalogAssets, catalogSource, catalogError,
+              publishAsset, sessionPreviews, updateCatalogAsset, deleteCatalogAsset, user, refreshCatalog, retryCatalogPreview, searchMarketplace, loadBeatListings, saveBeatListing, catalogLoading)}
+          </Suspense>
 
         </div>
       </main>
@@ -407,29 +411,29 @@ function renderPage(
   }));
   const feedAssets = catalogAssets.map(asset => ({ ...asset, previewUrl: sessionPreviews.get(asset.id) || asset.previewUrl }));
   if (path === '/profile' || path === '/settings') return <CreatorProfilePage key={window.location.hash} user={user} uploads={catalogAssets.map(asset => ({ ...asset, previewUrl: sessionPreviews.get(asset.id) || asset.previewUrl }))} uploadsLoading={catalogLoading} onPlay={setActiveAsset} editing={path === '/settings'} targetId={path === '/profile' ? getQuery(window.location.hash).get('id') || undefined : undefined} />;
-  if (path === '/friends') return <Friends key={user?.id || 'demo'} userId={user?.id} />;
-  if (path === '/chat') return <Chat key={user?.id || 'demo'} userId={user?.id} initialPeerId={getQuery(window.location.hash).get('peer') || undefined} />;
+  if (path === '/friends') return <FriendsPage key={user?.id || 'demo'} userId={user?.id} />;
+  if (path === '/chat') return <ChatPage key={user?.id || 'demo'} userId={user?.id} initialPeerId={getQuery(window.location.hash).get('peer') || undefined} />;
   if (path === "/home" || path === "/dashboard" || path === "/")
-    return <Home key={user?.id || "demo"} scope={user?.id || "demo"} uploads={feedAssets} onPlay={setActiveAsset} />;
-  if (path === "/beats") return <Beats catalogAssets={catalogAssets} onPlay={setActiveAsset} />;
-  if (path === "/marketplace") return <Marketplace catalogAssets={feedAssets} onPlay={setActiveAsset} onSearch={onSearchMarketplace} />;
+    return <HomePage key={user?.id || "demo"} scope={user?.id || "demo"} uploads={feedAssets} onPlay={setActiveAsset} />;
+  if (path === "/beats") return <BeatsPage catalogAssets={catalogAssets} onPlay={setActiveAsset} />;
+  if (path === "/marketplace") return <MarketplacePage catalogAssets={feedAssets} onPlay={setActiveAsset} onSearch={onSearchMarketplace} />;
   if (path === "/store") {
     const creatorId = getQuery(window.location.hash).get('id');
-    return creatorId ? <Marketplace key={`store-${creatorId}`} catalogAssets={[]} onPlay={setActiveAsset} onSearch={onSearchMarketplace} creatorId={creatorId} /> : <Placeholder name="Creator store" />;
+    return creatorId ? <MarketplacePage key={`store-${creatorId}`} catalogAssets={[]} onPlay={setActiveAsset} onSearch={onSearchMarketplace} creatorId={creatorId} /> : <Placeholder name="Creator store" />;
   }
   if (path === "/library")
-    return <Library catalogAssets={catalogAssets} sessionPreviews={sessionPreviews} catalogSource={catalogSource} catalogError={catalogError} onUpdateCatalogAsset={onUpdateCatalogAsset} onDeleteCatalogAsset={onDeleteCatalogAsset} />;
+    return <LibraryPage catalogAssets={catalogAssets} sessionPreviews={sessionPreviews} catalogSource={catalogSource} catalogError={catalogError} onUpdateCatalogAsset={onUpdateCatalogAsset} onDeleteCatalogAsset={onDeleteCatalogAsset} />;
   if (path === "/studio" || path === "/my-uploads")
-    return <Studio scope={user?.id || 'demo'} loadError={user ? catalogError : undefined} uploads={uploads} onPlay={setActiveAsset} onUpdate={onUpdateCatalogAsset} onRetryPreview={user ? onRetryCatalogPreview : undefined} onLoadBeatListings={user ? onLoadBeatListings : undefined} onSaveBeatListing={user ? onSaveBeatListing : undefined} />;
-  if (path === "/upload") return <Upload scope={user?.id || 'demo'} onPublish={publishAsset} onRemoteUpload={user ? uploadAsset : undefined} onRemoteArtworkUpload={user ? uploadArtwork : undefined} />;
-  if (path === "/plans" || path === "/subscription") return <Plans />;
-  if (path === "/admin") return <Admin onReviewed={onReviewed} />;
-  if (path === '/community-review') return user?.role === 'community_manager' || user?.role === 'admin' ? <MarketplaceReview canApproveCatalogUploads={user.role === 'community_manager'} /> : <Placeholder name="Community review" />;
+    return <StudioPage scope={user?.id || 'demo'} loadError={user ? catalogError : undefined} uploads={uploads} onPlay={setActiveAsset} onUpdate={onUpdateCatalogAsset} onRetryPreview={user ? onRetryCatalogPreview : undefined} onLoadBeatListings={user ? onLoadBeatListings : undefined} onSaveBeatListing={user ? onSaveBeatListing : undefined} />;
+  if (path === "/upload") return <UploadPage scope={user?.id || 'demo'} onPublish={publishAsset} onRemoteUpload={user ? uploadAsset : undefined} onRemoteArtworkUpload={user ? uploadArtwork : undefined} />;
+  if (path === "/plans" || path === "/subscription") return <PlansPage />;
+  if (path === "/admin") return <AdminPage onReviewed={onReviewed} />;
+  if (path === '/community-review') return user?.role === 'community_manager' || user?.role === 'admin' ? <MarketplaceReviewPage canApproveCatalogUploads={user.role === 'community_manager'} /> : <Placeholder name="Community review" />;
   if (path === "/shorts" || path.startsWith("/shorts?")) {
      const query = getQuery(window.location.hash);
-    return <ShortsFeed sharedShortId={query.get("short")} />;
+    return <ShortsPage sharedShortId={query.get("short")} />;
   }
-   if (path.startsWith("/beat-detail")) return <BeatDetail projects={allProjects} onPlay={setActiveAsset} />;
+   if (path.startsWith("/beat-detail")) return <BeatDetailPage projects={allProjects} onPlay={setActiveAsset} />;
   const name =
     modules.find((item) => item.path === path)?.label || "Page not found";
   return <Placeholder name={name} />;
@@ -458,12 +462,12 @@ function App() {
     setUser(undefined); setAuthError(undefined); setAuthState("required");
   };
   const authPath = getPathname(hash);
-  if (authPath === '/forgot-password' || authPath === '/password-reset') return <PasswordRecovery mode={authPath === '/forgot-password' ? 'request' : 'reset'} token={getQuery(hash).get('token') || ''} />;
+  if (authPath === '/forgot-password' || authPath === '/password-reset') return <Suspense fallback={<Login loading onSubmit={login} onRegister={register} />}><PasswordRecoveryPage mode={authPath === '/forgot-password' ? 'request' : 'reset'} token={getQuery(hash).get('token') || ''} /></Suspense>;
   if (authState === "checking") return <Login loading onSubmit={login} onRegister={register} />;
   const publicStoreId = authPath === '/store' ? getQuery(hash).get('id') : null;
-  if ((authState === 'required' || authState === 'offline') && publicStoreId) return <div className="app-shell"><main className="public-store-view"><div className="public-store-nav"><a href="#/marketplace">BeatVault Marketplace</a><a href="#/dashboard">Sign in</a></div><Marketplace key={`public-store-${publicStoreId}`} creatorId={publicStoreId} catalogAssets={[]} onPlay={() => undefined} onSearch={searchPublicStore} /></main></div>;
+  if ((authState === 'required' || authState === 'offline') && publicStoreId) return <div className="app-shell"><main className="public-store-view"><div className="public-store-nav"><a href="#/marketplace">BeatVault Marketplace</a><a href="#/dashboard">Sign in</a></div><Suspense fallback={<p className="muted" role="status">Loading store...</p>}><MarketplacePage key={`public-store-${publicStoreId}`} creatorId={publicStoreId} catalogAssets={[]} onPlay={() => undefined} onSearch={searchPublicStore} /></Suspense></main></div>;
   const publicProfileId = getPathname(hash) === '/profile' ? getQuery(hash).get('id') : null;
-  if ((authState === 'required' || authState === 'offline') && publicProfileId) return <div className="app-shell"><main className="public-producer-view"><div className="public-producer-nav"><a href="#/dashboard">BeatVault</a><a href="#/dashboard">Iniciar sesion</a></div><CreatorProfilePage key={publicProfileId} targetId={publicProfileId} onPlay={() => undefined} /></main></div>;
+  if ((authState === 'required' || authState === 'offline') && publicProfileId) return <div className="app-shell"><main className="public-producer-view"><div className="public-producer-nav"><a href="#/dashboard">BeatVault</a><a href="#/dashboard">Iniciar sesion</a></div><Suspense fallback={<p className="muted" role="status">Loading profile...</p>}><CreatorProfilePage key={publicProfileId} targetId={publicProfileId} onPlay={() => undefined} /></Suspense></main></div>;
   if (authState === "required") return <Login loading={authLoading} error={authError} onSubmit={login} onRegister={register} />;
   return <AuthenticatedApp key={user?.id || 'demo'} user={user} logout={logout} />;
 }
