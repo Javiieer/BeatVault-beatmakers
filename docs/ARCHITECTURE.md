@@ -70,7 +70,7 @@ streams per account. Presence is visible only to accepted friends and remains on
 while at least one stream for the account is connected.
 Events are process-local, so a multi-instance deployment needs a shared pub/sub
 adapter. No attachments, group chats, blocking, reporting, or end-to-end encryption
-are implemented. Apply migrations 001-028 and validate an existing-volume upgrade and
+are implemented. Apply migrations 001-030 and validate an existing-volume upgrade and
 production deployment before hosting.
 
 ### Social activity and notifications (2026-10-15)
@@ -156,7 +156,8 @@ Catalog records persist assetId and a stable coverId. Owner responses derive fil
 metadata from asset records. Other viewers receive neither original asset references
 nor storage keys. Repeated owned uploads and catalog creates reuse the existing
 file/record. Edits cannot replace the original. Postgres requires migration 004
-after 001-003; real database integration remains unverified.
+after 001-003. Disposable PostgreSQL 16 integration and backup/restore QA passed on
+2026-10-23 through migration 030; existing-volume and hosted restore remain unverified.
 
 Catalog/project caches and drafts use account/demo namespaces. Authenticated errors
 never fall back to cached lists or pretend writes succeeded. Legacy unscoped browser

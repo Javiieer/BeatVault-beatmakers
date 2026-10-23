@@ -1,11 +1,29 @@
 # Security audit and remediation
 
-Date: 2026-10-14
+Original review: 2026-10-14; source status checked: 2026-10-23
 
 This is a defensive code/configuration review of the local BeatVault repository. It
 was not an external penetration test, a live Stripe test, or a production
 PostgreSQL deployment. Findings distinguish verified code defects from launch
 readiness gaps; a green test suite is not a security certification.
+
+## Current status checked - 2026-10-23
+
+The supplied audit summary said it had not run tests or dynamic probes. This follow-up
+checked current source and ran PostgreSQL 16 QA, targeted tests and typecheck. Results
+are limited to a disposable local environment; they are not a hosted migration rehearsal,
+penetration test or security certification.
+
+| Finding | Verified status | Evidence | Next action |
+|---|---|---|---|
+| P0 - PostgreSQL and recovery | Confirmed and partly verified. Production config requires PostgreSQL; local mode defaults to JSON, whose file writes are not transactional across processes. QA waits for and asserts migration 030. | server/config.ts, server/repository.ts, scripts/postgres-qa.ts, migrations 001-030. Clean PostgreSQL 16 migration and database/upload backup-restore passed on 2026-10-23. | Rehearse an existing-volume upgrade and an off-host restore. Verify the hosted pilot runs production mode and PostgreSQL. |
+| P0 - Transactional email | Pending and deferred. Tokens are hashed, random, one-time and expire after 30 minutes; request responses are generic. There is no delivery provider. Development tokens are gated to non-production. | server/auth.ts, server/config.ts, server/index.ts, docs/ADMIN_PROVISIONING.md. | Revisit provider, privacy, retention and cost before implementing delivery. Never expose development tokens publicly. |
+| P0 - First administrator | Partially implemented. A production-only PostgreSQL maintenance command and procedure create/recover an admin transactionally; current tests use a mocked Pool. | server/production-admin.ts, server/admin-bootstrap.ts, server/production-admin.test.ts, docs/ADMIN_PROVISIONING.md. Targeted tests passed; no real database or hosted rehearsal was done. | Exercise provisioning and recovery against disposable PostgreSQL with secrets injected through a controlled secret store. |
+| P0 - Media processing | Partially mitigated. MIME/signature checks precede upload; FFmpeg preview processing has a 60-second timeout and 4 MiB output cap. There is no OS CPU/memory isolation, and signatures do not validate the whole source. | server/uploads.ts, server/media-preview.ts, docs/POSTGRES_QA.md. PostgreSQL QA covers preview-gated review and backup/restore. | Add isolated decoding with resource limits and robust parsing or malware scanning for seller evidence. |
+| P0 - Payments | Safeguards confirmed. Only Stripe test keys are accepted; production rejects Stripe configuration, and the account-plan API reports billing disabled. Full test-mode purchase/refund/dispute reconciliation is not proven. | server/config.ts, server/config.test.ts, server/index.ts. | Keep real-money operations disabled; complete test-mode scenarios and commercial/legal decisions before commerce. |
+| P1 - Evidence, headers and monitoring | Partially mitigated. Seller evidence is private, sent as an attachment with nosniff; no document scanner/parser was found. Caddy sets nosniff, Referrer-Policy and Permissions-Policy. API defaults set nosniff, X-Frame-Options and Referrer-Policy; global CSP and operational error/disk monitoring need review. | server/index.ts, server/seller-evidence-upload.ts, Caddyfile. | Scan evidence before staff use and verify browser CSP plus error, abuse and disk alerts. |
+| P1 - Multiple API instances | Confirmed limitation. Rate limits and realtime events are process-local; this is acceptable only for a single API instance. | server/security.ts, docs/ARCHITECTURE.md. | Keep a pilot on one API instance; add shared storage/pub-sub only if deployment grows beyond one. |
+| P2 - Commerce, plans and copyright matching | Deferred / incomplete. Policies remain drafts, recurring billing is disabled, and no audio-matching provider is integrated or selected. | server/index.ts, docs/MARKETPLACE_POLICY_DRAFT.md, docs/COPYRIGHT_MATCHING_PROPOSAL.md. | Revisit after the core pilot. Review terms, licenses, taxes, refunds, disputes, quotas and provider privacy/cost before enabling sales or submitting audio. |
 
 ## Findings
 
@@ -119,7 +137,7 @@ migration procedure.
 - SQL values use parameters. No unsafe HTML injection sink was found in the
   frontend scan performed for this review.
 
-## Verification
+## Verification - original review, 2026-10-14
 
 - `npm test -- --pool forks --maxWorkers=2`: 51 files and 250 tests passed. The
   default high-parallel Windows run had hit one test timeout and two transient JSON

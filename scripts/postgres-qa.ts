@@ -306,7 +306,22 @@ async function waitForEvent(reader: ReadableStreamDefaultReader<Uint8Array>, tim
   throw new Error('No llegó el evento SSE esperado.')
 }
 
-const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'auth_sessions', 'beat_orders', 'catalog_artwork', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_beat_listing_drafts', 'marketplace_beat_listing_evidence', 'marketplace_promotions', 'notifications', 'projects', 'social_account_follows', 'social_post_bookmarks', 'social_posts', 'social_post_comments', 'social_post_reactions', 'social_post_reports', 'social_stories', 'stripe_connected_accounts', 'stripe_webhook_events']
+async function waitForPostgresSchema(): Promise<void> {
+  const deadline = Date.now() + 30000
+  while (Date.now() < deadline) {
+    try {
+      const result = await pool.query<{ table_name: string | null }>("SELECT to_regclass('public.admin_bootstrap_claims')::text AS table_name")
+      if (result.rows[0]?.table_name === 'admin_bootstrap_claims') return
+    } catch {
+      // PostgreSQL may restart its temporary initialization server before the final instance is ready.
+    }
+    await delay(250)
+  }
+  throw new Error('PostgreSQL QA requiere migraciones aplicadas hasta 030_admin_bootstrap_claims.sql.')
+}
+
+await waitForPostgresSchema()
+const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'auth_sessions', 'admin_bootstrap_claims', 'beat_orders', 'catalog_artwork', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_beat_listing_drafts', 'marketplace_beat_listing_evidence', 'marketplace_promotions', 'notifications', 'projects', 'social_account_follows', 'social_post_bookmarks', 'social_posts', 'social_post_comments', 'social_post_reactions', 'social_post_reports', 'social_stories', 'stripe_connected_accounts', 'stripe_webhook_events']
 try {
   const schema = await pool.query<{ name: string; exists: boolean }>(
     'SELECT name, to_regclass($1 || \'.\' || name) IS NOT NULL AS exists FROM unnest($2::text[]) AS name',
@@ -323,6 +338,7 @@ try {
   assert(packageSchema.rows[0]?.exists, 'Falta el historial de paquetes verificados de la migracion 014_verified_package_history.sql.')
   assert(schema.rows.some(table => table.name === 'social_account_follows' && table.exists) && schema.rows.some(table => table.name === 'social_post_bookmarks' && table.exists), 'Faltan las tablas de relaciones sociales de la migracion 028_social_follows_bookmarks.sql.')
   assert(schema.rows.some(table => table.name === 'social_stories' && table.exists), 'Falta la tabla de historias independientes de la migracion 029_social_stories.sql.')
+  assert(schema.rows.some(table => table.name === 'admin_bootstrap_claims' && table.exists), 'Falta la tabla de reclamo del primer administrador de la migracion 030_admin_bootstrap_claims.sql.')
 
   const hash = await hashPassword(password)
   for (const [id, kind, role] of [[creatorId, 'creator', 'creator'], [adminId, 'admin', 'admin'], [outsiderId, 'outsider', 'creator'], [quotaId, 'quota', 'creator']]) {

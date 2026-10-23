@@ -1,16 +1,18 @@
 # Known issues
 
-Current record: 2026-10-18. Older claims that BeatVault has no backend,
+Current record: 2026-10-23. Older claims that BeatVault has no backend,
 authentication, ESLint or automated tests are obsolete.
 
 ## Confirmed release blockers
 
 - JSON storage has no transactional read/modify/write protection for concurrent
-  mutations. Multi-user production use is blocked until addressed.
+  mutations. Production configuration requires PostgreSQL, but a hosted pilot still
+  needs verification that it uses PostgreSQL.
 - There is no configured production email provider, so password recovery and
   verification messages cannot reach users.
-- Production admin provisioning and real Postgres migration/restore behavior are
-  not yet established. The Oracle Compose profile is a private-pilot scaffold only.
+- A PostgreSQL-only production admin maintenance command and procedure exist, but neither
+  it nor existing-volume migration/off-host restore has been rehearsed on a hosted instance.
+  The Oracle Compose profile remains a private-pilot scaffold.
 - Social video uploads are decode-validated but the original MP4 is stored with its
   metadata. Strip identifying container/stream metadata before enabling public video,
   or disable video posts for the initial hosted pilot.
@@ -83,13 +85,21 @@ delivery do not signal other sessions.
 - Profile JSON writes are serialized within one repository instance only; this does not resolve global or multi-process JSON concurrency.
 - Password recovery has no email delivery provider yet. Local development can expose the one-time link only when `BEATVAULT_DEV_AUTH_TOKENS=true`; never enable this on a public deployment.
 
-- Disposable PostgreSQL 16 QA has verified earlier core workflows, including social/chat authorization, moderation, quota concurrency, admin package overrides, audit persistence, restart recovery and FFmpeg previews. Migration 028 adds follows/bookmarks and migration 029 adds stories; run a clean-schema PostgreSQL QA including 029, an existing-volume upgrade and production VPS restore drill before hosting.
+- Disposable PostgreSQL 16 QA verifies core workflows including social/chat authorization,
+  moderation, quota concurrency, admin package overrides, audit persistence, restart recovery
+  and FFmpeg previews. Migrations 028 and 029 add follows/bookmarks and stories. Clean-schema
+  QA and disposable database/upload restore passed on 2026-10-23 through migration 030.
+  Existing-volume upgrade and production VPS restore remain pending.
 - Storage usage accounts for original audio and Beat artwork; processed previews remain separately reported and outside the upload quota. Video uploads and package downgrade behavior are intentionally unsupported/undecided.
 - Session records are durable, but rate-limit buckets are process-local and therefore not shared across API instances. Oracle Caddy proxy IP forwarding is configured for the single-VM profile; do not trust forwarded client-IP headers on a directly reachable API. Email verification/reset has no delivery provider.
 - Admin reads and publication review actions are protected by server-side role/CSRF checks and passed disposable-PostgreSQL integration; the running local app still uses JSON.
 - Audio header checks are not full media decoding; malformed files with valid headers
   still need isolated media validation before public delivery.
-- Labeled seed posts and radar content are limited to the local development guest preview; authenticated feeds and production bundles do not include them. Home is not a complete marketplace. Stories are separate and expire after 24 hours; report/moderation workflow and a live PostgreSQL 029 rehearsal remain required before public pilot.
+- Labeled seed posts and radar content are limited to the local development guest preview;
+  authenticated feeds and production bundles do not include them. Home is not a complete
+  marketplace. Stories are separate and expire after 24 hours; reports/moderation remain
+  unimplemented. PostgreSQL 001-030 clean-schema QA passed on 2026-10-23; existing-volume
+  upgrade and hosted restore remain required before public pilot.
 - Desktop/mobile browser tests cover two accounts and the authenticated JSON-backed upload/reload/retry/playback workflow; real media conversion has passed with an external FFmpeg executable.
 - Browser storage can be unavailable or cleared; draft metadata is not an audio backup.
 - Shorts remains a local prototype. Selected video files cannot be restored after reload.

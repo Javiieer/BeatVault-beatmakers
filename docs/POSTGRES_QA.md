@@ -3,11 +3,15 @@
 `npm run test:postgres` runs live integration checks against an isolated local
 PostgreSQL database. It refuses remote hosts and database names unless they match
 `beatvault_test_*` or `beatvault_audit_*`. The current schema includes migrations
-001-029; mounting `db/migrations` into a new Postgres container applies all of them
-in order. The QA harness checks that the notification table from migration 027, the
-follow/bookmark tables from migration 028, and independent story records from migration
-029 exist. It checks public story visibility, private-story isolation, exact 24-hour
-expiry, owner-only deletion and that stories do not appear in the feed,
+001-030; mounting `db/migrations` into a new Postgres container applies all of them
+in order to an empty data directory. PostgreSQL's image entrypoint runs init scripts
+only when the data directory is first created. This harness does not exercise an
+existing-volume migration; apply SQL changes through a deliberate procedure after a
+verified backup. The QA harness checks the notification table from migration 027,
+the follow/bookmark tables from migration 028, independent story records from migration
+029, and the initial-admin claim table from migration 030. It checks public story
+visibility, private-story isolation, exact 24-hour expiry, owner-only deletion and that
+stories do not appear in the feed,
 exercises seller intake through the HTTP API, uploads real PDF-signature rights
 evidence, verifies that another account cannot read it, persists Beat artwork before
 catalog creation, checks original/thumbnail quota accounting and creator/CM/staff

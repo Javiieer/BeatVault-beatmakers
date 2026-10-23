@@ -70,8 +70,9 @@ Product decisions to preserve:
 - Authenticated Home posts and media use the API and support public/friends/private
   audiences; profile posts read the same server records. Comments/reactions, follows
   and bookmarks persist by account/post IDs. Migration 028 adds PostgreSQL follow and
-  bookmark tables; clean-schema disposable PostgreSQL and backup/restore checks passed.
-  An existing-volume upgrade rehearsal remains before hosted use.
+  bookmark tables. Clean-schema disposable PostgreSQL 16 QA and database/upload
+  backup-restore passed on 2026-10-23 through migration 030. An existing-volume upgrade
+  rehearsal remains before hosted use.
 - Home Stories are separate JSON/PostgreSQL records (migration 029), not feed posts.
   Text/photo/video stories support public/friends/private audiences, owner deletion,
   a 24-hour server expiry, at most 20 active stories per account, and the shared 512 MiB
@@ -80,7 +81,7 @@ Product decisions to preserve:
   connected sessions to refresh, and maintenance removes expired records/files.
   Automated unit/API/component and two-account mobile browser coverage exists. Story
   reporting/staff moderation and multi-instance realtime delivery remain incomplete;
-  PostgreSQL migration 029 still needs a live disposable-database run. Labeled seed posts
+  migration 029 passed in the disposable PostgreSQL QA run on 2026-10-23. Labeled seed posts
   and the demo radar are limited to local development/guest preview; authenticated feeds
   contain account data only, and production bundles omit the demo radar.
 - Connected authenticated Home sessions receive a data-free SSE signal for new public
@@ -153,7 +154,7 @@ Product decisions to preserve:
 
 ### Persistence, security, and operations — Partial
 
-- JSON and PostgreSQL repository implementations exist. Database migrations 001-028 are
+- JSON and PostgreSQL repository implementations exist. Database migrations 001-030 are
   present, including marketplace records, orders/refunds, and durable authentication
   sessions. The normal local app currently uses JSON unless configured otherwise.
 - Beat uploads keep the square JPG/PNG master and generate a 640 px WebP derivative
@@ -189,16 +190,16 @@ Product decisions to preserve:
 
 ## Known Gaps and Launch Blockers
 
-1. **Local storage concurrency:** JSON read/modify/write is not safe for concurrent
-   multi-user production writes. Use PostgreSQL for any hosted pilot and validate the
-  complete migration/integration path through migration 028.
+1. **Local storage concurrency:** JSON read/modify/write is unsafe for concurrent
+   multi-user writes. Production mode requires PostgreSQL. Verify the hosted pilot uses
+   production mode and exercises the PostgreSQL path through migration 030.
 2. **Email:** no production email provider is configured for verification or account
    recovery. Development recovery tokens must never be exposed in a public deployment.
-3. **Production admin provisioning:** establish a secure, documented first-admin
-   provisioning and recovery procedure before hosting user accounts.
-4. **PostgreSQL migration and restore:** run the current disposable QA against a clean
-  database with migrations 001-028, test upgrade procedures for an existing volume,
-   and rehearse restoring database plus uploaded media from an off-host backup.
+3. **Production admin provisioning:** a restricted PostgreSQL maintenance command and
+   procedure exist; rehearse them against a disposable database before hosting.
+4. **PostgreSQL migration and restore:** clean-schema disposable QA and database/upload
+   restore passed on 2026-10-23 through migration 030. Rehearse upgrades of existing
+   volumes and restore database plus uploaded media from an off-host backup.
 5. **Media validation:** header/MIME/signature checks do not prove full media validity.
    Run isolated decoding/transcoding and fail closed before public delivery; add malware
    scanning and robust parsing for seller evidence before operational use.
@@ -232,11 +233,11 @@ Product decisions to preserve:
 
 ### P1 — Make the private pilot operable
 
-- Validate the full PostgreSQL 001-028 schema, data isolation, concurrent writes,
-  account/session behavior, upload lifecycle, moderation, seller review, and order
-  records against a disposable database.
-- Add transactional email, secure production admin provisioning, safe migration/update
-  procedures, and an off-host backup/restore drill for the Oracle pilot.
+- Clean-schema PostgreSQL 16 QA passed through migration 030, covering data isolation,
+  concurrent writes, accounts/sessions, uploads, moderation, seller review and order
+  persistence. Rehearse existing-volume upgrades and off-host restore for the pilot.
+- Add transactional email, rehearse production admin provisioning, and validate safe
+  migration/update procedures plus off-host backup/restore for the Oracle pilot.
 - Validate upload decoding, preview processing, and seller-document handling with
   fail-closed behavior and appropriate isolation.
 - Keep pilot access private. Do not migrate local JSON data or real user media to the
