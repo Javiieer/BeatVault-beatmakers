@@ -214,6 +214,47 @@ describe('local API routes', () => {
     expect((await fetch(`${origin}/api/posts/${privatePost.id}`, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
     await runtime.close()
   }, 20000)
+  it('publishes standalone stories with server expiry, audience checks, and owner-only deletion', async () => {
+    const password = 'Social-story-test-password'
+    const makeUser = async (prefix: string) => {
+      const email = `${prefix}-${randomUUID()}@test.local`
+      await auth.register(email, password)
+      const session = await auth.login(email, password)
+      expect(session).toBeTruthy()
+      return { session: session!, headers: { cookie: `beatvault_session=${session!.token}`, 'x-csrf-token': session!.csrfToken, 'content-type': 'application/json' } }
+    }
+    const owner = await makeUser('story-owner')
+    const stranger = await makeUser('story-stranger')
+    const runtime = createRepository()
+    await runtime.repository.saveProfile({ ...emptyProfile(owner.session.id), displayName: 'Story Owner', publicProfile: true })
+
+    expect((await fetch(`${origin}/api/stories`)).status).toBe(401)
+    expect((await fetch(`${origin}/api/stories`, { method: 'POST', headers: { cookie: owner.headers.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ body: 'No CSRF', audience: 'private' }) })).status).toBe(403)
+    const privateResponse = await fetch(`${origin}/api/stories`, { method: 'POST', headers: owner.headers, body: JSON.stringify({ body: 'A private moment', audience: 'private' }) })
+    expect(privateResponse.status).toBe(201)
+    const privateStory = (await privateResponse.json() as { data: { id: string; createdAt: string; expiresAt: string } }).data
+    expect(Date.parse(privateStory.expiresAt) - Date.parse(privateStory.createdAt)).toBe(24 * 60 * 60 * 1000)
+    const outsiderStories = await fetch(`${origin}/api/stories`, { headers: { cookie: stranger.headers.cookie } }).then(response => response.json()) as { data: { stories: Array<{ id: string }> } }
+    expect(outsiderStories.data.stories.some(story => story.id === privateStory.id)).toBe(false)
+
+    const coverBytes = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover.jpg'))
+    const boundary = `story-${randomUUID()}`
+    const multipart = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="body"\r\n\r\nA standalone artwork story\r\n--${boundary}\r\nContent-Disposition: form-data; name="audience"\r\n\r\npublic\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="story.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`),
+      coverBytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ])
+    const photoResponse = await fetch(`${origin}/api/stories`, { method: 'POST', headers: { cookie: owner.headers.cookie, 'x-csrf-token': owner.session.csrfToken, 'x-social-post-kind': 'photo', 'content-type': `multipart/form-data; boundary=${boundary}` }, body: multipart })
+    expect(photoResponse.status, await photoResponse.clone().text()).toBe(201)
+    const photoStory = (await photoResponse.json() as { data: { id: string; media: { url: string } } }).data
+    expect((await fetch(`${origin}${photoStory.media.url}`, { headers: { cookie: stranger.headers.cookie } })).status).toBe(200)
+    const feed = await fetch(`${origin}/api/feed`).then(response => response.json()) as { data: { posts: Array<{ body: string }> } }
+    expect(feed.data.posts.some(post => post.body === 'A standalone artwork story')).toBe(false)
+    expect((await fetch(`${origin}/api/stories/${photoStory.id}`, { method: 'DELETE', headers: stranger.headers })).status).toBe(404)
+    expect((await fetch(`${origin}/api/stories/${photoStory.id}`, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
+    expect((await fetch(`${origin}${photoStory.media.url}`, { headers: { cookie: owner.headers.cookie } })).status).toBe(404)
+    await runtime.close()
+  })
   it('stores Beat artwork privately, accounts for its quota, and hides pending artwork from outsiders', async () => {
     const email = `artwork-${randomUUID()}@test.local`
     const password = 'Artwork-upload-password'
@@ -711,67 +752,94 @@ describe('local API routes', () => {
     expect(audit.data.filter(event => event.targetId === item.contentId).map(event => event.action)).toContain('catalog_community_decision')
     expect(audit.data.filter(event => event.targetId === adminContentId).map(event => event.action)).toContain('catalog_admin_decision')
   })
-  it('requires a fresh community-manager recommendation for admin approval and keeps the offer non-active', async () => {
-    const creatorEmail = `marketplace-seller-${randomUUID()}@test.local`
-    const password = 'Marketplace-seller-password'
-    await auth.register(creatorEmail, password)
-    const creatorSession = await auth.login(creatorEmail, password)
-    expect(creatorSession).toBeTruthy()
-    const creator = { cookie: `beatvault_session=${creatorSession!.token}`, csrf: creatorSession!.csrfToken }
-    const created = await fetch(`${origin}/api/catalog`, { method: 'POST', headers: { cookie: creator.cookie, 'x-csrf-token': creator.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ title: `Seller review ${randomUUID()}`, type: 'Beat', tagIds: ['trap'] }) })
-    expect(created.status).toBe(201)
-    const contentId = (await created.json() as { data: { contentId: string } }).data.contentId
-    const listing = {
-      description: 'A fully described beat prepared for artist licensing review.', genre: 'Hip-hop', explicitContent: false,
-      rights: { sellerCompositionShareBps: 10000, sellerMasterShareBps: 10000, sampleDisclosure: 'none', sampleProofAvailable: false, collaborators: [], declarationAccepted: true },
-      offers: [{ id: 'basic-license', label: 'Basic', amountMinor: 3000, currency: 'USD', deliverables: ['wav'], usageSummary: 'Preliminary terms; final agreement is not enabled.', termsVersion: 'non-exclusive-offer-draft-v1', status: 'draft-only' }],
+  it('allows Admin or Community Manager to independently approve commercial listings and stales review after edits', async () => {
+    const loginAs = async (email: string, password: string) => {
+      const session = await auth.login(email, password)
+      expect(session).toBeTruthy()
+      return { id: session!.id, cookie: `beatvault_session=${session!.token}`, csrf: session!.csrfToken }
     }
-    const saved = await fetch(`${origin}/api/seller/beat-listings/${contentId}`, { method: 'PUT', headers: { cookie: creator.cookie, 'x-csrf-token': creator.csrf, 'content-type': 'application/json' }, body: JSON.stringify(listing) })
-    expect(saved.status).toBe(201)
-    const runtime = createRepository()
+    const createSellerListing = async (name: string) => {
+      const email = `marketplace-${name}-${randomUUID()}@test.local`
+      const password = 'Marketplace-seller-password'
+      await auth.register(email, password)
+      const seller = await loginAs(email, password)
+      const created = await fetch(`${origin}/api/catalog`, { method: 'POST', headers: { cookie: seller.cookie, 'x-csrf-token': seller.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ title: `${name} ${randomUUID()}`, type: 'Beat', tagIds: ['trap'] }) })
+      expect(created.status).toBe(201)
+      const contentId = (await created.json() as { data: { contentId: string } }).data.contentId
+      const listing = {
+        description: `${name} fully described beat prepared for commercial review.`, genre: 'Hip-hop', explicitContent: false,
+        rights: { sellerCompositionShareBps: 10000, sellerMasterShareBps: 10000, sampleDisclosure: 'none', sampleProofAvailable: false, collaborators: [], declarationAccepted: true },
+        offers: [{ id: 'basic-license', label: 'Basic', amountMinor: 3000, currency: 'USD', deliverables: ['wav'], usageSummary: 'Preliminary terms; final agreement is not enabled.', termsVersion: 'non-exclusive-offer-draft-v1', status: 'draft-only' }],
+      }
+      const saved = await fetch(`${origin}/api/seller/beat-listings/${contentId}`, { method: 'PUT', headers: { cookie: seller.cookie, 'x-csrf-token': seller.csrf, 'content-type': 'application/json' }, body: JSON.stringify(listing) })
+      expect(saved.status).toBe(201)
+      return { ...seller, contentId, listing }
+    }
+
+    const adminRuntime = createRepository()
     const env = { ...process.env, BEATVAULT_ADMIN_EMAIL: `marketplace-admin-${randomUUID()}@test.local`, BEATVAULT_ADMIN_PASSWORD: 'A-strong-admin-password', BEATVAULT_ADMIN_BOOTSTRAP_TOKEN: randomUUID() + randomUUID() }
-    const adminInfo = await bootstrapAdmin(env, runtime.repository)
-    await runtime.close()
-    const adminSession = await auth.login(adminInfo.email, 'A-strong-admin-password')
-    expect(adminSession).toBeTruthy()
-    const admin = { cookie: `beatvault_session=${adminSession!.token}`, csrf: adminSession!.csrfToken }
-    expect((await fetch(`${origin}/api/admin/marketplace-listings`, { headers: { cookie: creator.cookie } })).status).toBe(403)
-    const endpoint = `${origin}/api/admin/marketplace-listings/${contentId}`
-    const post = (decision: string, headers: Record<string, string> = { cookie: admin.cookie, 'x-csrf-token': admin.csrf, 'content-type': 'application/json' }) => fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ decision, note: 'Reviewed for the next marketplace stage.' }) })
-    expect((await post('approve', { cookie: admin.cookie, 'content-type': 'application/json' })).status).toBe(403)
-    expect((await post('approve')).status).toBe(409)
+    const adminInfo = await bootstrapAdmin(env, adminRuntime.repository)
+    await adminRuntime.close()
+    const admin = await loginAs(adminInfo.email, 'A-strong-admin-password')
+    const sellerForAdmin = await createSellerListing('Admin-only-review')
+    const adminDecision = await fetch(`${origin}/api/admin/marketplace-listings/${sellerForAdmin.contentId}`, { method: 'POST', headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'approve', note: 'Reviewed independently by Admin.' }) })
+    expect(adminDecision.status).toBe(200)
+    const adminSellerSnapshot = await fetch(`${origin}/api/seller/beat-listings/${sellerForAdmin.contentId}`, { headers: { cookie: sellerForAdmin.cookie } }).then(response => response.json()) as { data: { communityReview?: unknown; adminReview?: { decision: string; current: boolean }; offers: Array<{ status: string }> } }
+    expect(adminSellerSnapshot.data).toMatchObject({ adminReview: { decision: 'approve', current: true }, offers: [{ status: 'draft-only' }] })
+    expect(adminSellerSnapshot.data.communityReview).toBeUndefined()
+    const sellerCatalog = await fetch(`${origin}/api/catalog`, { headers: { cookie: sellerForAdmin.cookie } }).then(response => response.json()) as { data: { entries: Array<{ contentId: string; publicationStatus: string }> } }
+    expect(sellerCatalog.data.entries.find(entry => entry.contentId === sellerForAdmin.contentId)?.publicationStatus).not.toBe('published')
+    const publicMarketplace = await fetch(`${origin}/api/marketplace?type=beat`).then(response => response.json()) as { data: { entries: Array<{ contentId: string }> } }
+    expect(publicMarketplace.data.entries.some(entry => entry.contentId === sellerForAdmin.contentId)).toBe(false)
+
     const managerEmail = `marketplace-manager-${randomUUID()}@test.local`
     await auth.register(managerEmail, 'Marketplace-manager-password')
-    const managerAccount = await auth.login(managerEmail, 'Marketplace-manager-password')
-    expect(managerAccount).toBeTruthy()
-    const managerRole = await fetch(`${origin}/api/admin/accounts/${managerAccount!.id}/role`, { method: 'PATCH', headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ role: 'community_manager' }) })
-    expect(managerRole.status).toBe(200)
-    const managerSession = await auth.login(managerEmail, 'Marketplace-manager-password')
-    expect(managerSession).toBeTruthy()
-    const recommendation = await fetch(`${origin}/api/staff/marketplace-review/${contentId}`, { method: 'POST', headers: { cookie: `beatvault_session=${managerSession!.token}`, 'x-csrf-token': managerSession!.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'recommend', note: 'Rights and offer details are complete.' }) })
-    expect(recommendation.status).toBe(200)
-    await new Promise(resolve => setTimeout(resolve, 5))
-    const editedListing = await fetch(`${origin}/api/seller/beat-listings/${contentId}`, { method: 'PUT', headers: { cookie: creator.cookie, 'x-csrf-token': creator.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ ...listing, genre: 'Trap' }) })
-    expect(editedListing.status).toBe(200)
-    expect((await post('approve')).status).toBe(409)
-    const renewedRecommendation = await fetch(`${origin}/api/staff/marketplace-review/${contentId}`, { method: 'POST', headers: { cookie: `beatvault_session=${managerSession!.token}`, 'x-csrf-token': managerSession!.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'recommend', note: 'Updated listing checked and complete.' }) })
-    expect(renewedRecommendation.status).toBe(200)
-    const approved = await post('approve')
-    expect(approved.status).toBe(200)
-    const queue = await fetch(`${origin}/api/admin/marketplace-listings`, { headers: { cookie: admin.cookie } }).then(response => response.json()) as { data: Array<{ listing: { contentId: string; offers: Array<{ status: string }> }; latestAdminDecision?: { decision: string; current: boolean } }> }
-    const reviewed = queue.data.find(item => item.listing.contentId === contentId)
-    expect(reviewed?.latestAdminDecision).toMatchObject({ decision: 'approve', current: true })
-    expect(reviewed?.listing.offers[0].status).toBe('draft-only')
-    const sellerSnapshot = await fetch(`${origin}/api/seller/beat-listings/${contentId}`, { headers: { cookie: creator.cookie } }).then(response => response.json()) as { data: { communityReview?: { decision: string; current: boolean }; adminReview?: { decision: string; current: boolean }; offers: Array<{ status: string }> } }
-    expect(sellerSnapshot.data.communityReview).toMatchObject({ decision: 'recommend', current: true })
-    expect(sellerSnapshot.data.adminReview).toMatchObject({ decision: 'approve', current: true })
-    expect(sellerSnapshot.data.offers[0].status).toBe('draft-only')
-    await new Promise(resolve => setTimeout(resolve, 5))
-    const sellerEdit = await fetch(`${origin}/api/seller/beat-listings/${contentId}`, { method: 'PUT', headers: { cookie: creator.cookie, 'x-csrf-token': creator.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ ...listing, description: 'An updated fully described beat pending another review.' }) })
-    expect(sellerEdit.status).toBe(200)
-    const afterEdit = await fetch(`${origin}/api/seller/beat-listings/${contentId}`, { headers: { cookie: creator.cookie } }).then(response => response.json()) as { data: { communityReview?: { current: boolean }; adminReview?: { current: boolean } } }
-    expect(afterEdit.data.communityReview?.current).toBe(false)
-    expect(afterEdit.data.adminReview?.current).toBe(false)
+    const managerCreator = await loginAs(managerEmail, 'Marketplace-manager-password')
+    const roleChange = await fetch(`${origin}/api/admin/accounts/${managerCreator.id}/role`, { method: 'PATCH', headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ role: 'community_manager' }) })
+    expect(roleChange.status).toBe(200)
+    const manager = await loginAs(managerEmail, 'Marketplace-manager-password')
+    const sellerForCm = await createSellerListing('Community-only-review')
+    const cmDecision = await fetch(`${origin}/api/staff/marketplace-review/${sellerForCm.contentId}`, { method: 'POST', headers: { cookie: manager.cookie, 'x-csrf-token': manager.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'approve', note: 'Reviewed independently by Community.' }) })
+    expect(cmDecision.status).toBe(200)
+    const cmSellerSnapshot = await fetch(`${origin}/api/seller/beat-listings/${sellerForCm.contentId}`, { headers: { cookie: sellerForCm.cookie } }).then(response => response.json()) as { data: { communityReview?: { decision: string; current: boolean }; adminReview?: unknown; offers: Array<{ status: string }> } }
+    expect(cmSellerSnapshot.data).toMatchObject({ communityReview: { decision: 'approve', current: true }, offers: [{ status: 'draft-only' }] })
+    expect(cmSellerSnapshot.data.adminReview).toBeUndefined()
+    const cmQueue = await fetch(`${origin}/api/staff/marketplace-review`, { headers: { cookie: manager.cookie } }).then(response => response.json()) as { data: Array<{ listing: { contentId: string }; commercialReviewApproved: boolean }> }
+    expect(cmQueue.data.find(item => item.listing.contentId === sellerForCm.contentId)?.commercialReviewApproved).toBe(true)
+
+    const cover = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover.jpg'))
+    const boundary = `evidence-${randomUUID()}`
+    const evidenceBody = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="rights.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`),
+      cover,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ])
+    const evidenceResponse = await fetch(`${origin}/api/seller/beat-listings/${sellerForCm.contentId}/evidence`, { method: 'POST', headers: { cookie: sellerForCm.cookie, 'x-csrf-token': sellerForCm.csrf, 'content-type': `multipart/form-data; boundary=${boundary}` }, body: evidenceBody })
+    expect(evidenceResponse.status).toBe(201)
+    const evidenceId = (await evidenceResponse.json() as { data: { id: string } }).data.id
+    const afterEvidenceUpload = await fetch(`${origin}/api/seller/beat-listings/${sellerForCm.contentId}`, { headers: { cookie: sellerForCm.cookie } }).then(response => response.json()) as { data: { communityReview?: { current: boolean } } }
+    expect(afterEvidenceUpload.data.communityReview?.current).toBe(false)
+
+    const cmReapproval = await fetch(`${origin}/api/staff/marketplace-review/${sellerForCm.contentId}`, { method: 'POST', headers: { cookie: manager.cookie, 'x-csrf-token': manager.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'approve', note: 'Evidence revision independently approved.' }) })
+    expect(cmReapproval.status).toBe(200)
+    const evidenceDelete = await fetch(`${origin}/api/seller/beat-listings/${sellerForCm.contentId}/evidence/${evidenceId}`, { method: 'DELETE', headers: { cookie: sellerForCm.cookie, 'x-csrf-token': sellerForCm.csrf } })
+    expect(evidenceDelete.status).toBe(200)
+    const afterEvidenceDelete = await fetch(`${origin}/api/seller/beat-listings/${sellerForCm.contentId}`, { headers: { cookie: sellerForCm.cookie } }).then(response => response.json()) as { data: { communityReview?: { current: boolean } } }
+    expect(afterEvidenceDelete.data.communityReview?.current).toBe(false)
+
+    const edit = await fetch(`${origin}/api/seller/beat-listings/${sellerForAdmin.contentId}`, { method: 'PUT', headers: { cookie: sellerForAdmin.cookie, 'x-csrf-token': sellerForAdmin.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ ...sellerForAdmin.listing, genre: 'Trap' }) })
+    expect(edit.status).toBe(200)
+    const afterListingEdit = await fetch(`${origin}/api/seller/beat-listings/${sellerForAdmin.contentId}`, { headers: { cookie: sellerForAdmin.cookie } }).then(response => response.json()) as { data: { adminReview?: { current: boolean } } }
+    expect(afterListingEdit.data.adminReview?.current).toBe(false)
+
+    expect((await fetch(`${origin}/api/admin/marketplace-listings`, { headers: { cookie: manager.cookie } })).status).toBe(403)
+    expect((await fetch(`${origin}/api/admin/beat-orders`, { headers: { cookie: manager.cookie } })).status).toBe(403)
+    expect((await fetch(`${origin}/api/admin/beat-orders/${randomUUID()}/refund`, { method: 'POST', headers: { cookie: manager.cookie, 'x-csrf-token': manager.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'requested_by_customer' }) })).status).toBe(403)
+    expect((await fetch(`${origin}/api/connect/onboarding`, { method: 'POST', headers: { cookie: manager.cookie, 'x-csrf-token': manager.csrf } })).status).toBe(403)
+    expect((await fetch(`${origin}/api/admin/promotions`, { method: 'POST', headers: { cookie: manager.cookie, 'x-csrf-token': manager.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'CM cannot set prices', scope: 'marketplace', percentOff: 10, enabled: true }) })).status).toBe(403)
+    expect((await fetch(`${origin}/api/admin/accounts/${sellerForAdmin.id}/role`, { method: 'PATCH', headers: { cookie: manager.cookie, 'x-csrf-token': manager.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ role: 'community_manager' }) })).status).toBe(403)
+    const unauthorizedListing = await fetch(`${origin}/api/seller/beat-listings/${sellerForAdmin.contentId}`, { method: 'PUT', headers: { cookie: manager.cookie, 'x-csrf-token': manager.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ ...sellerForAdmin.listing, offers: [{ ...sellerForAdmin.listing.offers[0], amountMinor: 100 }] }) })
+    expect(unauthorizedListing.status).toBe(404)
   })
   it('lets admins persist marketplace discounts with CSRF validation and audit history', async () => {
     const runtime = createRepository()
@@ -803,7 +871,7 @@ describe('local API routes', () => {
     const auditRows = (await auditResponse.json() as { data: Array<{ targetId: string; metadata: Record<string, unknown> }> }).data
     expect(auditRows.some(row => row.targetId === rule.id && row.metadata.resource === 'marketplace-promotion')).toBe(true)
   })
-  it('limits community managers to marketplace recommendations and keeps role assignment admin-only', async () => {
+  it('limits Community Managers to commercial review and keeps account administration admin-only', async () => {
     const creatorInfo = await auth.register(`cm-${randomUUID()}@test.local`, 'Community-manager-password')
     const runtime = createRepository()
     const env = { ...process.env, BEATVAULT_ADMIN_EMAIL: `cm-admin-${randomUUID()}@test.local`, BEATVAULT_ADMIN_PASSWORD: 'A-strong-admin-password', BEATVAULT_ADMIN_BOOTSTRAP_TOKEN: randomUUID() + randomUUID() }
@@ -824,9 +892,9 @@ describe('local API routes', () => {
     expect((await fetch(`${origin}/api/staff/marketplace-review`, { headers: managerCookie })).status).toBe(200)
     expect((await fetch(`${origin}/api/staff/marketplace-review`, { headers: { cookie: `beatvault_session=${(await auth.login('demo@beatvault.local', 'local-demo-password'))!.token}` } })).status).toBe(403)
     const recommendation = `${origin}/api/staff/marketplace-review/${randomUUID()}`
-    expect((await fetch(recommendation, { method: 'POST', headers: { ...managerCookie, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'recommend', note: 'Looks complete for review.' }) })).status).toBe(403)
-    expect((await fetch(recommendation, { method: 'POST', headers: { ...managerCookie, 'x-csrf-token': manager!.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'recommend', note: 'ok' }) })).status).toBe(400)
-    expect((await fetch(recommendation, { method: 'POST', headers: { ...managerCookie, 'x-csrf-token': manager!.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'recommend', note: 'Looks complete for review.' }) })).status).toBe(404)
+    expect((await fetch(recommendation, { method: 'POST', headers: { ...managerCookie, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'approve', note: 'Looks complete for review.' }) })).status).toBe(403)
+    expect((await fetch(recommendation, { method: 'POST', headers: { ...managerCookie, 'x-csrf-token': manager!.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'approve', note: 'ok' }) })).status).toBe(400)
+    expect((await fetch(recommendation, { method: 'POST', headers: { ...managerCookie, 'x-csrf-token': manager!.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'approve', note: 'Looks complete for review.' }) })).status).toBe(404)
   })
   it('persists follows and bookmarks per authenticated account with CSRF and visibility checks', async () => {
     const password = 'Social-relations-test-password'

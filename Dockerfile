@@ -12,7 +12,7 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server ./server
 COPY --from=build /app/src/domains ./src/domains
-RUN mkdir -p /app/data/server-local /app/data/uploads && chown -R node:node /app
+RUN apk add --no-cache ffmpeg && mkdir -p /app/data/server-local /app/data/uploads && chown -R node:node /app/data
 USER node
 EXPOSE 4174
 CMD ["node", "--import", "tsx", "server/index.ts"]

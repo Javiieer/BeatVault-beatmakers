@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-18 - Historias independientes en Home
+
+- Stories ahora son registros propios, separados de los posts, con texto/foto/video, privacidad Público/Amigos/Solo yo, borrado por el autor y vencimiento exacto a las 24 horas.
+- El backend limita a 20 historias activas por cuenta, comparte la cuota social de 512 MiB con posts y revalida audiencia al servir medios; fotos se normalizan y videos se limitan a MP4/H.264, 30 segundos y 1920x1080.
+- SSE no expone contenido y respeta audiencia: historias públicas avisan a sesiones elegibles, Amigos solo a conexiones aceptadas y Solo yo no emite eventos a terceros.
+- El compositor publica historias sin duplicarlas en Home/feed; se agregaron migración PostgreSQL 029, expiración/limpieza de archivos, cobertura móvil entre dos cuentas y se actualizaron ROADMAP/BUGS/ARCHITECTURE.
+- La suite completa local pasa 327 tests en 65 archivos. El ensayo con PostgreSQL real de la migración 029 y el flujo de reportes/moderación de historias quedan pendientes.
+
 # 2026-10-11 - Capacidad visible en Paquetes
 
 - Paquetes convierte cada cuota en estimaciones de beats WAV y one-shots, muestra el uso real con barra de progreso y comparte las mismas constantes con el simulador.

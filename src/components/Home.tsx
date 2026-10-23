@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { Bookmark, Check, CirclePlus, Flag, Heart, Image as ImageIcon, Maximize2, MessageCircle, Music2, Play, Send, Trash2, Video, X } from "lucide-react";
+import { Bookmark, Check, CirclePlus, Flag, Heart, Image as ImageIcon, Maximize2, MessageCircle, Music2, Play, RefreshCw, Send, Trash2, Video, X } from "lucide-react";
+import { apiUrl } from "../api/client";
 import type { AudioAsset } from "../types";
 import type { CatalogAsset } from "../data/localCatalog";
 import { creatorType } from "../data/creatorUploads";
@@ -10,6 +11,8 @@ import type { CatalogSocial } from "../domains/social";
 import { defaultAvatarFocalPoint, type ProfileImageFocalPoint } from "../domains/profile";
 import { HomeComposer } from "./HomeComposer";
 import { HomeStories } from "./HomeStories";
+import { HomeStoryComposer } from "./HomeStoryComposer";
+import { deleteSocialStory, readSocialStories, type SocialStoryView } from "../data/socialStoryRepository";
 import { createSocialPostComment, deleteSocialPost, readProfileSocialPosts, readSocialAccountState, readSocialFeed, readSocialPostInteractionsBatch, reportSocialPost, setSocialFollow, setSocialPostBookmark, toggleSocialPostReaction, type SocialAccountState, type SocialPostInteraction, type SocialPostReportReason, type SocialPostView } from "../data/socialPostRepository";
 import orchestraCover from "../../assets/demo/dark-orchestra.png";
 import loFiCover from "../../assets/demo/chill-lo-fi.png";
@@ -216,6 +219,11 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
   const [mediaUrls, setMediaUrls] = useState<Map<string, string>>(new Map());
   const [postStorageError, setPostStorageError] = useState(false);
   const [serverPosts, setServerPosts] = useState<SocialPostView[]>([]);
+  const [serverStories, setServerStories] = useState<SocialStoryView[]>([]);
+  const [storyComposerOpen, setStoryComposerOpen] = useState(false);
+  const [storiesLoading, setStoriesLoading] = useState(false);
+  const [storiesError, setStoriesError] = useState("");
+  const [newPostsAvailable, setNewPostsAvailable] = useState(false);
   const [serverLoading, setServerLoading] = useState(false);
   const [serverError, setServerError] = useState("");
   const [nextCursor, setNextCursor] = useState<string>();
@@ -249,24 +257,47 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     return () => { active = false; };
   }, [scope]);
   useEffect(() => {
-    if (scope === "demo") { setServerPosts([]); setServerError(""); setServerLoading(false); return; }
+    if (scope === "demo") { setServerPosts([]); setServerStories([]); setServerError(""); setServerLoading(false); setStoriesLoading(false); setStoriesError(""); return; }
     let active = true;
     setServerLoading(true); setServerError("");
-    void Promise.all([readSocialFeed(), readProfileSocialPosts(scope)]).then(([feedResult, ownResult]) => {
+    setStoriesLoading(true); setStoriesError("");
+    setServerStories([]);
+    void Promise.all([readSocialFeed(), readProfileSocialPosts(scope), readSocialStories()]).then(([feedResult, ownResult, storiesResult]) => {
       if (!active) return;
       const feedPosts = feedResult.ok ? feedResult.data.posts : [];
       const ownPosts = ownResult.ok ? ownResult.data.posts : [];
       const unique = new Map<string, SocialPostView>();
       [...feedPosts, ...ownPosts].forEach(post => unique.set(post.id, post));
       setServerPosts([...unique.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+      if (storiesResult.ok) setServerStories(storiesResult.data.stories);
+      else setStoriesError(storiesResult.error.message);
+      setStoriesLoading(false);
       if (feedResult.ok) setNextCursor(feedResult.data.nextCursor);
       if (ownResult.ok) setOwnNextCursor(ownResult.data.nextCursor);
       const feedError = feedResult.ok ? undefined : feedResult.error.message;
       const ownError = ownResult.ok ? undefined : ownResult.error.message;
-      if (feedError && ownError) setServerError(`${feedError} ${ownError}`);
-      else if (feedError || ownError) setServerError(`La sincronización está incompleta: ${feedError || ownError}`);
-    }).finally(() => { if (active) setServerLoading(false); });
+      const errors = [feedError, ownError].filter(Boolean);
+      if (errors.length) setServerError(`La sincronización está incompleta: ${errors.join(" ")}`);
+    }).catch(() => { if (active) { setStoriesError("No se pudieron cargar las historias."); setStoriesLoading(false); setServerError("No se pudieron sincronizar las publicaciones."); } })
+      .finally(() => { if (active) setServerLoading(false); });
     return () => { active = false; };
+  }, [scope]);
+  useEffect(() => {
+    if (scope === "demo" || typeof EventSource === "undefined") return;
+    const stream = new EventSource(apiUrl("/api/feed/events"), { withCredentials: true });
+    stream.onmessage = event => {
+      try {
+        const payload: unknown = JSON.parse(event.data);
+        if (!payload || typeof payload !== "object") return;
+        const type = (payload as { type?: unknown }).type;
+        if (type === "new-posts") setNewPostsAvailable(true);
+        if (type === "new-stories") void readSocialStories().then(result => {
+          if (result.ok) { setServerStories(result.data.stories); setStoriesError(""); }
+          else setStoriesError(result.error.message);
+        }).catch(() => setStoriesError("No se pudieron actualizar las historias."));
+      } catch { /* Ignore malformed or unrelated events. */ }
+    };
+    return () => stream.close();
   }, [scope]);
   useEffect(() => {
     if (scope === "demo") { setAccountSocialState({ followedAccountIds: [], bookmarkedPostIds: [] }); setAccountSocialOwner(""); setAccountSocialLoading(false); setAccountSocialError(""); return; }
@@ -351,7 +382,7 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     const query = window.location.hash.split("?")[1];
     const contentId = query ? new URLSearchParams(query).get("post") : null;
     if (!contentId) return;
-    const timer = window.setTimeout(() => document.getElementById(`feed-post-own-${contentId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+    const timer = window.setTimeout(() => document.getElementById(`feed-post-social-${contentId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
     return () => window.clearTimeout(timer);
   }, [posts]);
   const addPostComment = async (post: FeedPost, text: string): Promise<boolean> => {
@@ -466,6 +497,31 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     if (ownResult && !ownResult.ok) setServerError(ownResult.error.message);
     setFeedBusy(false);
   };
+  const refreshFeed = async () => {
+    if (scope === "demo" || feedBusy) return;
+    setFeedBusy(true);
+    const [feedResult, ownResult] = await Promise.all([readSocialFeed(), readProfileSocialPosts(scope)]);
+    const incoming = [...(feedResult.ok ? feedResult.data.posts : []), ...(ownResult.ok ? ownResult.data.posts : [])];
+    if (incoming.length) setServerPosts(current => {
+      const merged = new Map(current.map(post => [post.id, post]));
+      incoming.forEach(post => merged.set(post.id, post));
+      return [...merged.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    });
+    if (feedResult.ok) { setNextCursor(feedResult.data.nextCursor); setNewPostsAvailable(false); }
+    if (ownResult.ok) setOwnNextCursor(ownResult.data.nextCursor);
+    const errors = [feedResult.ok ? "" : feedResult.error.message, ownResult.ok ? "" : ownResult.error.message].filter(Boolean);
+    setServerError(errors.length ? `No se pudieron actualizar todas las publicaciones: ${errors.join(" ")}` : "");
+    setFeedBusy(false);
+  };
+  const retryStories = async () => {
+    setStoriesLoading(true); setStoriesError("");
+    try {
+      const result = await readSocialStories();
+      if (result.ok) setServerStories(result.data.stories);
+      else setStoriesError(result.error.message);
+    } catch { setStoriesError("No se pudieron cargar las historias."); }
+    finally { setStoriesLoading(false); }
+  };
   const visiblePosts = posts.filter(post => filter === "Para ti" || (filter === "Siguiendo" && isPostFollowed(post)) || (filter === "Beats" && post.kind === "beat") || (filter === "Fotos" && post.kind === "photo") || (filter === "Videos" && post.kind === "video") || (filter === "Shorts" && post.kind === "short") || (filter === "Estados" && post.kind === "status"));
 
   const share = async (post: FeedPost) => {
@@ -483,10 +539,13 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
       <a className="home-story home-story-own" href="#/upload"><span><CirclePlus size={21} /><small>Tu estado</small></span></a>
       {stories.map(item => <button className="home-story" type="button" key={item.creator} onClick={() => setStory(item)}><span><img src={item.image} alt="" />{item.kind === "short" && <Video size={15} />}<small>{item.creator}</small></span></button>)}
       <a className="home-story home-story-more" href="#/shorts"><span><Video size={20} /><small>Ver Shorts</small></span></a>
-    </section> : scope !== "demo" ? <HomeStories posts={serverPosts} onCreate={() => {
-      const composer = document.querySelector<HTMLTextAreaElement>("#home-post-text");
-      composer?.scrollIntoView({ behavior: "smooth", block: "center" });
-      composer?.focus({ preventScroll: true });
+    </section> : scope !== "demo" ? <HomeStories stories={serverStories} viewerId={scope} loading={storiesLoading} error={storiesError} onRetry={() => void retryStories()} onCreate={() => setStoryComposerOpen(true)} onDelete={async story => {
+      try {
+        const result = await deleteSocialStory(story.id);
+        if (!result.ok) { setShareMessage(result.error.message); return false; }
+        setServerStories(current => current.filter(item => item.id !== story.id));
+        return true;
+      } catch { setShareMessage("No se pudo eliminar la historia. Inténtalo de nuevo."); return false; }
     }} /> : null}
     <div className="home-layout">
       <section className="home-feed" aria-label="Feed de BeatVault">
@@ -498,6 +557,7 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
         {serverError && <p className="home-composer-error" role="alert">No se pudieron sincronizar las publicaciones: {serverError}</p>}
         {scope !== "demo" && accountSocialLoading && accountSocialOwner !== scope && <p className="home-feed-status" role="status">Cargando tus seguidos y publicaciones guardadas…</p>}
         {scope !== "demo" && accountSocialError && <p className="home-composer-error" role="alert">No se pudieron sincronizar Seguir y Guardar: {accountSocialError}</p>}
+        {scope !== "demo" && newPostsAvailable && <button type="button" className="home-new-posts" disabled={feedBusy} onClick={() => void refreshFeed()}><RefreshCw size={15} className={feedBusy ? "is-spinning" : undefined} />{feedBusy ? "Actualizando publicaciones…" : "Hay publicaciones nuevas · Ver ahora"}</button>}
         <div className="home-feed-toolbar"><div className="home-feed-tabs" role="group" aria-label="Filtrar publicaciones">{["Para ti", "Siguiendo", "Beats", "Fotos", "Videos", "Shorts", "Estados"].map(item => <button type="button" key={item} className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}</button>)}</div><span>{visiblePosts.length} publicaciones</span></div>
         {shareMessage && <p className="home-feedback" role="status"><Check size={14} />{shareMessage}</p>}
         {visiblePosts.length === 0 && <div className="home-empty"><h2>Aún no sigues a productores</h2><p>Explora el feed y sigue perfiles para verlos aquí.</p><button className="button ghost" type="button" onClick={() => setFilter("Para ti")}>Volver a Para ti</button></div>}
@@ -522,6 +582,7 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     <dialog ref={storyDialog} className="home-story-dialog" aria-labelledby="home-story-title" onClose={() => setStory(null)} onClick={event => { if (event.target === storyDialog.current) storyDialog.current?.close(); }}>
       {story && <><button className="home-story-close" type="button" aria-label="Cerrar estado" onClick={() => storyDialog.current?.close()}>×</button><img src={story.image} alt="" /><div><span className="eyebrow">{story.kind === "short" ? "SHORT · DEMO" : "ESTADO · DEMO"}</span><h2 id="home-story-title">{story.title}</h2><p>{story.creator} está compartiendo una idea desde su estudio.</p><a className="button" href={story.kind === "short" ? "#/shorts" : "#/beats"}>{story.kind === "short" ? "Ver Shorts" : "Explorar beats"}</a></div></>}
     </dialog>
+    {scope !== "demo" && <HomeStoryComposer open={storyComposerOpen} onClose={() => setStoryComposerOpen(false)} onPublish={newStory => { setStoriesError(""); setServerStories(current => [newStory, ...current.filter(item => item.id !== newStory.id)]); }} />}
     {photo && <PhotoViewer post={photo} comments={photo.socialPost ? (interactionScopeReady ? socialByPostId[photo.socialPost.id]?.comments || [] : []).map(comment => ({ id: comment.id, text: comment.body, createdAt: comment.createdAt, authorName: comment.authorName })) : localScopeReady ? comments[photo.id] || [] : []} dialogRef={photoDialog} onClose={() => { photoDialog.current?.close(); setPhoto(null); }} onComment={text => addPostComment(photo, text)} />}
   </main>;
 }

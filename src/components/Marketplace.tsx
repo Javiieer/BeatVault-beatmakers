@@ -178,9 +178,12 @@ export function Marketplace({ catalogAssets, onPlay, onSearch, creatorId }: { ca
             <span>{asset.metadata.format}{asset.metadata.duration && asset.metadata.duration !== '--' ? ` · ${asset.metadata.duration}` : ''}</span>
             {asset.previewUrl ? <button type="button" className="button market-play" onClick={() => onPlay(asset)} aria-label={tx('market.listen', { name: asset.name })}><Play size={15} fill="currentColor" aria-hidden="true" /> {tx('market.preview')}</button> : <span className="market-no-preview" role="status">{tx('market.previewUnavailable')}</span>}
           </div>
-          {asset.purchaseOffers?.map(offer => <button key={offer.id} type="button" className="button market-buy" disabled={Boolean(activeOffer)} onClick={() => void buyBeat(asset.id, offer.id)}>
-            <ShoppingBag size={15} aria-hidden="true" /> {activeOffer === `${asset.id}:${offer.id}` ? 'Opening checkout…' : `${offer.label} · ${new Intl.NumberFormat('en-US', { style: 'currency', currency: offer.currency }).format(offer.amountMinor / 100)}`}
-          </button>)}
+          {asset.purchaseOffers?.map(offer => <div className="market-buy-option" key={offer.id}>
+            <button type="button" className="button market-buy" disabled={Boolean(activeOffer)} onClick={() => void buyBeat(asset.id, offer.id)}>
+              <ShoppingBag size={15} aria-hidden="true" /> {activeOffer === `${asset.id}:${offer.id}` ? 'Opening checkout…' : `${offer.label} · ${new Intl.NumberFormat('en-US', { style: 'currency', currency: offer.currency }).format(offer.amountMinor / 100)}`}
+            </button>
+            <p className="market-buy-terms"><strong>{offer.deliverables.map(item => item.toUpperCase()).join(' + ')}</strong> · {offer.usageSummary}</p>
+          </div>)}
         </div>
       </article>)}
       </section>

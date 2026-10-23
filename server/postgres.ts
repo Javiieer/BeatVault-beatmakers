@@ -10,6 +10,7 @@ import type { BeatListingRecord } from '../src/domains/marketplace/sellerListing
 import { sellerEvidenceMaxFiles, type SellerEvidenceRecord } from '../src/domains/marketplace/sellerEvidence'
 import type { ArtworkRecord } from './artwork'
 import type { SocialPost, SocialPostComment, SocialPostCursor, SocialPostReport, SocialPostVisibility } from './social-posts'
+import { socialStoryMaxActivePerAccount, type SocialStory, type SocialStoryCursor } from './social-stories'
 import { isValidNotificationTimestamp, normalizeNotificationCursor, normalizeNotificationRecord, notificationLimit, type NotificationPage, type NotificationPageOptions, type NotificationRecord, type NotificationSeed } from './notifications'
 
 export type SqlResult<Row> = { rows: Row[] }
@@ -30,6 +31,7 @@ type MessageRow = { id: string; sender_id: string; recipient_id: string; body: s
 type SocialCommentRow = { id: string; content_id: string; author_id: string; body: string; created_at: string }
 type SessionRow = { token_hash: string; account_id: string; csrf_token_hash: string; expires_at: string }
 type SocialPostRow = { id: string; author_id: string; kind: SocialPost['kind']; body: string; audience: SocialPost['audience']; visibility: SocialPost['visibility']; media_storage_key: string | null; media_mime_type: SocialPost['media'] extends infer M ? M extends { mimeType: infer T } ? T | null : never : never; media_size_bytes: string | number | null; media_sha256: string | null; created_at: string; updated_at: string; reviewed_at: string | null; reviewed_by: string | null; review_note: string | null }
+type SocialStoryRow = { id: string; author_id: string; kind: SocialStory['kind']; body: string; audience: SocialStory['audience']; media_storage_key: string | null; media_mime_type: string | null; media_size_bytes: string | number | null; media_sha256: string | null; created_at: string | Date; expires_at: string | Date }
 type SocialPostReportRow = { id: string; post_id: string; reporter_id: string; reason: SocialPostReport['reason']; details: string; status: SocialPostReport['status']; created_at: string; reviewed_at: string | null; reviewed_by: string | null }
 type SocialPostCommentRow = { id: string; post_id: string; author_id: string; body: string; created_at: string }
 type NotificationRow = { unread_count?: string | number; id: string | null; recipient_id: string | null; actor_id: string | null; type: NotificationRecord['type'] | null; resource_type: NotificationRecord['resourceType'] | null; resource_id: string | null; source_id: string | null; event_key: string | null; created_at: string | Date | null; read_at: string | Date | null }
@@ -41,6 +43,8 @@ const catalogColumns = 'content_id, creator_id, type, title, tag_ids, preview_id
 const chatMessage = (row: MessageRow): DirectMessage => ({ id: row.id, senderId: row.sender_id, recipientId: row.recipient_id, body: row.body, createdAt: row.created_at, readAt: row.read_at ?? undefined })
 const socialPostColumns = 'id, author_id, kind, body, audience, visibility, media_storage_key, media_mime_type, media_size_bytes, media_sha256, created_at, updated_at, reviewed_at, reviewed_by, review_note'
 const socialPost = (row: SocialPostRow): SocialPost => ({ id: row.id, authorId: row.author_id, kind: row.kind, body: row.body, audience: row.audience, visibility: row.visibility, ...(row.media_storage_key ? { media: { storageKey: row.media_storage_key, mimeType: row.media_mime_type as NonNullable<SocialPost['media']>['mimeType'], sizeBytes: Number(row.media_size_bytes), sha256: row.media_sha256! } } : {}), createdAt: row.created_at, updatedAt: row.updated_at, ...(row.reviewed_at ? { reviewedAt: row.reviewed_at } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}), ...(row.review_note ? { reviewNote: row.review_note } : {}) })
+const socialStoryColumns = 'id, author_id, kind, body, audience, media_storage_key, media_mime_type, media_size_bytes, media_sha256, created_at, expires_at'
+const socialStory = (row: SocialStoryRow): SocialStory => ({ id: row.id, authorId: row.author_id, kind: row.kind, body: row.body, audience: row.audience, ...(row.media_storage_key ? { media: { storageKey: row.media_storage_key, mimeType: row.media_mime_type as NonNullable<SocialStory['media']>['mimeType'], sizeBytes: Number(row.media_size_bytes), sha256: row.media_sha256! } } : {}), createdAt: timestamp(row.created_at), expiresAt: timestamp(row.expires_at) })
 const socialPostReport = (row: SocialPostReportRow): SocialPostReport => ({ id: row.id, postId: row.post_id, reporterId: row.reporter_id, reason: row.reason, details: row.details, status: row.status, createdAt: row.created_at, ...(row.reviewed_at ? { reviewedAt: row.reviewed_at } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}) })
 const timestamp = (value: string | Date): string => value instanceof Date ? value.toISOString() : value
 const notification = (row: NotificationRow): NotificationRecord => {
@@ -265,6 +269,33 @@ export class PostgresRepository implements ServerRepository {
   async reviewSocialPost(id: string, status: Extract<SocialPostVisibility, 'published' | 'rejected' | 'removed'>, staffId: string, note?: string) {
     const result = await this.db.query<SocialPostRow>(`UPDATE social_posts SET visibility = $1, reviewed_by = $2, reviewed_at = NOW(), review_note = $3, updated_at = NOW() WHERE id = $4 AND visibility <> 'removed' AND ($1 <> 'published' OR visibility = 'pending-review') RETURNING ${socialPostColumns}`, [status, staffId, note?.slice(0, 500) ?? null, id])
     return result.rows[0] ? socialPost(result.rows[0]) : undefined
+  }
+  async createSocialStory(input: SocialStory, mediaLimitBytes: number): Promise<SocialStory> {
+    if (input.media && input.media.sizeBytes > mediaLimitBytes) throw new StorageQuotaExceededError(0, mediaLimitBytes, input.media.sizeBytes)
+    const inserted = await this.withTransaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [input.authorId])
+      const count = await client.query<{ count: number | string }>('SELECT COUNT(*)::int AS count FROM social_stories WHERE author_id = $1 AND expires_at > $2', [input.authorId, input.createdAt])
+      if (Number(count.rows[0]?.count || 0) >= socialStoryMaxActivePerAccount) throw new Error('SOCIAL_STORY_LIMIT')
+      const result = await client.query<SocialStoryRow>(`INSERT INTO social_stories (${socialStoryColumns}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ${socialStoryColumns}`, [input.id, input.authorId, input.kind, input.body, input.audience, input.media?.storageKey ?? null, input.media?.mimeType ?? null, input.media?.sizeBytes ?? null, input.media?.sha256 ?? null, input.createdAt, input.expiresAt])
+      return result.rows[0]
+    })
+    return socialStory(inserted)
+  }
+  async findSocialStory(id: string) {
+    const result = await this.db.query<SocialStoryRow>(`SELECT ${socialStoryColumns} FROM social_stories WHERE id = $1`, [id])
+    return result.rows[0] ? socialStory(result.rows[0]) : undefined
+  }
+  async listSocialStories(options: { expiresAfter?: string; cursor?: SocialStoryCursor; limit: number }) {
+    const result = await this.db.query<SocialStoryRow>(`SELECT ${socialStoryColumns} FROM social_stories WHERE ($1::timestamptz IS NULL OR expires_at > $1) AND ($2::timestamptz IS NULL OR created_at < $2 OR (created_at = $2 AND id < $3::uuid)) ORDER BY created_at DESC, id DESC LIMIT $4`, [options.expiresAfter ?? null, options.cursor?.createdAt ?? null, options.cursor?.id ?? null, options.limit])
+    return result.rows.map(socialStory)
+  }
+  async deleteSocialStory(id: string, authorId: string) {
+    const result = await this.db.query<SocialStoryRow>(`DELETE FROM social_stories WHERE id = $1 AND author_id = $2 RETURNING ${socialStoryColumns}`, [id, authorId])
+    return result.rows[0] ? socialStory(result.rows[0]) : undefined
+  }
+  async deleteExpiredSocialStories(now: string) {
+    const result = await this.db.query<SocialStoryRow>(`DELETE FROM social_stories WHERE expires_at <= $1 RETURNING ${socialStoryColumns}`, [now])
+    return result.rows.map(socialStory)
   }
   async listSocialPostComments(postId: string, limit = 100): Promise<SocialPostComment[]> {
     const safeLimit = Number.isSafeInteger(limit) ? Math.min(100, Math.max(1, limit)) : 100

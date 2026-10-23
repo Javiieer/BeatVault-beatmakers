@@ -55,7 +55,7 @@ export type BeatListingRecord = BeatListingInput & {
 }
 
 export type MarketplaceCommunityReview = {
-  decision: 'recommend' | 'request-changes'
+  decision: 'approve' | 'recommend' | 'request-changes'
   note: string
   reviewerId: string
   createdAt: string
@@ -70,6 +70,11 @@ export type MarketplaceAdminReview = {
   current: boolean
 }
 
+export function hasCurrentMarketplaceApproval(listing: Pick<BeatListingRecord, 'communityReview' | 'adminReview'>): boolean {
+  const communityApproved = listing.communityReview?.current && (listing.communityReview.decision === 'approve' || listing.communityReview.decision === 'recommend')
+  const adminApproved = listing.adminReview?.current && listing.adminReview.decision === 'approve'
+  return Boolean(communityApproved || adminApproved)
+}
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value))
 const isBps = (value: unknown): value is number => Number.isInteger(value) && typeof value === 'number' && value >= 0 && value <= 10000
 
@@ -128,7 +133,7 @@ export function isBeatListingRecord(value: unknown): value is BeatListingRecord 
     typeof item.updatedAt !== 'string' || Number.isNaN(Date.parse(item.updatedAt))) return false
   const validDeclarationTime = item.rightsDeclarationAcceptedAt === undefined || typeof item.rightsDeclarationAcceptedAt === 'string' && !Number.isNaN(Date.parse(item.rightsDeclarationAcceptedAt))
   const communityReview = item.communityReview
-  const validCommunityReview = communityReview === undefined || Boolean(communityReview && typeof communityReview === 'object' && ['recommend', 'request-changes'].includes((communityReview as MarketplaceCommunityReview).decision) && typeof (communityReview as MarketplaceCommunityReview).note === 'string' && typeof (communityReview as MarketplaceCommunityReview).reviewerId === 'string' && typeof (communityReview as MarketplaceCommunityReview).createdAt === 'string' && typeof (communityReview as MarketplaceCommunityReview).current === 'boolean')
+  const validCommunityReview = communityReview === undefined || Boolean(communityReview && typeof communityReview === 'object' && ['approve', 'recommend', 'request-changes'].includes((communityReview as MarketplaceCommunityReview).decision) && typeof (communityReview as MarketplaceCommunityReview).note === 'string' && typeof (communityReview as MarketplaceCommunityReview).reviewerId === 'string' && typeof (communityReview as MarketplaceCommunityReview).createdAt === 'string' && typeof (communityReview as MarketplaceCommunityReview).current === 'boolean')
   const review = item.adminReview
   const validReview = review === undefined || Boolean(review && typeof review === 'object' && ['approve', 'reject', 'request-changes'].includes((review as MarketplaceAdminReview).decision) && typeof (review as MarketplaceAdminReview).note === 'string' && typeof (review as MarketplaceAdminReview).reviewerId === 'string' && typeof (review as MarketplaceAdminReview).createdAt === 'string' && typeof (review as MarketplaceAdminReview).current === 'boolean')
   return validDeclarationTime && validCommunityReview && validReview

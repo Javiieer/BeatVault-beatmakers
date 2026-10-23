@@ -1,6 +1,6 @@
 # Stripe test setup
 
-BeatVault supports test-mode Stripe Connect Express onboarding and one-time Checkout purchases for approved beats. Creator/Studio recurring subscriptions, one-shots, live payments, tax calculation, and production payouts are not enabled.
+BeatVault supports test-mode Stripe Connect Express onboarding and one-time Checkout purchases for eligible published Beats. Creator/Studio recurring subscriptions, One-shot sales, live payments, tax calculation, and production payouts are not enabled.
 
 ## Local setup
 
@@ -18,8 +18,8 @@ BeatVault supports test-mode Stripe Connect Express onboarding and one-time Chec
 
    Subscribe the webhook destination to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created`, `v2.core.account[configuration.recipient].capability_status_updated`, and `v2.core.account.closed`.
 4. Restart the API. Connect onboarding requires the test key and webhook secret. Checkout additionally stays disabled until the processing estimate is configured.
-5. Sign in as a creator, open Marketplace, and choose **Set up with Stripe**. Stripe-hosted Express onboarding is for Mexico and requests recipient transfers. A seller's offer is purchasable only after current admin approval, an available source file, and an active transfer capability.
-6. Sign in with a different account to test buying. Checkout uses the offer amount loaded from the server, USD, and one beat per session. The webhook, not the success redirect, marks an order paid. The original file is downloadable only by that buyer after the verified paid event.
+5. Sign in as a creator, open Marketplace, and choose **Set up with Stripe**. Stripe-hosted Express onboarding is for Mexico and requests recipient transfers. Commercial review and public catalog publication are separate: either an Admin or Community Manager may provide the current commercial approval. Checkout additionally requires a complete listing, current public publication, an available source file, a connected seller with active transfer capability, and configured Stripe payments.
+6. Sign in with a different account to test buying. Checkout uses the offer amount loaded from the server, USD, and one Beat per session. The webhook, not the success redirect, marks an order paid. The current delivery path accepts only one MP3 or WAV file that matches the uploaded source; stems and multiple formats remain hidden from purchase and are rejected by checkout. Each order snapshots the offer label, usage summary/version, format, asset ID/hash, filename, MIME type, and size. A paid buyer downloads that snapshotted file even if the seller later changes the catalog entry. The source file cannot be deleted while a checkout, paid purchase, or refund request is active.
 
 ## Fee model
 

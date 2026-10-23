@@ -100,7 +100,9 @@
 .market-card-footer > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .market-play { min-height: 34px; flex: 0 0 auto; padding: 0 10px; }
 .market-no-preview { text-align: right; }
+.market-buy-option { display: grid; gap: 4px; }
 .market-buy { width: 100%; min-height: 38px; justify-content: center; }
+.market-buy-terms { margin: 0; color: var(--muted, #9ba7ad); font-size: .76rem; line-height: 1.4; overflow-wrap: anywhere; }
 .market-empty { display: grid; justify-items: center; gap: 10px; padding: 48px 20px; border: 1px dashed var(--border); border-radius: 8px; text-align: center; color: var(--muted); }
 .market-empty h2 { margin: 0; color: var(--text); font-size: 18px; }
 .market-empty p { max-width: 440px; margin: 0 0 6px; }

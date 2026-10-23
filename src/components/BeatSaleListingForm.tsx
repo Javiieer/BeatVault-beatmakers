@@ -8,6 +8,10 @@ import { defaultSellerListingRepository } from '../data/sellerListingRepository'
 import type { SellerEvidenceView } from '../domains/marketplace/sellerEvidence'
 
 const draftUsageSummary = () => tx('seller.defaultUsage')
+const sourceDeliverable = (asset: CatalogAsset): 'mp3' | 'wav' | undefined => {
+  const format = asset.metadata.format.toLowerCase()
+  return format.includes('wav') ? 'wav' : format.includes('mp3') ? 'mp3' : undefined
+}
 
 const createDraft = (asset: CatalogAsset): BeatListingInput => ({
   description: '',
@@ -21,7 +25,7 @@ const createDraft = (asset: CatalogAsset): BeatListingInput => ({
     collaborators: [],
     declarationAccepted: false,
   },
-  offers: [{ id: 'offer-standard', label: tx('seller.standard'), amountMinor: 3000, currency: 'USD', deliverables: ['mp3'], usageSummary: draftUsageSummary(), termsVersion: 'non-exclusive-offer-draft-v1', status: 'draft-only' }],
+  offers: [{ id: 'offer-standard', label: tx('seller.standard'), amountMinor: 3000, currency: 'USD', deliverables: [sourceDeliverable(asset) ?? 'mp3'], usageSummary: draftUsageSummary(), termsVersion: 'non-exclusive-offer-draft-v1', status: 'draft-only' }],
 })
 
 const percent = (basisPoints: number) => (basisPoints / 100).toFixed(2)
@@ -138,10 +142,10 @@ export function BeatSaleListingForm({ asset, listing, onClose, onSave }: {
             <label>{tx('seller.offerName')}<input required maxLength={60} value={offer.label} onChange={event => updateOffer(index, { label: event.target.value })} /></label>
             <label>{tx('seller.price')}<input required type="number" min="1" max="1000000" step="0.01" value={(offer.amountMinor / 100).toFixed(2)} onChange={event => updateOffer(index, { amountMinor: toBasisPoints(event.target.value) })} /></label>
           </div>
-          <fieldset className="beat-listing-deliverables"><legend>{tx('seller.deliverables')}</legend>{(['mp3', 'wav', 'stems'] as const).map(deliverable => <label key={deliverable}><input type="checkbox" checked={offer.deliverables.includes(deliverable)} onChange={event => updateOffer(index, { deliverables: event.target.checked ? [...offer.deliverables, deliverable] : offer.deliverables.filter(item => item !== deliverable) })} /> {deliverable.toUpperCase()}</label>)}</fieldset>
+          <fieldset className="beat-listing-deliverables"><legend>{tx('seller.deliverables')}</legend>{(['mp3', 'wav', 'stems'] as const).map(deliverable => <label key={deliverable}><input type="checkbox" checked={offer.deliverables.includes(deliverable)} disabled={deliverable !== sourceDeliverable(asset) && !offer.deliverables.includes(deliverable)} onChange={event => updateOffer(index, { deliverables: event.target.checked ? [deliverable] : offer.deliverables.filter(item => item !== deliverable) })} /> {deliverable.toUpperCase()}</label>)}</fieldset><p className="muted">{tx('seller.deliveryLimit')}</p>
           <label className="short-upload-field">{tx('seller.usageSummary')}<textarea required minLength={10} maxLength={600} rows={3} value={offer.usageSummary} onChange={event => updateOffer(index, { usageSummary: event.target.value })} /></label>
         </article>)}
-        <button type="button" className="button ghost beat-listing-add" disabled={draft.offers.length >= 5} onClick={() => setDraft(current => ({ ...current, offers: [...current.offers, { id: `offer-${Date.now()}`, label: tx('seller.newOffer'), amountMinor: 5000, currency: 'USD', deliverables: ['wav'], usageSummary: draftUsageSummary(), termsVersion: 'non-exclusive-offer-draft-v1', status: 'draft-only' }] }))}><Plus size={16} /> {tx('seller.addOffer')}</button>
+        <button type="button" className="button ghost beat-listing-add" disabled={draft.offers.length >= 5} onClick={() => setDraft(current => ({ ...current, offers: [...current.offers, { id: `offer-${Date.now()}`, label: tx('seller.newOffer'), amountMinor: 5000, currency: 'USD', deliverables: [sourceDeliverable(asset) ?? 'mp3'], usageSummary: draftUsageSummary(), termsVersion: 'non-exclusive-offer-draft-v1', status: 'draft-only' }] }))}><Plus size={16} /> {tx('seller.addOffer')}</button>
       </section>
 
       {error && <p className="upload-error" role="alert">{error}</p>}

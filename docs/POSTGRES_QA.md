@@ -3,17 +3,19 @@
 `npm run test:postgres` runs live integration checks against an isolated local
 PostgreSQL database. It refuses remote hosts and database names unless they match
 `beatvault_test_*` or `beatvault_audit_*`. The current schema includes migrations
-001-028; mounting `db/migrations` into a new Postgres container applies all of them
-in order. The QA harness checks that the notification table from migration 027 and
-the follow/bookmark tables from migration 028 exist,
+001-029; mounting `db/migrations` into a new Postgres container applies all of them
+in order. The QA harness checks that the notification table from migration 027, the
+follow/bookmark tables from migration 028, and independent story records from migration
+029 exist. It checks public story visibility, private-story isolation, exact 24-hour
+expiry, owner-only deletion and that stories do not appear in the feed,
 exercises seller intake through the HTTP API, uploads real PDF-signature rights
 evidence, verifies that another account cannot read it, persists Beat artwork before
 catalog creation, checks original/thumbnail quota accounting and creator/CM/staff
 artwork visibility, and verifies artwork plus thumbnail through backup/restore,
 uploads custom avatar and cover images, checks public/private image access and profile privacy, and verifies those images through backup/restore,
 checks public creator posts in the feed and profile, cross-account comments and reactions, private-post interaction denial, account-isolated follows/bookmarks including backup/restore, CM report/removal, persistent friendship/comment/reaction notifications, and verifies that an artificial notification insert failure rolls back its PostgreSQL comment in the same statement,
-checks the community-manager recommendation and separate admin approval boundary, and confirms edits invalidate
-both decisions. Catalog Beats can be independently approved by either a CM or an
+checks that Admin and Community Manager can independently approve commercial listings,
+and confirms listing/evidence edits stale prior decisions. Catalog Beats can be independently approved by either a CM or an
 admin; CM reviews use a private processed preview, and either approval publishes the
 Beat with only the processed preview exposed. It
 also checks that seller-intake approval does not publish a beat by itself,

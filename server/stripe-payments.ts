@@ -1,10 +1,11 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import Stripe from 'stripe'
 import type { BeatOrder, ServerRepository } from './store'
+import { sameBeatPurchaseSnapshot, type BeatPurchaseSnapshot } from './beat-delivery'
 
 export type StripePaymentsGateway = Pick<Stripe, 'checkout' | 'webhooks' | 'refunds'>
 export type BeatCheckoutOffer = { id: string; label: string; amountMinor: number; usageSummary: string; deliverables: string[] }
-export type BeatCheckoutInput = { orderId: string; buyerId: string; buyerEmail: string; sellerId: string; stripeAccountId: string; contentId: string; title: string; offer: BeatCheckoutOffer }
+export type BeatCheckoutInput = { orderId: string; buyerId: string; buyerEmail: string; sellerId: string; stripeAccountId: string; contentId: string; title: string; offer: BeatCheckoutOffer; purchaseSnapshot: BeatPurchaseSnapshot }
 export type FeePolicy = { commissionBps: number; processingRateBps: number; processingFixedMinor: number }
 
 export function calculateBeatFees(amountMinor: number, policy: FeePolicy) {
@@ -23,11 +24,11 @@ export class StripePaymentsService {
     const fee = calculateBeatFees(input.offer.amountMinor, this.fees)
     const order: BeatOrder = {
       id: orderId, buyerId: input.buyerId, sellerId: input.sellerId, contentId: input.contentId,
-      offerId: input.offer.id, title: input.title, amountMinor: input.offer.amountMinor,
+      offerId: input.offer.id, title: input.title, amountMinor: input.offer.amountMinor, purchaseSnapshot: input.purchaseSnapshot,
       ...fee, currency: 'usd', status: 'pending', createdAt: new Date().toISOString(),
     }
     const existing = await this.repository.findBeatOrder(orderId)
-    if (existing && (existing.buyerId !== input.buyerId || existing.sellerId !== input.sellerId || existing.contentId !== input.contentId || existing.offerId !== input.offer.id || existing.amountMinor !== input.offer.amountMinor)) throw new Error('ORDER_IDEMPOTENCY_CONFLICT')
+    if (existing && (existing.buyerId !== input.buyerId || existing.sellerId !== input.sellerId || existing.contentId !== input.contentId || existing.offerId !== input.offer.id || existing.amountMinor !== input.offer.amountMinor || !existing.purchaseSnapshot || !sameBeatPurchaseSnapshot(existing.purchaseSnapshot, input.purchaseSnapshot))) throw new Error('ORDER_IDEMPOTENCY_CONFLICT')
     if (existing && existing.status !== 'pending' && !(existing.status === 'failed' && !existing.stripeCheckoutSessionId)) throw new Error('ORDER_ALREADY_SETTLED')
     if (existing?.stripeCheckoutSessionId) {
       const previousSession = await this.stripe.checkout.sessions.retrieve(existing.stripeCheckoutSessionId)
@@ -48,7 +49,7 @@ export class StripePaymentsService {
         customer_email: input.buyerEmail,
         line_items: [{ quantity: 1, price_data: {
           currency: 'usd', unit_amount: input.offer.amountMinor,
-          product_data: { name: `${input.title} - ${input.offer.label}`, description: `${input.offer.usageSummary} Deliverables: ${input.offer.deliverables.join(', ')}.` },
+          product_data: { name: `${input.title} - ${input.purchaseSnapshot.offerLabel}`, description: `${input.purchaseSnapshot.usageSummary} Deliverables: ${input.purchaseSnapshot.deliverables.join(', ')}.` },
         } }],
         payment_intent_data: {
           application_fee_amount: fee.applicationFeeMinor,

@@ -14,7 +14,9 @@ import type { SocialActivity, SocialComment } from '../src/domains/social'
 import { isPromotionRule, type PromotionRule } from '../src/domains/marketplace/promotions'
 import { isBeatListingRecord, type BeatListingRecord } from '../src/domains/marketplace/sellerListings'
 import { isSellerEvidenceRecord, sellerEvidenceMaxFiles, type SellerEvidenceRecord } from '../src/domains/marketplace/sellerEvidence'
+import { isBeatPurchaseSnapshot, type BeatPurchaseSnapshot } from './beat-delivery'
 import { isSocialPost, isSocialPostComment, isSocialPostReport, type SocialPost, type SocialPostComment, type SocialPostCursor, type SocialPostReport, type SocialPostVisibility } from './social-posts'
+import { isSocialStory, socialStoryMaxActivePerAccount, type SocialStory, type SocialStoryCursor } from './social-stories'
 import { compareNotificationOrder, isNotificationRecord, isValidNotificationTimestamp, normalizeNotificationCursor, normalizeNotificationRecord, notificationLimit, type NotificationPage, type NotificationPageOptions, type NotificationRecord, type NotificationSeed } from './notifications'
 export type AssetState = 'available' | 'missing' | 'metadata-only'
 export type AssetRecord = { id: string; ownerId: string; originalName: string; storageKey: string; mimeType: string; sizeBytes: number; contentHash: string; state: AssetState; createdAt: string; updatedAt: string; previewStorageKey?: string; previewMimeType?: string; previewSizeBytes?: number }
@@ -22,7 +24,7 @@ export type StorageUsageRecord = { ownerId: string; usedBytes: number; originalC
 export type StorageQuotaRecord = { ownerId: string; limitBytes: number; updatedBy: string; updatedAt: string }
 export type StripeConnectRecord = { accountId: string; stripeAccountId: string; chargesEnabled: boolean; payoutsEnabled: boolean; detailsSubmitted: boolean; deauthorized: boolean; updatedAt: string }
 export type SessionRecord = { tokenHash: string; accountId: string; csrfTokenHash: string; expiresAt: number }
-export type BeatOrder = { id: string; buyerId: string; sellerId: string; contentId: string; offerId: string; title: string; amountMinor: number; commissionMinor: number; processingEstimateMinor: number; applicationFeeMinor: number; sellerNetMinor: number; currency: 'usd'; status: 'pending' | 'paid' | 'failed' | 'refund_pending' | 'refunded' | 'partially_refunded' | 'disputed'; stripeCheckoutSessionId?: string; stripePaymentIntentId?: string; stripeRefundId?: string; refundRequestedAt?: string; refundRequestedBy?: string; disputeId?: string; disputeReason?: string; createdAt: string; paidAt?: string }
+export type BeatOrder = { id: string; buyerId: string; sellerId: string; contentId: string; offerId: string; title: string; amountMinor: number; commissionMinor: number; processingEstimateMinor: number; applicationFeeMinor: number; sellerNetMinor: number; currency: 'usd'; status: 'pending' | 'paid' | 'failed' | 'refund_pending' | 'refunded' | 'partially_refunded' | 'disputed'; purchaseSnapshot?: BeatPurchaseSnapshot; stripeCheckoutSessionId?: string; stripePaymentIntentId?: string; stripeRefundId?: string; refundRequestedAt?: string; refundRequestedBy?: string; disputeId?: string; disputeReason?: string; createdAt: string; paidAt?: string }
 export class StorageQuotaExceededError extends Error {
   constructor(readonly usedBytes: number, readonly limitBytes: number, readonly requestedBytes: number) { super('STORAGE_QUOTA_EXCEEDED'); this.name = 'StorageQuotaExceededError' }
 }
@@ -63,6 +65,17 @@ const notificationRecordFor = (seed: NotificationSeed, recipientId: string, acto
   ...seed, recipientId, actorId, type, resourceType, resourceId, sourceId, eventKey: `${type}:${sourceId}`, readAt: null,
 })
 const localStorageQueues = new Map<string, Promise<void>>()
+const socialMediaQueues = new Map<string, Promise<void>>()
+async function withSocialMediaLock<T>(accountId: string, action: () => Promise<T>): Promise<T> {
+  const previous = socialMediaQueues.get(accountId) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>(resolve => { release = resolve })
+  const tail = previous.catch(() => undefined).then(() => current)
+  socialMediaQueues.set(accountId, tail)
+  await previous.catch(() => undefined)
+  try { return await action() }
+  finally { release(); if (socialMediaQueues.get(accountId) === tail) socialMediaQueues.delete(accountId) }
+}
 async function withLocalStorageLock<T>(ownerId: string, action: () => Promise<T>): Promise<T> {
   const previous = localStorageQueues.get(ownerId) ?? Promise.resolve()
   let release!: () => void
@@ -140,6 +153,11 @@ export interface ServerRepository {
   unbookmarkSocialPost(accountId: string, postId: string): Promise<void>
   deleteSocialPost(id: string, authorId: string): Promise<SocialPost | undefined>
   reviewSocialPost(id: string, status: Extract<SocialPostVisibility, 'published' | 'rejected' | 'removed'>, staffId: string, note?: string): Promise<SocialPost | undefined>
+  createSocialStory(story: SocialStory, mediaLimitBytes: number): Promise<SocialStory>
+  findSocialStory(id: string): Promise<SocialStory | undefined>
+  listSocialStories(options: { expiresAfter?: string; cursor?: SocialStoryCursor; limit: number }): Promise<SocialStory[]>
+  deleteSocialStory(id: string, authorId: string): Promise<SocialStory | undefined>
+  deleteExpiredSocialStories(now: string): Promise<SocialStory[]>
   listSocialPostComments(postId: string, limit?: number): Promise<SocialPostComment[]>
   createSocialPostComment(comment: SocialPostComment): Promise<SocialPostComment>
   listSocialPostReactions(postId: string): Promise<string[]>
@@ -217,6 +235,7 @@ export class LocalRepository implements ServerRepository {
   private readonly socialReactions = new JsonStore(`${config.dataDirectory}/social-reactions.json`)
   private readonly socialActivities = new JsonStore(`${config.dataDirectory}/social-activities.json`)
   private readonly socialPosts = new JsonStore(`${config.dataDirectory}/social-posts.json`)
+  private readonly socialStories = new JsonStore(`${config.dataDirectory}/social-stories.json`)
   private readonly notifications: JsonStore
   private readonly notificationOutbox = new JsonStore(`${config.dataDirectory}/notification-outbox.json`)
   private readonly socialPostReports = new JsonStore(`${config.dataDirectory}/social-post-reports.json`)
@@ -517,12 +536,16 @@ export class LocalRepository implements ServerRepository {
       return { value: items.map((item, itemIndex) => itemIndex === index ? updated : item), result: updated }
     })
   }
-  createSocialPost(post: SocialPost, mediaLimitBytes: number) { return this.socialPosts.update<SocialPost[], SocialPost>([], isSocialPost, items => {
-    if (items.some(item => item.id === post.id)) throw new Error('SOCIAL_POST_EXISTS')
-    const used = items.filter(item => item.authorId === post.authorId).reduce((sum, item) => sum + (item.media?.sizeBytes || 0), 0)
-    const requested = post.media?.sizeBytes || 0
-    if (used + requested > mediaLimitBytes) throw new StorageQuotaExceededError(used, mediaLimitBytes, requested)
-    return { value: [...items, post], result: post }
+  createSocialPost(post: SocialPost, mediaLimitBytes: number) { return withSocialMediaLock(post.authorId, async () => {
+    const stories = await this.socialStories.read<SocialStory[]>([], isSocialStory)
+    return this.socialPosts.update<SocialPost[], SocialPost>([], isSocialPost, items => {
+      if (items.some(item => item.id === post.id)) throw new Error('SOCIAL_POST_EXISTS')
+      const used = items.filter(item => item.authorId === post.authorId).reduce((sum, item) => sum + (item.media?.sizeBytes || 0), 0)
+        + stories.filter(item => item.authorId === post.authorId).reduce((sum, item) => sum + (item.media?.sizeBytes || 0), 0)
+      const requested = post.media?.sizeBytes || 0
+      if (used + requested > mediaLimitBytes) throw new StorageQuotaExceededError(used, mediaLimitBytes, requested)
+      return { value: [...items, post], result: post }
+    })
   }) }
   findSocialPost(id: string) { return this.socialPosts.read<SocialPost[]>([], isSocialPost).then(items => items.find(item => item.id === id)) }
   listSocialPosts(options: { authorId?: string; cursor?: SocialPostCursor; limit: number; moderationOnly?: boolean; publishedOnly?: boolean }) {
@@ -592,6 +615,41 @@ export class LocalRepository implements ServerRepository {
       if (!existing) return { value: items, result: undefined }
       const updated = { ...existing, visibility: status, reviewedBy: staffId, reviewedAt: new Date().toISOString(), reviewNote: note?.slice(0, 500), updatedAt: new Date().toISOString() }
       return { value: items.map(item => item.id === id ? updated : item), result: updated }
+    })
+  }
+  createSocialStory(story: SocialStory, mediaLimitBytes: number) { return withSocialMediaLock(story.authorId, async () => {
+    const [posts, allStories] = await Promise.all([
+      this.socialPosts.read<SocialPost[]>([], isSocialPost),
+      this.socialStories.read<SocialStory[]>([], isSocialStory),
+    ])
+    return this.socialStories.update<SocialStory[], SocialStory>([], isSocialStory, items => {
+      if (items.some(item => item.id === story.id)) throw new Error('SOCIAL_STORY_EXISTS')
+      const now = Date.parse(story.createdAt)
+      if (items.filter(item => item.authorId === story.authorId && Date.parse(item.expiresAt) > now).length >= socialStoryMaxActivePerAccount) throw new Error('SOCIAL_STORY_LIMIT')
+      const used = posts.filter(item => item.authorId === story.authorId).reduce((sum, item) => sum + (item.media?.sizeBytes || 0), 0)
+        + allStories.filter(item => item.authorId === story.authorId).reduce((sum, item) => sum + (item.media?.sizeBytes || 0), 0)
+      const requested = story.media?.sizeBytes || 0
+      if (used + requested > mediaLimitBytes) throw new StorageQuotaExceededError(used, mediaLimitBytes, requested)
+      return { value: [...items, story], result: story }
+    })
+  }) }
+  findSocialStory(id: string) { return this.socialStories.read<SocialStory[]>([], isSocialStory).then(items => items.find(item => item.id === id)) }
+  listSocialStories(options: { expiresAfter?: string; cursor?: SocialStoryCursor; limit: number }) {
+    return this.socialStories.read<SocialStory[]>([], isSocialStory).then(items => items
+      .filter(item => options.expiresAfter === undefined || item.expiresAt > options.expiresAfter)
+      .filter(item => !options.cursor || item.createdAt < options.cursor.createdAt || item.createdAt === options.cursor.createdAt && item.id < options.cursor.id)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, options.limit))
+  }
+  deleteSocialStory(id: string, authorId: string) {
+    return this.socialStories.update<SocialStory[], SocialStory | undefined>([], isSocialStory, items => {
+      const story = items.find(item => item.id === id && item.authorId === authorId)
+      return { value: story ? items.filter(item => item.id !== id) : items, result: story }
+    })
+  }
+  deleteExpiredSocialStories(now: string) {
+    return this.socialStories.update<SocialStory[], SocialStory[]>([], isSocialStory, items => {
+      const expired = items.filter(item => item.expiresAt <= now)
+      return { value: items.filter(item => item.expiresAt > now), result: expired }
     })
   }
   createSocialPostReport(report: SocialPostReport) { return this.socialPostReports.update<SocialPostReport[], SocialPostReport>([], isSocialPostReport, items => {
@@ -773,7 +831,7 @@ const isBeatOrder = (value: unknown): value is BeatOrder => {
     (item.refundRequestedBy === undefined || typeof item.refundRequestedBy === 'string') &&
     (item.disputeId === undefined || typeof item.disputeId === 'string') &&
     (item.disputeReason === undefined || typeof item.disputeReason === 'string') &&
-    (item.paidAt === undefined || typeof item.paidAt === 'string')
+    (item.paidAt === undefined || typeof item.paidAt === 'string') && (item.purchaseSnapshot === undefined || isBeatPurchaseSnapshot(item.purchaseSnapshot))
 }
 const validFriendship = (value: unknown): value is Friendship => {
   if (!value || typeof value !== 'object') return false

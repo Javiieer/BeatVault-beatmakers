@@ -22,18 +22,25 @@ public; accepted friends can read eligible friend posts but currently cannot ope
 that private profile or its custom images. This is a known privacy/UX inconsistency
 for a future access-matrix change.
 
-### Home posts and friends (2026-10-15)
+### Home posts and friends (2026-10-18)
 
-Authenticated Home and CreatorProfile now use server-backed text/photo/video posts
-through JSON and PostgreSQL repositories (migration 025); comments and reactions use
-migration 026, and follows/bookmarks use migration 028. Posts publish immediately.
-Public posts require an opted-in public
-profile, friends-only posts require an accepted friendship, and private posts are
-owner-only; media access is rechecked on each request. Existing IndexedDB posts remain
-device-local and are not automatically imported. The 24-hour stories rail groups
-recent published posts; it is not a separate story record or expiry service. Labeled
-seed examples exist only in the local development guest preview; authenticated feeds and
-production bundles exclude them. Shorts remains a separate demo/local flow. Friends uses authenticated API routes (`GET /api/creators`,
+Authenticated Home and CreatorProfile use server-backed text/photo/video posts through
+JSON and PostgreSQL repositories (migration 025); comments and reactions use migration
+026, and follows/bookmarks use migration 028. Posts publish immediately. Public posts
+require an opted-in public profile, friends-only posts require an accepted friendship,
+and private posts are owner-only; media access is rechecked on each request. Existing
+IndexedDB posts remain device-local and are not automatically imported. Stories are
+independent records in `social_stories` (migration 029), not feed posts: status/photo/
+video stories have an exact 24-hour server expiry, owner deletion, public/friends/private
+audiences, a limit of 20 active stories per account, and a shared 512 MiB social-media
+quota with posts. Photos are normalized and limited to 20 MB; MP4/H.264 story videos
+are limited to 100 MB, 30 seconds and 1920x1080. Authenticated story and media reads
+recheck audience visibility; media is private/no-store. A periodic cleanup removes
+expired records and media, and connected Home sessions receive a data-free SSE signal
+to refresh stories. Story reporting/staff moderation and multi-instance event delivery
+are not implemented. Labeled seed examples exist only in the local development guest
+preview; authenticated feeds and production bundles exclude them. Shorts remains a
+separate demo/local flow. Friends uses authenticated API routes (`GET /api/creators`,
 `GET /api/friends`, `POST/DELETE /api/friend-requests`,
 `POST /api/friend-requests/:id/accept`, and `DELETE /api/friends/:id`). Creator search
 and friend lists return an allowlisted profile DTO without email or credentials.
@@ -44,10 +51,12 @@ follows/bookmarks. Public feed reads filter to `published` in the PostgreSQL que
 the partial feed index can be used; owner profile and moderation reads retain their
 needed visibility scope. Feed scans and IP limits remain process-local. Interaction
 snapshots load in authenticated batches of up to 30 posts; work is charged by post ID
-(120 per account per minute) and returns at most 20 comments per post. Live Home feed
-refresh, shared multi-instance rate limits and an existing-volume migration rehearsal
-remain open. Two-account browser and clean disposable PostgreSQL backup/restore checks
-cover public/private posts and social relationships.
+(120 per account per minute) and returns at most 20 comments per post. Authenticated
+`GET /api/feed/events` streams a generic event for new public posts; no post content is
+sent, and Home refetches through the visibility-checked API only after user action.
+Delivery is process-local; friends/private events, shared multi-instance rate limits
+and an existing-volume migration rehearsal remain open. Two-account browser and clean
+disposable PostgreSQL backup/restore checks cover public/private posts and relationships.
 
 ### Direct chat (2026-10-10)
 
@@ -234,6 +243,6 @@ Marketplace promotion rules are managed through admin-only, CSRF-protected route
 
 USD is the marketplace base/listing currency. Account display currency (`USD`, `MXN`, `EUR`) is a local preference; `/api/currency-rates` serves a validated European Central Bank daily reference snapshot with a six-hour process cache, and MXN/EUR conversions are informational only. Do not use this reference rate as a payment settlement quote. Stripe Connect Express is selected for a test-only Mexican seller-onboarding slice: `/api/connect/*` creates Express accounts and Stripe-hosted onboarding links, while a raw-body signature-verified webhook persists `account.updated` capabilities and deduplicates event IDs. Both test secrets are required, live keys are rejected, and Stripe is disabled in production. This does not create buyer charges, marketplace transfers, subscription billing, tax calculation, seller withholding or payouts from BeatVault. The checkout ledger must distinguish discounted subtotal, applicable tax, provider cost, platform fee, and seller net.
 
-Beat seller intake is private and separate from public catalog metadata. `GET /api/seller/beat-listings` and owner-scoped `PUT /api/seller/beat-listings/:contentId` save per-beat commercial-preparation drafts; the server checks session, CSRF, catalog ownership and beat type, validates composition/master shares independently, and fixes offer currency/status/version to USD/draft-only. PostgreSQL uses migration `016_marketplace_beat_listing_drafts`; local mode uses `beat-listing-drafts.json`. Rights evidence is a separate private record: PDF/JPEG/PNG, at most 10 MB each and three per listing, signature-checked, and stored under a non-public path. Only the owning seller or admin/community-manager review endpoints can retrieve it, with no-store, nosniff and forced attachment headers. Migration `018_marketplace_seller_evidence.sql` adds the Postgres table; local mode uses `seller-evidence.json`. Sample-proof readiness is derived from uploaded records, never the client checkbox. Evidence remains seller-provided and is not legal or forensic verification. The rights-intake confirmation records its server timestamp/version, but is explicitly not a buyer license or sale. No listing is activated: legal templates, private master/stem bundles, checkout, entitlements and payouts remain future work.
+Beat seller intake is private and separate from public catalog metadata. `GET /api/seller/beat-listings` and owner-scoped `PUT /api/seller/beat-listings/:contentId` save per-beat commercial-preparation drafts; the server checks session, CSRF, catalog ownership and beat type, validates composition/master shares independently, and fixes offer currency/status/version to USD/draft-only. PostgreSQL uses migration `016_marketplace_beat_listing_drafts`; local mode uses `beat-listing-drafts.json`. Rights evidence is a separate private record: PDF/JPEG/PNG, at most 10 MB each and three per listing, signature-checked, and stored under a non-public path. Only the owning seller or admin/community-manager review endpoints can retrieve it, with no-store, nosniff and forced attachment headers. Migration `018_marketplace_seller_evidence.sql` adds the Postgres table; local mode uses `seller-evidence.json`. Sample-proof readiness is derived from uploaded records, never the client checkbox. Evidence remains seller-provided and is not legal or forensic verification. The rights-intake confirmation records its server timestamp/version, but is explicitly not a buyer license or sale. Commercial approval does not activate an offer. A separate one-time Stripe Checkout and protected delivery path exists in test mode and stays gated on approval, current public catalog publication, an available source file, a connected seller with enabled payouts, and configured Stripe payments. Legal license terms, private master/stem bundles, entitlements, live payment and payout operations remain future work.
 
-Community managers are a separate least-privilege role. Admins may assign an existing non-admin account to `community_manager` through the CSRF-protected account-role route; public registration cannot assign it, and the route cannot grant or alter administrator accounts. `/api/staff/marketplace-review` exposes private beat-intake drafts and private rights evidence only to admins and community managers. Staff can record a reasoned recommendation or request changes; recommendations are logged in the audit store and do not publish content, approve a sale, activate an offer, or access `/api/admin/*`. Admins use `/api/admin/marketplace-listings` for the separate final intake decision. Approval requires a complete draft and a current positive recommendation from a community manager other than the seller. Every decision requires a reason and is audited; seller edits make the decision stale. Approval means only reviewed for a future activation and leaves offers `draft-only`; it does not publish a sale. Migration `017_community_manager_role.sql` extends the PostgreSQL role constraint. Evidence is never treated as legal clearance.
+Community managers are a separate least-privilege role. Admins may assign an existing non-admin account to `community_manager` through the CSRF-protected account-role route; public registration cannot assign it, and the route cannot grant or alter administrator accounts. `/api/staff/marketplace-review` exposes private beat-intake drafts and private rights evidence only to admins and community managers. Either role can independently approve a complete commercial listing or request changes; Admin does not depend on a Community Manager decision and vice versa. The latest decision for each role is audited separately, and one current approval satisfies commercial review. Seller changes to the listing or evidence make the earlier review stale. Staff review does not publish catalog content, activate an offer, or grant access to `/api/admin/*`; Community Managers retain no payment, refund, pricing, payout, or account-administration capability. Sale eligibility remains gated on a complete listing, an independently published catalog Beat, an available source file, a connected seller with enabled payouts, and configured Stripe payments. Migration `017_community_manager_role.sql` extends the PostgreSQL role constraint. Evidence is seller-provided and is never treated as legal clearance.

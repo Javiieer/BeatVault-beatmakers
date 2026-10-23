@@ -66,14 +66,15 @@ signatures and MIME mismatch, not polyglots or malicious documents.
 ### SEC-05: public launch services are intentionally incomplete
 
 **Severity:** Release blocker, not a confirmed exploit.
-**Status:** Open and explicitly disabled/documented.
+**Status:** Maintenance command implemented; hosted rehearsal remains open.
 
 Production email delivery for account verification and password recovery is not
-configured. Production admin provisioning is not yet supported by the bootstrap
-flow. Stripe live keys are rejected: Connect and checkout are test-mode slices,
-and a live payment/tax/refund/dispute operation has not been validated. Keep sales
-and public launch disabled until these workflows, legal terms, and a real
-PostgreSQL migration/restore rehearsal are complete.
+configured. A production-only maintenance command now provisions the first admin
+or recovers an existing admin password through PostgreSQL; it has not been
+rehearsed on a hosted deployment. Stripe live keys are rejected: Connect and
+checkout are test-mode slices, and a live payment/tax/refund/dispute operation has
+not been validated. Keep sales and public launch disabled until these workflows,
+legal terms, and an off-host PostgreSQL migration/restore rehearsal are complete.
 
 ### SEC-06: upload resource and image-validation controls
 

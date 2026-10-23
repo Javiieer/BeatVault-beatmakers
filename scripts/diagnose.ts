@@ -68,7 +68,7 @@ async function saveReport() {
   await writeFile(join(runDirectory, 'report.json'), JSON.stringify(report, null, 2) + '\n')
 }
 
-async function command(name: string, executable: string, args: string[], timeoutMs = 180000, dependencyAudit = false) {
+async function command(name: string, executable: string, args: string[], timeoutMs = 300000, dependencyAudit = false) {
   const started = Date.now()
   console.log(`[diagnose] ${name}`)
   const result = await new Promise<{ code: number | null; output: string; timedOut: boolean }>(resolveResult => {
@@ -110,12 +110,12 @@ async function command(name: string, executable: string, args: string[], timeout
 await saveReport()
 await command('types', join(root, 'node_modules/typescript/bin/tsc'), ['-b', '--pretty', 'false'])
 await command('lint', join(root, 'node_modules/eslint/bin/eslint.js'), ['.'])
-await command('unit', join(root, 'node_modules/vitest/vitest.mjs'), ['run', '--exclude', 'server/security-probes.test.ts', '--reporter=default', '--reporter=json', `--outputFile.json=${join(runDirectory, 'unit.json')}`])
+await command('unit', join(root, 'node_modules/vitest/vitest.mjs'), ['run', '--exclude', 'server/security-probes.test.ts', '--pool', 'forks', '--maxWorkers', '2', '--reporter=default', '--reporter=json', `--outputFile.json=${join(runDirectory, 'unit.json')}`])
 await command('security', join(root, 'node_modules/vitest/vitest.mjs'), ['run', 'server/security-probes.test.ts', '--reporter=default', '--reporter=json', `--outputFile.json=${join(runDirectory, 'security.json')}`])
 await command('build', join(root, 'node_modules/vite/bin/vite.js'), ['build'])
 if (process.env.npm_execpath) await command('dependencies', process.env.npm_execpath, ['audit', '--json', '--audit-level=high'], 90000, true)
 else checks.push({ name: 'dependencies', status: 'failed', durationMs: 0, log: '', detail: 'Run through npm run diagnose so the npm CLI can be resolved.' })
-if (includeBrowser) await command('browser', join(root, 'node_modules/@playwright/test/cli.js'), ['test'], 600000)
+if (includeBrowser) await command('browser', join(root, 'node_modules/@playwright/test/cli.js'), ['test'], 900000)
 else checks.push({ name: 'browser', status: 'skipped', durationMs: 0, log: '', detail: 'Use npm run diagnose:full for all routes at desktop, tablet and mobile sizes.' })
 complete = true
 await saveReport()

@@ -1,6 +1,6 @@
 # BeatVault BeatMakers Roadmap
 
-**Status date:** 2026-10-15
+**Status date:** 2026-10-18
 **Purpose:** Current product and engineering memory for contributors and AI assistants.
 **Authority:** This document describes the current intended state. When older phase reports or docs disagree, verify against the current code and the focused references linked below; do not repeat historical claims as current facts.
 
@@ -48,7 +48,8 @@ Product decisions to preserve:
 - Registration/login, role-aware admin and Community Manager access, password change,
   and local password-recovery flow. Recovery email delivery is not configured.
 - Creator profile metadata, privacy controls, profile menu, language preference, and
-  dark/light/custom RGB theme settings.
+  dark/light/custom RGB theme settings. Custom avatar and cover uploads support
+  persisted focal positioning and desktop/mobile previews.
 - Authenticated audio upload, owned audio and cover references, account-scoped browser
   data, reload playback/download, metadata edits, archive/restore, and retry behavior.
   The original audio remains private; processed previews are served separately.
@@ -58,8 +59,9 @@ Product decisions to preserve:
   one approval publishes the Beat, so moderation does not bottleneck on the admin.
   Both review queues use the same private processed preview; approval is disabled if
   it is unavailable. CM/admin approvals and rejections are audited.
-  Seller-listing review remains a separate CM recommendation followed by an admin
-  decision because it controls commercial terms, not basic catalog publication.
+  Seller-listing commercial review is independent of catalog publication. Either a
+  Community Manager or Admin can approve a complete listing; either role's current
+  approval is sufficient, and edits to the listing/evidence make prior reviews stale.
 - Admin catalog moderation, seller/admin storage views, configurable storage limits,
   local plan assignment, and audit history.
 
@@ -70,10 +72,21 @@ Product decisions to preserve:
   and bookmarks persist by account/post IDs. Migration 028 adds PostgreSQL follow and
   bookmark tables; clean-schema disposable PostgreSQL and backup/restore checks passed.
   An existing-volume upgrade rehearsal remains before hosted use.
-- The Home stories rail groups published posts from the past 24 hours. This is a
-  presentation over ordinary posts, not a separate story record with server expiry.
-  Labeled seed posts and the demo radar are limited to local development/guest preview;
-  authenticated feeds contain account data only, and production bundles omit the demo radar.
+- Home Stories are separate JSON/PostgreSQL records (migration 029), not feed posts.
+  Text/photo/video stories support public/friends/private audiences, owner deletion,
+  a 24-hour server expiry, at most 20 active stories per account, and the shared 512 MiB
+  social-media quota. Photos are normalized (20 MB max); videos are MP4/H.264 (100 MB,
+  30 seconds, 1920x1080 max). Media access rechecks visibility, generic SSE prompts
+  connected sessions to refresh, and maintenance removes expired records/files.
+  Automated unit/API/component and two-account mobile browser coverage exists. Story
+  reporting/staff moderation and multi-instance realtime delivery remain incomplete;
+  PostgreSQL migration 029 still needs a live disposable-database run. Labeled seed posts
+  and the demo radar are limited to local development/guest preview; authenticated feeds
+  contain account data only, and production bundles omit the demo radar.
+- Connected authenticated Home sessions receive a data-free SSE signal for new public
+  posts. Home shows a refresh prompt; it does not replace the current feed until the
+  user chooses to refresh. Delivery is process-local and currently excludes
+  friends-only/private posts and multi-instance delivery.
 - A two-account Playwright test covers public post delivery, private-post isolation,
   and comment/reaction persistence after reload. The UI remains explicitly partial.
 - Feed interaction reads use an authenticated batch endpoint (up to 30 posts per call),
@@ -86,8 +99,9 @@ Product decisions to preserve:
 - One-to-one text chat is limited to accepted friends. Messages persist through JSON or
   PostgreSQL repositories; connected clients receive updates over SSE.
 - Published catalog Beats support persisted comments/reactions and in-app notifications. Home-post comments/reactions and friend request/acceptance notifications are persisted with recipient-scoped read state, cursor pagination, private-actor masking, post-persistence SSE signals, and polling fallback. PostgreSQL commits each action and notification together; local JSON recovers pending notification writes through a journal. OS/email push remains future work.
-- No independent story publishing/expiry, live Home feed updates, chat attachments or
-  groups, operating-system push, or multi-instance shared rate limits/realtime service.
+- Story reporting/staff moderation, automatic feed replacement, chat attachments/groups,
+  operating-system push, and multi-instance shared rate limits/realtime service remain
+  incomplete or deferred.
 - Feed reads are rate-limited per client IP within one API process, use canonical UUID
   validation and cap each page scan. Interaction batch reads use canonical unique UUIDs
   and weighted per-account limits. Shared limits and load testing remain necessary for
@@ -101,12 +115,17 @@ Product decisions to preserve:
 - Sellers can save private Beat offer drafts with description, genre, optional BPM/key,
   explicit-content flag, USD reference offers, deliverables, collaborators, separate
   master/composition shares, sample declarations, and a versioned rights declaration.
-- Sellers can attach private PDF/JPEG/PNG evidence. Community Managers can recommend or
-  request changes; a different admin account can make a reasoned final intake decision
-  only after a current positive recommendation. Sellers can see both decisions and when
-  they became stale after edits.
+- Sellers can attach private PDF/JPEG/PNG evidence. Community Managers and Admins can
+  independently approve a complete commercial listing or request changes. Neither role
+  waits for the other's approval. A current approval from either satisfies commercial
+  review; sellers can see both decisions and when listing/evidence edits make them stale.
+- Community Managers keep a least-privilege role: review access does not expose payment,
+  refund, pricing, payout, or account-administration controls.
 - Approval is an intake decision only. It does not itself publish an offer or authorize
-  a sale. Evidence is seller-provided and is not legal or forensic rights clearance.
+  a sale. Public catalog publication remains separate. Selling still requires a complete
+  listing, current public publication, available source asset, connected seller with
+  active payout capability, and configured Stripe payments. Evidence is seller-provided
+  and is not legal or forensic rights clearance.
 - Admin can persist category-scoped promotional rules. They are not yet a complete,
   production pricing/discount engine.
 
@@ -115,7 +134,12 @@ Product decisions to preserve:
 - Stripe Connect Express onboarding for Mexican sellers, server-side test keys,
   signed/replay-safe account webhooks, and capability status tracking.
 - One-time Stripe Checkout for an eligible approved Beat, buyer-specific order state,
-  webhook-confirmed payment, and protected original download for the buyer.
+  webhook-confirmed payment, and protected buyer download from the order's immutable
+  one-file delivery/license snapshot. Only a matching MP3 or WAV source is supported;
+  stems, multi-format bundles, and format conversion remain unavailable.
+- Checkout eligibility requires a current commercial approval by either staff role,
+  separate current public publication, a complete listing, available source, connected
+  seller with active payout capability, and configured Stripe payments.
 - Admin order view, full refund request with idempotency and transfer reversal attempt,
   webhook-confirmed refund state, and dispute flagging. Dispute evidence remains manual
   in Stripe; BeatVault does not automatically resolve disputes.
@@ -123,10 +147,13 @@ Product decisions to preserve:
   evaluation only. It is not a final price, guaranteed margin, or approved tax policy.
 - Live Stripe keys and production payouts are not enabled. Do not test with real money.
 - See `docs/STRIPE_CONNECT_TESTING.md` for setup, events, behavior, and remaining gates.
+- `docs/MARKETPLACE_POLICY_DRAFT.md` is a working product/legal draft, not published
+  terms. `docs/COPYRIGHT_MATCHING_PROPOSAL.md` records provider research only; no vendor
+  has been selected, connected, or sent audio.
 
 ### Persistence, security, and operations — Partial
 
-- JSON and PostgreSQL repository implementations exist. Database migrations 001-024 are
+- JSON and PostgreSQL repository implementations exist. Database migrations 001-028 are
   present, including marketplace records, orders/refunds, and durable authentication
   sessions. The normal local app currently uses JSON unless configured otherwise.
 - Beat uploads keep the square JPG/PNG master and generate a 640 px WebP derivative
@@ -152,10 +179,11 @@ Product decisions to preserve:
 - `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`, Playwright route and
   workflow tests, security probes, diagnostic scripts, and GitHub workflow automation
   are available.
-- On 2026-10-15, the full Vitest suite passed 310 tests across 62 files with two
+- On 2026-10-18, the full Vitest suite passed 316 tests across 63 files with two
   workers. The isolated Playwright workflow uploaded real WAVs and exercised CM
   approval, rejection with an owner-visible note, and independent admin approval;
-  the site audit passed on desktop and mobile. Lint, typecheck, and production build
+  two-account Home publishing/privacy/interactions and public-post live refresh passed;
+  the profile and mobile route suites also passed. Lint, typecheck, and production build
   passed. PostgreSQL integration/backup-restore QA passed in an earlier rehearsal;
   this is not a penetration test, OS-isolated media scan, or live Stripe validation.
 
@@ -163,13 +191,13 @@ Product decisions to preserve:
 
 1. **Local storage concurrency:** JSON read/modify/write is not safe for concurrent
    multi-user production writes. Use PostgreSQL for any hosted pilot and validate the
-  complete migration/integration path through migration 024.
+  complete migration/integration path through migration 028.
 2. **Email:** no production email provider is configured for verification or account
    recovery. Development recovery tokens must never be exposed in a public deployment.
 3. **Production admin provisioning:** establish a secure, documented first-admin
    provisioning and recovery procedure before hosting user accounts.
 4. **PostgreSQL migration and restore:** run the current disposable QA against a clean
-  database with migrations 001-024, test upgrade procedures for an existing volume,
+  database with migrations 001-028, test upgrade procedures for an existing volume,
    and rehearse restoring database plus uploaded media from an off-host backup.
 5. **Media validation:** header/MIME/signature checks do not prove full media validity.
    Run isolated decoding/transcoding and fail closed before public delivery; add malware
@@ -204,7 +232,7 @@ Product decisions to preserve:
 
 ### P1 — Make the private pilot operable
 
-- Validate the full PostgreSQL 001-024 schema, data isolation, concurrent writes,
+- Validate the full PostgreSQL 001-028 schema, data isolation, concurrent writes,
   account/session behavior, upload lifecycle, moderation, seller review, and order
   records against a disposable database.
 - Add transactional email, secure production admin provisioning, safe migration/update
@@ -217,7 +245,8 @@ Product decisions to preserve:
 ### P2 — Approve marketplace commerce before enabling it
 
 - Review license templates, seller/buyer policies, rights declarations, and takedown
-  terms with qualified counsel.
+  terms with qualified counsel. Review the working proposal in
+  `docs/MARKETPLACE_POLICY_DRAFT.md` before publishing any policy.
 - Decide final licensing products/prices, commission and Stripe fees, tax handling,
   settlement currency/timing, jurisdiction coverage, refunds, and dispute operations.
 - Complete Stripe test-mode two-account purchases, webhook retries, protected delivery,
@@ -226,10 +255,16 @@ Product decisions to preserve:
 - Only after those gates should paid downloads and a public seller offer workflow move
   out of draft/test mode.
 
+- Separately, decide whether to explore third-party audio matching. Confirm a provider,
+  data processing/privacy and deletion terms, reference coverage, regions, and costs
+  before requesting credentials or submitting any audio. Any match would be a lead for
+  human review, never proof of ownership or a guarantee that no infringement exists.
+  See `docs/COPYRIGHT_MATCHING_PROPOSAL.md`.
+
 ### P3 — Expand only after the core pilot proves useful
 
 - Complete translations across all application routes.
-- Consider custom profile artwork, live Home feed updates, standalone stories, creator
+- Consider friend/private live Home events, story reports/moderation, creator
   collaboration invitations, chat attachments/groups, push notifications, and richer moderation.
 - Revisit Shorts, analytics, and AI only with validated creator needs and clear data,
   consent, cost, and operational plans.
@@ -242,8 +277,8 @@ Product decisions to preserve:
 - Recurring Creator/Studio subscriptions and real plan billing.
 - Individual One-shot checkout, final discount application, final tax calculation, and
   production seller payouts.
-- Standalone story publishing, live Home feed updates, video hosting for Shorts, AI
-  services, and analytics.
+- Story reporting/staff moderation, story view receipts, shared multi-instance realtime
+  delivery, video hosting for Shorts, AI services, and analytics.
 - Multi-instance scaling and public launch.
 
 ## Working Rules for Future Contributors

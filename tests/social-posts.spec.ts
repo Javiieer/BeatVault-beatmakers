@@ -20,6 +20,11 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
       const postId = new URL(route.request().url()).pathname.split('/').at(-2)!;
       await route.fulfill({ json: { ok: true, data: interactions.get(postId) || { comments: [], reactionCount: 0, reactedByMe: false } } });
     });
+    await page.route('**/api/posts/interactions?*', async route => {
+      const postIds = new URL(route.request().url()).searchParams.getAll('id');
+      const items = Object.fromEntries(postIds.map(postId => [postId, interactions.get(postId) || { comments: [], reactionCount: 0, reactedByMe: false }]));
+      await route.fulfill({ json: { ok: true, data: { items } } });
+    });
     await page.route(/\/api\/posts\/[a-f0-9-]+\/comments$/, async route => {
       const postId = new URL(route.request().url()).pathname.split('/').at(-2)!;
       const current = interactions.get(postId) || { comments: [], reactionCount: 0, reactedByMe: false };

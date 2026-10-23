@@ -306,7 +306,7 @@ async function waitForEvent(reader: ReadableStreamDefaultReader<Uint8Array>, tim
   throw new Error('No llegó el evento SSE esperado.')
 }
 
-const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'auth_sessions', 'beat_orders', 'catalog_artwork', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_beat_listing_drafts', 'marketplace_beat_listing_evidence', 'marketplace_promotions', 'notifications', 'projects', 'social_account_follows', 'social_post_bookmarks', 'social_posts', 'social_post_comments', 'social_post_reactions', 'social_post_reports', 'stripe_connected_accounts', 'stripe_webhook_events']
+const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'auth_sessions', 'beat_orders', 'catalog_artwork', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_beat_listing_drafts', 'marketplace_beat_listing_evidence', 'marketplace_promotions', 'notifications', 'projects', 'social_account_follows', 'social_post_bookmarks', 'social_posts', 'social_post_comments', 'social_post_reactions', 'social_post_reports', 'social_stories', 'stripe_connected_accounts', 'stripe_webhook_events']
 try {
   const schema = await pool.query<{ name: string; exists: boolean }>(
     'SELECT name, to_regclass($1 || \'.\' || name) IS NOT NULL AS exists FROM unnest($2::text[]) AS name',
@@ -322,6 +322,7 @@ try {
   const packageSchema = await pool.query<{ exists: boolean }>("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'accounts' AND column_name = 'purchased_plan_ids') AS exists")
   assert(packageSchema.rows[0]?.exists, 'Falta el historial de paquetes verificados de la migracion 014_verified_package_history.sql.')
   assert(schema.rows.some(table => table.name === 'social_account_follows' && table.exists) && schema.rows.some(table => table.name === 'social_post_bookmarks' && table.exists), 'Faltan las tablas de relaciones sociales de la migracion 028_social_follows_bookmarks.sql.')
+  assert(schema.rows.some(table => table.name === 'social_stories' && table.exists), 'Falta la tabla de historias independientes de la migracion 029_social_stories.sql.')
 
   const hash = await hashPassword(password)
   for (const [id, kind, role] of [[creatorId, 'creator', 'creator'], [adminId, 'admin', 'admin'], [outsiderId, 'outsider', 'creator'], [quotaId, 'quota', 'creator']]) {
@@ -411,6 +412,21 @@ try {
   const socialFeed = (await request(outsider, '/api/feed').then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
   const socialProfile = (await request(outsider, `/api/profiles/${creatorId}/posts`).then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
   assert(socialFeed.some(post => post.id === socialPostId) && socialProfile.some(post => post.id === socialPostId), 'El post público no se sincronizó entre Home/feed y el perfil del creador.')
+  response = await request(creator, '/api/stories', 'POST', { body: 'PostgreSQL standalone story', audience: 'public' })
+  assert(response.status === 201, `No se publicó la historia separada en PostgreSQL (${response.status}).`)
+  const publicStory = (await response.json() as { data: { id: string; createdAt: string; expiresAt: string } }).data
+  assert(Date.parse(publicStory.expiresAt) - Date.parse(publicStory.createdAt) === 24 * 60 * 60 * 1000, 'La historia PostgreSQL no vence exactamente a las 24 horas.')
+  const outsiderStories = (await request(outsider, '/api/stories').then(value => value.json()) as { data: { stories: Array<{ id: string }> } }).data.stories
+  assert(outsiderStories.some(story => story.id === publicStory.id), 'La historia pública no se compartió con otra cuenta PostgreSQL.')
+  assert(!(await request(outsider, '/api/feed').then(value => value.json()) as { data: { posts: Array<{ body: string }> } }).data.posts.some(post => post.body === 'PostgreSQL standalone story'), 'Una historia independiente apareció como post del feed PostgreSQL.')
+  response = await request(creator, '/api/stories', 'POST', { body: 'PostgreSQL private story', audience: 'private' })
+  assert(response.status === 201, 'No se publicó la historia privada PostgreSQL.')
+  const privateStoryId = (await response.json() as { data: { id: string } }).data.id
+  assert(!(await request(outsider, '/api/stories').then(value => value.json()) as { data: { stories: Array<{ id: string }> } }).data.stories.some(story => story.id === privateStoryId), 'Una cuenta distinta recibió una historia privada PostgreSQL.')
+  response = await request(outsider, `/api/stories/${publicStory.id}`, 'DELETE')
+  assert(response.status === 404, 'Una cuenta distinta pudo borrar una historia PostgreSQL.')
+  response = await request(creator, `/api/stories/${publicStory.id}`, 'DELETE')
+  assert(response.status === 200, 'El creador no pudo borrar su historia PostgreSQL.')
   response = await request(creator, `/api/follows/${adminId}`, 'PUT', {})
   assert(response.status === 200, `No se pudo seguir una cuenta en PostgreSQL (${response.status}).`)
   response = await request(outsider, `/api/posts/${socialPostId}/bookmark`, 'PUT', {})
@@ -606,39 +622,53 @@ try {
   assert(response.status === 200, 'El creador no pudo completar el listing tras aportar evidencia.')
   listing = (await response.json() as { data: BeatListingRecord }).data
   response = await request(manager, '/api/staff/marketplace-review')
-  const managerQueue = (await response.json() as { data: Array<{ listing: BeatListingRecord; readyForFinalReview: boolean; evidence: Array<{ id: string }> }> }).data
+  const managerQueue = (await response.json() as { data: Array<{ listing: BeatListingRecord; readyForReview: boolean; commercialReviewApproved: boolean; evidence: Array<{ id: string }> }> }).data
   const managerItem = managerQueue.find(item => item.listing.contentId === listing.contentId)
-  assert(response.status === 200 && managerItem?.readyForFinalReview && managerItem.evidence.some(item => item.id === evidence.id), 'Community Manager no pudo revisar ficha y evidencia en PostgreSQL.')
+  assert(response.status === 200 && managerItem?.readyForReview && !managerItem.commercialReviewApproved && managerItem.evidence.some(item => item.id === evidence.id), 'Community Manager no pudo revisar ficha y evidencia en PostgreSQL.')
   response = await fetch(`${base()}/api/staff/marketplace-review/${listing.contentId}/evidence/${evidence.id}`, { headers: { cookie: manager.cookie } })
   assert(response.status === 200 && Buffer.from(await response.arrayBuffer()).equals(pdfBytes) && response.headers.get('cache-control') === 'no-store', 'Community Manager no pudo descargar evidencia privada con controles de caché.')
-  response = await request(admin, `/api/admin/marketplace-listings/${listing.contentId}`, 'POST', { decision: 'approve', note: 'Approved before community review.' })
-  const prematureApproval = await response.json() as { error?: { code?: string } }
-  assert(response.status === 409 && prematureApproval.error?.code === 'COMMUNITY_RECOMMENDATION_REQUIRED', 'El admin aprobó una ficha sin recomendación Community Manager vigente.')
-  response = await request(manager, `/api/staff/marketplace-review/${listing.contentId}`, 'POST', { decision: 'recommend', note: 'Rights evidence and revenue shares reviewed.' })
-  assert(response.status === 200, 'Community Manager no pudo recomendar la ficha lista.')
+  response = await request(admin, `/api/admin/marketplace-listings/${listing.contentId}`, 'POST', { decision: 'approve', note: 'Admin reviewed this listing independently.' })
+  assert(response.status === 200, 'Admin no pudo aprobar la ficha sin una aprobación previa de Community Manager.')
   response = await request(admin, '/api/admin/marketplace-listings')
-  const adminReviewQueue = (await response.json() as { data: Array<{ listing: BeatListingRecord; recommendationCurrent: boolean; latestRecommendation?: { decision: string; reviewerId: string } }> }).data
-  const recommendedItem = adminReviewQueue.find(item => item.listing.contentId === listing.contentId)
-  assert(response.status === 200 && recommendedItem?.recommendationCurrent && recommendedItem.latestRecommendation?.decision === 'recommend' && recommendedItem.latestRecommendation.reviewerId === managerId, `La API no reconstruyó la recomendación recién guardada (${JSON.stringify(recommendedItem)}).`)
+  const adminReviewQueue = (await response.json() as { data: Array<{ listing: BeatListingRecord; readyForReview: boolean; commercialReviewApproved: boolean; communityReviewCurrent: boolean }> }).data
+  const adminApprovedItem = adminReviewQueue.find(item => item.listing.contentId === listing.contentId)
+  assert(response.status === 200 && adminApprovedItem?.readyForReview && adminApprovedItem.commercialReviewApproved && !adminApprovedItem.communityReviewCurrent, `La cola no reconstruyó la aprobación independiente de Admin (${JSON.stringify(adminApprovedItem)}).`)
   response = await request(manager, `/api/admin/marketplace-listings/${listing.contentId}`, 'POST', { decision: 'approve', note: 'Manager cannot finalize approval.' })
-  assert(response.status === 403, 'Community Manager pudo realizar la decisión final de admin.')
-  response = await request(admin, `/api/admin/marketplace-listings/${listing.contentId}`, 'POST', { decision: 'approve', note: 'Rights declaration reviewed for QA.' })
-  const finalDecision = await response.json() as { error?: { code?: string; message?: string } }
-  assert(response.status === 200, `Admin no pudo aprobar tras recomendación vigente de CM (${response.status}: ${finalDecision.error?.code || finalDecision.error?.message || 'sin detalle'}).`)
+  assert(response.status === 403, 'Community Manager pudo usar la ruta de administración de fichas.')
   response = await request(creator, `/api/seller/beat-listings/${listing.contentId}`)
-  const sellerReview = (await response.json() as { data: BeatListingRecord }).data.adminReview
-  assert(response.status === 200 && sellerReview?.decision === 'approve' && sellerReview.current, 'El vendedor no recibió el estado de aprobación vigente.')
+  const sellerReview = (await response.json() as { data: BeatListingRecord }).data
+  assert(response.status === 200 && sellerReview.adminReview?.decision === 'approve' && sellerReview.adminReview.current && !sellerReview.communityReview, 'El vendedor no recibió la aprobación independiente de Admin.')
+
+  const cmOnlyCatalogResponse = await request(creator, '/api/catalog', 'POST', { title: `${fixturePrefix} CM-only offer`, type: 'beat', tagIds: [] })
+  assert(cmOnlyCatalogResponse.status === 201, 'No se creó el Beat para probar la aprobación independiente de CM.')
+  const cmOnlyCatalog = (await cmOnlyCatalogResponse.json() as { data: { contentId: string } }).data
+  const cmOnlyListingInput = {
+    ...listingInput,
+    description: 'A separate complete listing approved by Community Manager only.',
+    rights: { sellerCompositionShareBps: 10000, sellerMasterShareBps: 10000, sampleDisclosure: 'none', sampleProofAvailable: false, collaborators: [], declarationAccepted: true },
+    offers: [{ ...listingInput.offers[0], id: 'cm-only', usageSummary: 'Draft terms for independent Community Manager review.' }],
+  }
+  response = await request(creator, `/api/seller/beat-listings/${cmOnlyCatalog.contentId}`, 'PUT', cmOnlyListingInput)
+  assert(response.status === 201, 'El creador no pudo crear la ficha comercial para revisión independiente de CM.')
+  response = await request(manager, `/api/staff/marketplace-review/${cmOnlyCatalog.contentId}`, 'POST', { decision: 'approve', note: 'Community Manager approved independently.' })
+  assert(response.status === 200, 'Community Manager no pudo aprobar una ficha sin aprobación previa de Admin.')
+  const cmOnlySeller = (await request(creator, `/api/seller/beat-listings/${cmOnlyCatalog.contentId}`).then(value => value.json()) as { data: BeatListingRecord }).data
+  assert(cmOnlySeller.communityReview?.decision === 'approve' && cmOnlySeller.communityReview.current && !cmOnlySeller.adminReview, 'El vendedor no recibió la aprobación independiente de Community Manager.')
+  const cmOnlyEvidenceForm = new FormData()
+  cmOnlyEvidenceForm.append('file', new Blob([new Uint8Array(pdfBytes).buffer as ArrayBuffer], { type: 'application/pdf' }), 'cm-review-evidence.pdf')
+  const cmOnlyEvidenceResponse = await fetch(`${base()}/api/seller/beat-listings/${cmOnlyCatalog.contentId}/evidence`, { method: 'POST', headers: { cookie: creator.cookie, 'x-csrf-token': creator.csrf }, body: cmOnlyEvidenceForm })
+  assert(cmOnlyEvidenceResponse.status === 201, 'La evidencia de la ficha CM no se guardó en PostgreSQL.')
+  const cmOnlyAfterEvidence = (await request(creator, `/api/seller/beat-listings/${cmOnlyCatalog.contentId}`).then(value => value.json()) as { data: BeatListingRecord }).data
+  assert(cmOnlyAfterEvidence.communityReview?.current === false && !cmOnlyAfterEvidence.adminReview, 'Cambiar evidencia no dejó obsoleta la aprobación CM independiente.')
   const outsiderCatalogAfterReview = (await request(outsider, '/api/catalog').then(value => value.json()) as { data: { entries: Array<{ contentId: string; purchaseOffers?: unknown[] }> } }).data.entries
   assert(!outsiderCatalogAfterReview.some(item => item.contentId === listing.contentId), 'La revisión de intake publicó el beat antes de la aprobación de catálogo.')
-  await delay(5)
   response = await request(creator, `/api/seller/beat-listings/${listing.contentId}`, 'PUT', { ...listingInput, description: `${listingInput.description} Revised after review.` , rights: { ...listingInput.rights, sampleProofAvailable: true } })
   assert(response.status === 200, 'El creador no pudo actualizar su ficha después de revisión.')
   response = await request(creator, `/api/seller/beat-listings/${listing.contentId}`)
   const staleReview = (await response.json() as { data: BeatListingRecord }).data
-  assert(staleReview.communityReview?.current === false && staleReview.adminReview?.current === false, 'Editar la ficha no invalidó las decisiones de revisión anteriores.')
-  response = await request(admin, `/api/admin/marketplace-listings/${listing.contentId}`, 'POST', { decision: 'approve', note: 'Must wait for a new CM review.' })
-  const staleApproval = await response.json() as { error?: { code?: string } }
-  assert(response.status === 409 && staleApproval.error?.code === 'COMMUNITY_RECOMMENDATION_REQUIRED', 'El admin aprobó usando una recomendación obsoleta.')
+  assert(staleReview.adminReview?.current === false && !staleReview.communityReview, 'Editar la ficha no dejó obsoleta la aprobación Admin independiente.')
+  response = await request(admin, `/api/admin/marketplace-listings/${listing.contentId}`, 'POST', { decision: 'approve', note: 'Admin reapproved after the seller edit.' })
+  assert(response.status === 200, 'Admin no pudo volver a aprobar la ficha tras una edición sin esperar a CM.')
   const hasProcessedPreview = Boolean(asset.previewStorageKey)
   if (hasProcessedPreview) {
     assert(previewCatalog.audio?.previewReady === true, 'La API no informó que el derivado está listo al dueño.')
@@ -763,13 +793,13 @@ try {
   assert(auditCount.rows[0].count >= 2, 'No persistieron los eventos de auditoría de revisión.')
   const uploadReviewAudit = await pool.query<{ community: number; admin: number }>("SELECT count(*) FILTER (WHERE action = 'catalog_community_decision' AND actor_id = $1)::int AS community, count(*) FILTER (WHERE action = 'catalog_admin_decision' AND actor_id = $2)::int AS admin FROM audit_events WHERE target_id = ANY($3::text[])", [managerId, adminId, [communityRejected.contentId, rejected.contentId]])
   assert(uploadReviewAudit.rows[0].community >= 1 && uploadReviewAudit.rows[0].admin >= 1, 'No persistieron por separado decisiones independientes de CM y admin sobre subidas.')
-  const intakeAudit = await pool.query<{ recommendations: number; decisions: number }>("SELECT count(*) FILTER (WHERE action = 'marketplace_review_recommendation' AND actor_id = $1)::int AS recommendations, count(*) FILTER (WHERE action = 'marketplace_admin_decision' AND actor_id = $2)::int AS decisions FROM audit_events WHERE target_id = $3", [managerId, adminId, previewCatalog.contentId])
-  assert(intakeAudit.rows[0].recommendations >= 1 && intakeAudit.rows[0].decisions >= 1, 'No persistieron por separado la recomendación CM y decisión final admin en PostgreSQL.')
+  const intakeAudit = await pool.query<{ communityApprovals: number; adminApprovals: number }>("SELECT count(*) FILTER (WHERE action = 'marketplace_community_decision' AND actor_id = $1)::int AS \"communityApprovals\", count(*) FILTER (WHERE action = 'marketplace_admin_decision' AND actor_id = $2)::int AS \"adminApprovals\" FROM audit_events WHERE target_id = ANY($3::text[])", [managerId, adminId, [previewCatalog.contentId, cmOnlyCatalog.contentId]])
+  assert(intakeAudit.rows[0].communityApprovals >= 1 && intakeAudit.rows[0].adminApprovals >= 1, 'No persistieron por separado las aprobaciones independientes de CM y Admin en PostgreSQL.')
   const thumbnailResponse = artworkUpload.thumbnailAvailable ? await fetch(`${base()}${previewCatalog.artworkUrl}`, { headers: { cookie: creator.cookie } }) : undefined
   const thumbnailBytes = thumbnailResponse?.ok ? Buffer.from(await thumbnailResponse.arrayBuffer()) : undefined
   if (artworkUpload.thumbnailAvailable) assert(thumbnailBytes && thumbnailBytes.length === artworkUpload.thumbnailSizeBytes && thumbnailBytes.length < artworkBytes.length, 'La miniatura no redujo el peso transferido del artwork.')
   await verifyBackupRestore(asset.id, previewCatalog.contentId, wav, artworkBytes, thumbnailBytes, socialPostId)
-  console.log('PASS: PostgreSQL auth/chat/SSE, creator profile avatar/cover and privacy, transactional notifications and rollback/deduplication, feed/profile sync, isolated follows/bookmarks, social interactions and CM moderation, quota race, audio formats and limits, private Beat artwork/audio review, independent CM/admin Beat approval, and seller listing/evidence review.')
+  console.log('PASS: PostgreSQL auth/chat/SSE, creator profile avatar/cover and privacy, transactional notifications and rollback/deduplication, feed/profile sync, expiring private/public standalone stories, isolated follows/bookmarks, social interactions and CM moderation, quota race, audio formats and limits, private Beat artwork/audio review, independent CM/admin Beat approval, and seller listing/evidence review.')
 } finally {
   await stopApi()
   try {

@@ -8,6 +8,7 @@ artifacts
 .env.oracle
 *.local
 data/server-local/
+data/stories-preview-*/
 
 # Private user content and runtime storage. Keep interface fixtures under assets/demo/ versioned.
 uploads/

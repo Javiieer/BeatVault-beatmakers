@@ -28,6 +28,6 @@ export async function bootstrapAdmin(
     : { id: randomBytes(16).toString('hex'), email, passwordHash: await hashPassword(password), role: 'admin', verificationState: 'verified' }
   await repository.saveAccount(account)
   const action = existing ? (existing.role === 'admin' && existing.verificationState === 'verified' ? 'already-admin' : 'promoted') : 'created'
-  audit?.record('admin_bootstrap', 'admin-bootstrap', account.id)
+  if (audit) await audit.recordAndWait('admin_bootstrap', 'admin-bootstrap', account.id)
   return { action, accountId: account.id, email: account.email }
 }

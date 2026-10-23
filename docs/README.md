@@ -9,9 +9,10 @@ do not follow their old implementation priorities without checking the roadmap.
 
 The current product is a React frontend with a local Node API, durable session support,
 JSON/Postgres adapters, private file uploads, moderation, a seller-review workflow, and
-test-mode Stripe Connect/one-time Beat checkout. Home has a
-browser-local post composer mirrored to the author's own profile; Amigos supports
-opt-in public creator discovery and persisted friend requests in the local API.
+test-mode Stripe Connect/one-time Beat checkout. Authenticated Home posts and
+independent expiring stories persist through JSON/PostgreSQL repositories; profile posts
+read the same server records. Amigos supports opt-in public creator discovery and
+persisted friend requests in the local API.
 Creator profiles include persisted metadata, bundled cover/avatar choices, project
 cards, Publications and optional public links. Public metadata is separate from
 account credentials. The first-release priority remains reliable audio publication
@@ -33,6 +34,8 @@ their statements that there is no backend, authentication or test suite no longe
 - Current release sequence and next implementation: [ROADMAP.md](ROADMAP.md)
 - Historical milestone snapshot: [NEXT_STEP.md](NEXT_STEP.md)
 - Marketplace seller intake rules (draft, not legal terms): [MARKETPLACE_SELLER_RULES.md](MARKETPLACE_SELLER_RULES.md)
+- Marketplace use, purchase and subscription policy (working draft, not legal terms): [MARKETPLACE_POLICY_DRAFT.md](MARKETPLACE_POLICY_DRAFT.md)
+- Copyright-match analysis (technical proposal; no provider connected): [COPYRIGHT_MATCHING_PROPOSAL.md](COPYRIGHT_MATCHING_PROPOSAL.md)
 - Beat artwork requirements, thumbnails and backfill: [ARTWORK_PIPELINE.md](ARTWORK_PIPELINE.md)
 - Stripe test-mode setup and limitations: [STRIPE_CONNECT_TESTING.md](STRIPE_CONNECT_TESTING.md)
 - History: [CHANGELOG.md](CHANGELOG.md)

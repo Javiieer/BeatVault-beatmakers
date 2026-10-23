@@ -82,7 +82,7 @@ function ProfilePostInteractions({ postId }: { postId: string }) {
     {error && <p className="producer-post-social-error" role="alert">{error}</p>}
   </section>;
 }
-function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; user: AuthUser; onSaved: (profile: CreatorProfile) => void }) {
+function ProfileEditor({ profile, onSaved }: { profile: CreatorProfile; onSaved: (profile: CreatorProfile) => void }) {
   const initial: ProfileInput = useMemo(() => ({ displayName: profile.displayName, bio: profile.bio, location: profile.location, website: profile.website, instagram: profile.instagram, genres: profile.genres, coverId: profile.coverId, avatarId: profile.avatarId, avatarFocalPoint: profile.avatarFocalPoint || defaultAvatarFocalPoint, coverFocalPoint: profile.coverFocalPoint || defaultCoverFocalPoint, publicProfile: profile.publicProfile }), [profile]);
   const [draft, setDraft] = useState<ProfileInput>(initial);
   const [genres, setGenres] = useState(initial.genres.join(', '));
@@ -95,18 +95,28 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
   const [coverPreview, setCoverPreview] = useState('');
   const [imageBusy, setImageBusy] = useState<'' | 'avatar' | 'cover'>('');
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
+  const hasUnsavedChanges = dirty || Boolean(avatarFile || coverFile);
+  const profileChecklist = [
+    { label: 'Foto de perfil', complete: draft.avatarId !== 'initials' },
+    { label: 'Biografía', complete: Boolean(draft.bio.trim()) },
+    { label: 'Géneros', complete: draft.genres.length > 0 },
+    { label: 'Ubicación', complete: Boolean(draft.location.trim()) },
+    { label: 'Enlace externo', complete: Boolean(draft.website.trim() || draft.instagram.trim()) },
+  ];
+  const completedProfileItems = profileChecklist.filter(item => item.complete).length;
   useEffect(() => {
     setDraft(initial);
     setGenres(initial.genres.join(', '));
   }, [initial]);
+  useEffect(() => { if (dirty) setSavedMessage(''); }, [dirty]);
   useEffect(() => () => { if (avatarPreview) URL.revokeObjectURL(avatarPreview); if (coverPreview) URL.revokeObjectURL(coverPreview); }, [avatarPreview, coverPreview]);
   useEffect(() => {
-    if (!dirty) return;
+    if (!hasUnsavedChanges) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [dirty]);
-  const cancel = () => { if (!dirty || window.confirm('Descartar los cambios del perfil?')) window.location.hash = '#/profile'; };
+  }, [hasUnsavedChanges]);
+  const cancel = () => { if (!hasUnsavedChanges || window.confirm('Descartar los cambios del perfil?')) window.location.hash = '#/profile'; };
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); if (busy) return;
     setBusy(true); setError('');
@@ -161,11 +171,27 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
           <section><h2>Enlaces</h2><div className="producer-form-grid"><label>Sitio web<input type="url" maxLength={200} placeholder="https://" value={draft.website} onChange={e => setDraft({ ...draft, website: e.target.value })} /></label><label>Instagram<input maxLength={31} placeholder="@usuario" value={draft.instagram} onChange={e => setDraft({ ...draft, instagram: e.target.value })} /></label></div></section>
           <section><h2>Visibilidad</h2><label className="producer-visibility"><input type="checkbox" checked={draft.publicProfile} onChange={e => setDraft({ ...draft, publicProfile: e.target.checked })} />Perfil publico</label></section>
           {error && <p role="alert" className="form-error">{error}</p>}
-          {savedMessage && <p role="status" className="settings-notice"><Check size={15} />{savedMessage}</p>}
-          <div className="producer-save"><button type="button" className="button ghost" onClick={cancel}>Cancelar</button><button className="button" disabled={!draft.displayName.trim()}><Check size={16} />{busy ? 'Guardando...' : 'Guardar cambios'}</button></div>
+          {savedMessage && <p role="status" aria-live="polite" className="settings-notice"><Check size={15} />{savedMessage}</p>}
+          <div className="producer-save"><button type="button" className="button ghost" onClick={cancel}>Cancelar</button><button className="button" disabled={!draft.displayName.trim() || !dirty}><Check size={16} />{busy ? 'Guardando...' : 'Guardar cambios'}</button></div>
         </fieldset>
       </form>
-      <aside className="producer-settings-preview"><p className="eyebrow">Vista previa</p><img className="producer-preview-cover" src={coverPreview || (draft.coverId === 'custom' ? profile.coverUrl || profileCoverUrl(profile.coverId as 'lo-fi') : profileCoverUrl(draft.coverId))} alt="Portada seleccionada" style={{ objectPosition: `${(draft.coverFocalPoint || defaultCoverFocalPoint).x}% ${(draft.coverFocalPoint || defaultCoverFocalPoint).y}%` }} /><Avatar profile={{ ...draft, accountId: profile.accountId, avatarUrl: avatarPreview || (draft.avatarId === 'custom' ? profile.avatarUrl : undefined) }} /><h2>{draft.displayName || 'Tu nombre'}</h2><p>{draft.bio || 'Sin biografia'}</p><dl className="producer-private-account"><dt>Correo de acceso</dt><dd>{user.email}</dd><dt>Permisos</dt><dd>{user.role === 'admin' ? 'Administrador' : user.role === 'community_manager' ? 'Community manager' : 'Creador'}</dd></dl></aside>
+      <aside className="producer-settings-preview" aria-label="Vista previa del perfil">
+        <div className="producer-preview-heading"><p className="eyebrow">Vista previa en vivo</p><span className={`producer-preview-visibility ${draft.publicProfile ? 'is-public' : 'is-private'}`}>{draft.publicProfile ? <Globe2 size={14} /> : <LockKeyhole size={14} />}{draft.publicProfile ? 'Público' : 'Privado'}</span></div>
+        <div className="producer-preview-card">
+          <img className="producer-preview-cover" src={coverPreview || (draft.coverId === 'custom' ? profile.coverUrl || profileCoverUrl(profile.coverId as 'lo-fi') : profileCoverUrl(draft.coverId))} alt="" style={{ objectPosition: `${(draft.coverFocalPoint || defaultCoverFocalPoint).x}% ${(draft.coverFocalPoint || defaultCoverFocalPoint).y}%` }} />
+          <div className="producer-preview-body">
+            <div className="producer-preview-identity"><Avatar profile={{ ...draft, accountId: profile.accountId, avatarUrl: avatarPreview || (draft.avatarId === 'custom' ? profile.avatarUrl : undefined) }} /><div><h2>{draft.displayName || 'Tu nombre'}</h2>{draft.location && <span><MapPin size={13} />{draft.location}</span>}</div></div>
+            <p className="producer-preview-bio">{draft.bio || 'Tu biografía aparecerá aquí.'}</p>
+            {draft.genres.length > 0 && <div className="producer-preview-genres" aria-label="Géneros del perfil">{draft.genres.map(genre => <span key={genre}>{genre}</span>)}</div>}
+            {(draft.website || draft.instagram) && <div className="producer-preview-links">{draft.website && <span><ExternalLink size={13} />{draft.website}</span>}{draft.instagram && <span><AtSign size={13} />{draft.instagram.replace(/^@/, '')}</span>}</div>}
+          </div>
+        </div>
+        <section className="profile-completion" aria-label="Completitud del perfil">
+          <div className="profile-completion-heading"><strong>Datos del perfil</strong><span className="profile-completion-count">{completedProfileItems}/{profileChecklist.length}</span></div>
+          <progress max={profileChecklist.length} value={completedProfileItems} aria-label={`${completedProfileItems} de ${profileChecklist.length} datos del perfil completos`} />
+          <ul>{profileChecklist.map(item => <li key={item.label} className={item.complete ? 'is-complete' : ''}><span aria-hidden="true">{item.complete ? <Check size={13} /> : '•'}</span>{item.label}</li>)}</ul>
+        </section>
+      </aside>
     </div>
   </div>;
 }
@@ -220,7 +246,7 @@ function SettingsCenter({ profile, user, onProfileSaved }: { profile: CreatorPro
       <nav className="settings-nav" aria-label="Secciones de ajustes">{sections.map(([id, label, Icon]) => <button key={id} type="button" className={section === id ? 'active' : ''} aria-current={section === id ? 'page' : undefined} onClick={() => { setSection(id); setNotice(''); setError(''); }}><Icon size={17} />{label}</button>)}</nav>
       <section className="settings-panel" aria-labelledby="settings-section-title">
         <header><h2 id="settings-section-title">{title}</h2>{notice && <p role="status" className="settings-notice"><Check size={15} />{notice}</p>}{error && <p role="alert" className="form-error">{error}</p>}</header>
-        {section === 'profile' && <ProfileEditor profile={profile} user={user} onSaved={onProfileSaved} />}
+        {section === 'profile' && <ProfileEditor profile={profile} onSaved={onProfileSaved} />}
         {section === 'privacy' && <div className="settings-options"><p>Controla qué partes de tu cuenta pueden descubrir otros productores.</p><label className="settings-toggle"><span><strong>Perfil público</strong><small>Permite que aparezcas en el directorio y que otros vean tu perfil.</small></span><input type="checkbox" checked={profile.publicProfile} onChange={async event => { const updated = { displayName: profile.displayName, bio: profile.bio, location: profile.location, website: profile.website, instagram: profile.instagram, genres: profile.genres, coverId: profile.coverId, avatarId: profile.avatarId, avatarFocalPoint: profile.avatarFocalPoint, coverFocalPoint: profile.coverFocalPoint, publicProfile: event.target.checked }; const result = await saveProfile(updated); if (result.ok) { onProfileSaved(result.data); setNotice('Privacidad actualizada.'); } else setError(result.error.message); }} /></label><div className="settings-info"><Shield size={17} /><span>Tus publicaciones personales se guardan localmente en este dispositivo y no se muestran a otros usuarios.</span></div></div>}
         {section === 'preferences' && <div className="settings-options"><label className="settings-control"><span><Palette size={17} />Tema visual</span><select aria-label="Tema visual" value={settings.theme} onChange={event => updateSettings({ ...settings, theme: event.target.value as UserSettings['theme'] })}><option value="dark">Oscuro</option><option value="light">Claro</option><option value="custom">RGB personalizado</option></select></label>{settings.theme === 'custom' && <><fieldset className="custom-theme-colors"><legend className="sr-only">Colores del tema personalizado</legend>{([['background', 'Fondo'], ['card', 'Tarjetas'], ['button', 'Botones'], ['link', 'Enlaces']] as const).map(([key, label]) => <label key={key}><span>{label}</span><input aria-label={`Color ${label.toLocaleLowerCase()}`} type="color" value={settings.customTheme[key]} onChange={event => updateSettings({ ...settings, customTheme: { ...settings.customTheme, [key]: event.target.value } })} /><output>{toRgb(settings.customTheme[key])}</output></label>)}</fieldset><p className="settings-subtle">Elige cada color con el selector RGB. Los colores de texto y estados se ajustan automáticamente para conservar legibilidad.</p></>}<label className="settings-control"><span><Languages size={17} />{tx('settings.language')}</span><select aria-label={tx('settings.language')} value={settings.language} onChange={event => updateSettings({ ...settings, language: event.target.value as 'es' | 'en' })}><option value="es">Español</option><option value="en">English</option></select></label><p className="settings-subtle">{tx('settings.languageNote')}</p><label className="settings-control"><span><Globe2 size={17} />{tx('settings.currency')}</span><select aria-label={tx('settings.currency')} value={settings.currency} onChange={event => updateSettings({ ...settings, currency: event.target.value as UserSettings['currency'] })}><option value="USD">USD · {tx('settings.usd')}</option><option value="MXN">MXN · {tx('settings.mxn')}</option><option value="EUR">EUR · {tx('settings.eur')}</option></select></label><p className="settings-subtle">{tx('settings.currencyNote')}</p><p className="settings-subtle" role="status">{exchangeRates ? tx('settings.currencyRate', { rate: new Intl.NumberFormat(settings.language, { maximumFractionDigits: 4 }).format(exchangeRate('USD', settings.currency, exchangeRates)), currency: settings.currency, date: exchangeRates.date }) : tx('settings.currencyUnavailable')}</p><label className="settings-toggle"><span><strong>Reducir movimiento</strong><small>Reduce animaciones y transiciones de la interfaz.</small></span><input type="checkbox" checked={settings.reducedMotion} onChange={event => updateSettings({ ...settings, reducedMotion: event.target.checked })} /></label></div>}
         {section === 'notifications' && <div className="settings-options"><p>Elige qué avisos emergentes quieres recibir en esta cuenta.</p>{([['messages', 'Mensajes', 'Avisos de nuevos mensajes directos.'], ['friendRequests', 'Solicitudes de amistad', 'Avisos de nuevas solicitudes.'], ['comments', 'Comentarios', 'Cuando alguien comenta en uno de tus beats publicados.'], ['reactions', 'Reacciones', 'Cuando alguien reacciona a uno de tus beats publicados.'], ['reviews', 'Revisión de subidas', 'Avisos sobre el estado de tus beats y one-shots.']] as const).map(([key, label, description]) => <label className="settings-toggle" key={key}><span><strong>{label}</strong><small>{description}</small></span><input type="checkbox" checked={settings.notifications[key]} onChange={event => updateSettings({ ...settings, notifications: { ...settings.notifications, [key]: event.target.checked } })} /></label>)}<div className="settings-info"><Bell size={17} /><span>Los avisos sociales se generan para interacciones en tus beats publicados y respetan estas opciones.</span></div></div>}
@@ -388,7 +414,10 @@ export function CreatorProfilePage({ user, uploads, uploadsLoading = false, onPl
       {saleLoading ? <div className="producer-message" role="status">Cargando beats en venta...</div> : saleBeats.length ? <div className="producer-sale-grid">{saleBeats.map(beat => <article className="producer-sale-card" key={beat.id}>
         <img src={beat.cover || artwork('808')} alt={`Artwork de ${beat.name}`} loading="lazy" decoding="async" />
         <div className="producer-sale-copy"><h2>{beat.name}</h2><p>{beat.tags.map(tag => `#${tag.label}`).join(' ')}</p>
-          {beat.purchaseOffers?.map(offer => <button className="button producer-sale-offer" type="button" key={offer.id} disabled={Boolean(activeOffer)} onClick={() => void buyOffer(beat.id, offer.id)}><ShoppingBag size={15} />{activeOffer === `${beat.id}:${offer.id}` ? 'Abriendo pago...' : `${offer.label} · ${new Intl.NumberFormat('es-MX', { style: 'currency', currency: offer.currency }).format(offer.amountMinor / 100)}`}</button>)}
+          {beat.purchaseOffers?.map(offer => <div className="producer-sale-option" key={offer.id}>
+            <button className="button producer-sale-offer" type="button" disabled={Boolean(activeOffer)} onClick={() => void buyOffer(beat.id, offer.id)}><ShoppingBag size={15} />{activeOffer === `${beat.id}:${offer.id}` ? 'Abriendo pago...' : `${offer.label} · ${new Intl.NumberFormat('es-MX', { style: 'currency', currency: offer.currency }).format(offer.amountMinor / 100)}`}</button>
+            <p className="producer-sale-terms"><strong>{offer.deliverables.map(item => item.toUpperCase()).join(' + ')}</strong> · {offer.usageSummary}</p>
+          </div>)}
         </div>
       </article>)}</div> : <div className="producer-message"><ShoppingBag size={27} /><h2>{isOwner ? 'Aún no tienes beats aprobados en venta' : 'Este creador aún no tiene beats en venta'}</h2>{isOwner && <p>Solo aparecerán beats publicados con oferta aprobada y pagos habilitados.</p>}</div>}
     </section> : activeTab === 'posts' && (isOwner || profile.publicProfile || isPrivateFriend) ? <section id="profile-panel-posts" role="tabpanel" aria-labelledby="profile-tab-posts" className="producer-posts">

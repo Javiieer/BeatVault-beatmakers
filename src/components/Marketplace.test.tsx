@@ -62,13 +62,13 @@ describe('Marketplace', () => {
     const publicOffer = asset('public-beat', {
       ownerId: 'private-seller',
       creatorName: 'BeatVault creator',
-      purchaseOffers: [{ id: 'offer-1', label: 'Basic', amountMinor: 1200, currency: 'USD', deliverables: ['mp3'] }],
+      purchaseOffers: [{ id: 'offer-1', label: 'Basic', amountMinor: 1200, currency: 'USD', deliverables: ['mp3'], usageSummary: 'Commercial release with producer credit.' }],
     });
     const noOffer = asset('not-for-sale', { ownerId: 'private-seller', creatorName: 'BeatVault creator' });
     const unapproved = asset('pending-beat', {
       ownerId: 'private-seller',
       publicationStatus: 'pending-review',
-      purchaseOffers: [{ id: 'offer-2', label: 'Basic', amountMinor: 1200, currency: 'USD', deliverables: ['mp3'] }],
+      purchaseOffers: [{ id: 'offer-2', label: 'Basic', amountMinor: 1200, currency: 'USD', deliverables: ['mp3'], usageSummary: 'Commercial release with producer credit.' }],
     });
     const onSearch = vi.fn(async () => ({ assets: [publicOffer, noOffer, unapproved], total: 3, source: 'api' as const }));
     render(<Marketplace
@@ -81,6 +81,7 @@ describe('Marketplace', () => {
     await waitFor(() => expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ creatorId: 'private-seller', limit: 24 })));
     expect(await screen.findByRole('heading', { name: 'BeatVault creator' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'public-beat' })).toBeInTheDocument();
+    expect(screen.getByText(/Commercial release with producer credit/)).toHaveTextContent('MP3');
     expect(screen.queryByRole('heading', { name: 'not-for-sale' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'pending-beat' })).not.toBeInTheDocument();
     expect(screen.queryByText('Social-only draft')).not.toBeInTheDocument();
@@ -89,8 +90,8 @@ describe('Marketplace', () => {
   });
 
   it('keeps creator filtering when requesting the next public store page', async () => {
-    const first = asset('first', { ownerId: 'seller-2', purchaseOffers: [{ id: 'offer-1', label: 'Basic', amountMinor: 1200, currency: 'USD', deliverables: ['mp3'] }] });
-    const second = asset('second', { ownerId: 'seller-2', purchaseOffers: [{ id: 'offer-2', label: 'Basic', amountMinor: 1200, currency: 'USD', deliverables: ['mp3'] }] });
+    const first = asset('first', { ownerId: 'seller-2', purchaseOffers: [{ id: 'offer-1', label: 'Basic', amountMinor: 1200, currency: 'USD', deliverables: ['mp3'], usageSummary: 'Commercial release with producer credit.' }] });
+    const second = asset('second', { ownerId: 'seller-2', purchaseOffers: [{ id: 'offer-2', label: 'Basic', amountMinor: 1200, currency: 'USD', deliverables: ['mp3'], usageSummary: 'Commercial release with producer credit.' }] });
     const onSearch = vi.fn()
       .mockResolvedValueOnce({ assets: [first], total: 2, nextCursor: 'first', source: 'api' as const })
       .mockResolvedValueOnce({ assets: [second], total: 2, source: 'api' as const });

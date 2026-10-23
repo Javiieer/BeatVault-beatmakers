@@ -32,11 +32,11 @@ export function UploadCard({ asset, onPlay, onEdit, onArchive, onRetryPreview, o
       {asset.publicationStatus === 'rejected' && asset.reviewNote && <p className="creator-upload-review-note">Motivo: {asset.reviewNote}</p>}
       {listing && <span className="beat-listing-private-status">{tx('seller.privateBadge')}</span>}
       {listing?.communityReview && <p className={`seller-admin-review-status${listing.communityReview.current ? '' : ' stale'}`}>
-        {listing.communityReview.current ? listing.communityReview.decision === 'recommend' ? 'Community Manager recommended this listing for final review.' : 'Community Manager requested changes.' : 'Community Manager review is outdated because the listing or evidence changed.'}
+        {listing.communityReview.current ? listing.communityReview.decision === 'approve' || listing.communityReview.decision === 'recommend' ? 'Community Manager approved the commercial review. Publication and sales remain separate.' : 'Community Manager requested changes.' : 'Community Manager review is outdated because the listing or evidence changed.'}
         {' '}{listing.communityReview.note}
       </p>}
       {listing?.adminReview && <p className={`seller-admin-review-status${listing.adminReview.current ? '' : ' stale'}`}>
-        {listing.adminReview.current ? listing.adminReview.decision === 'approve' ? 'Listing reviewed for possible future activation; sales remain disabled.' : listing.adminReview.decision === 'reject' ? 'Listing rejected by administration.' : 'Administration requested changes.' : 'Listing changed after the decision and needs another review.'}
+        {listing.adminReview.current ? listing.adminReview.decision === 'approve' ? 'Admin approved the commercial review. Publication and sales remain separate.' : listing.adminReview.decision === 'reject' ? 'Listing rejected by administration.' : 'Administration requested changes.' : 'Listing changed after the decision and needs another review.'}
         {' '}{listing.adminReview.note}
       </p>}
       <p className="creator-upload-tags">{asset.tags.map(tag => `#${tag.label}`).join(" ") || "Sin tags"}</p>

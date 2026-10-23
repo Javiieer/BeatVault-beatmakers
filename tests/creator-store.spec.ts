@@ -28,7 +28,7 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
               tagIds: ['trap'],
               previewIds: [],
               publicationStatus: 'published',
-              purchaseOffers: [{ id: 'basic', label: 'Basic license', amountMinor: 2500, currency: 'USD', deliverables: ['wav'] }],
+              purchaseOffers: [{ id: 'basic', label: 'Basic license', amountMinor: 2500, currency: 'USD', deliverables: ['wav'], usageSummary: 'Commercial release with producer credit.' }],
             }],
             total: 1,
           },

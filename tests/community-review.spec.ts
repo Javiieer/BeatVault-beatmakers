@@ -12,7 +12,7 @@ const listing = {
   offers: [{ id: 'non-exclusive', label: 'Non-exclusive', amountMinor: 3000, currency: 'USD', deliverables: ['mp3', 'wav'], usageSummary: 'Preliminary non-exclusive usage summary for review.', termsVersion: 'non-exclusive-offer-draft-v1', status: 'draft-only' }],
 }
 
-test('community managers can leave non-final recommendations on private beat drafts', async ({ page }) => {
+test('community managers can independently approve a commercial listing from the moderation dashboard', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   let lastDecision: Record<string, unknown> | undefined
   await page.route(url => new URL(url).pathname.startsWith('/api/'), async route => {
@@ -23,7 +23,8 @@ test('community managers can leave non-final recommendations on private beat dra
       return route.fulfill({ json: { ok: true, data: { contentId, ...lastDecision, reviewerId: account.id, createdAt: '2026-10-12T20:10:00.000Z' }, requestId: 'community-review-test' } })
     }
     const data = path === '/api/auth/me' ? account
-      : path === '/api/staff/marketplace-review' ? [{ listing, title: 'After Hours', creatorId: 'creator-1', readyForFinalReview: true, evidence: [], ...(lastDecision ? { latestRecommendation: { ...lastDecision, reviewerId: account.id, createdAt: '2026-10-12T20:10:00.000Z' } } : {}) }]
+      : path === '/api/staff/catalog-review' ? []
+      : path === '/api/staff/marketplace-review' ? [{ listing, title: 'After Hours', creatorId: 'creator-1', readyForReview: true, commercialReviewApproved: false, evidence: [], communityReviewCurrent: Boolean(lastDecision), ...(lastDecision ? { latestCommunityReview: { ...lastDecision, reviewerId: account.id, createdAt: '2026-10-12T20:10:00.000Z', current: true } } : {}) }]
         : path === '/api/catalog' ? { entries: [], total: 0 }
           : path === '/api/account/storage' ? { usedBytes: 0, limitBytes: null, availableBytes: null, quotaSource: 'none', planId: 'free' }
             : path === '/api/profile' ? { accountId: account.id, displayName: 'Manager', bio: '', genres: [], avatarId: 'initials', coverId: 'lo-fi', publicProfile: false }
@@ -35,15 +36,22 @@ test('community managers can leave non-final recommendations on private beat dra
   })
 
   await page.goto('/#/community-review')
-  await expect(page.getByRole('heading', { name: 'Marketplace review' })).toBeVisible()
-  await expect(page.getByText('Recommendation only.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Moderation center' })).toBeVisible()
+  await expect(page.getByText(/Community Managers can approve a commercial review independently/i)).toBeVisible()
   await expect(page.getByRole('heading', { name: 'After Hours' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Recommend for admin review' })).toBeDisabled()
+  await expect(page.getByText('No Beat uploads are waiting for your review.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Approve commercial review' })).toBeDisabled()
+  await expect(page.getByRole('navigation', { name: 'Moderation dashboard sections' }).getByRole('button', { name: 'Payments' })).toHaveCount(0)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
-  await page.screenshot({ path: 'artifacts/visual-qa/community-review-mobile.png' })
-  await page.getByLabel('Review note').fill('Shares are complete; escalate sample declaration for admin evidence review.')
-  await page.getByRole('button', { name: 'Recommend for admin review' }).click()
-  await expect(page.getByText('Latest: Recommended for admin review')).toBeVisible()
-  expect(lastDecision).toEqual({ decision: 'recommend', note: 'Shares are complete; escalate sample declaration for admin evidence review.' })
+  await page.screenshot({ path: 'artifacts/visual-qa/community-manager-dashboard-mobile.png' })
+  await page.locator('.review-card').screenshot({ path: 'artifacts/visual-qa/community-manager-commercial-review-mobile.png' })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.screenshot({ path: 'artifacts/visual-qa/community-manager-dashboard-desktop.png' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByLabel('Review note').fill('Shares are complete; evidence was checked for this review.')
+  await page.getByRole('button', { name: 'Approve commercial review' }).click()
+  await expect(page.getByText(/Community Manager: Approved commercial review/i)).toBeVisible()
+  expect(lastDecision).toEqual({ decision: 'approve', note: 'Shares are complete; evidence was checked for this review.' })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })

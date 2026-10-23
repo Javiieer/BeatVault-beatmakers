@@ -15,7 +15,7 @@ const isPurchaseOffer = (value: unknown): boolean => {
   if (!value || typeof value !== 'object') return false
   const offer = value as Record<string, unknown>
   return typeof offer.id === 'string' && typeof offer.label === 'string' && Number.isSafeInteger(offer.amountMinor) &&
-    Number(offer.amountMinor) >= 100 && offer.currency === 'USD' && Array.isArray(offer.deliverables) && offer.deliverables.every(item => typeof item === 'string')
+    Number(offer.amountMinor) >= 100 && offer.currency === 'USD' && Array.isArray(offer.deliverables) && offer.deliverables.every(item => typeof item === 'string') && typeof offer.usageSummary === 'string' && offer.usageSummary.trim().length >= 10 && offer.usageSummary.length <= 600
 }
 const isCatalogEntry = (value: unknown): value is CatalogEntry => {
   if (!value || typeof value !== "object") return false;

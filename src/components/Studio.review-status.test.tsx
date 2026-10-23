@@ -15,16 +15,16 @@ const listing: BeatListingRecord = {
   offers: [{ id: 'basic', label: 'Basic', amountMinor: 3000, currency: 'USD', deliverables: ['wav'], usageSummary: 'Draft terms pending activation.', termsVersion: 'non-exclusive-offer-draft-v1', status: 'draft-only' }],
   currency: 'USD', status: 'draft-only', schemaVersion: 1, rightsDeclarationVersion: 'rights-intake-v1',
   createdAt: '2026-10-12T00:00:00.000Z', updatedAt: '2026-10-12T00:00:00.000Z',
-  communityReview: { decision: 'recommend', note: 'Rights information checked.', reviewerId: 'manager-1', createdAt: '2026-10-12T00:01:00.000Z', current: true },
+  communityReview: { decision: 'approve', note: 'Rights information checked.', reviewerId: 'manager-1', createdAt: '2026-10-12T00:01:00.000Z', current: true },
   adminReview: { decision: 'approve', note: 'Approved for future activation.', reviewerId: 'admin-1', createdAt: '2026-10-12T00:02:00.000Z', current: true },
 }
 
 describe('seller marketplace review status', () => {
-  it('shows the current community recommendation and clarifies approval does not enable sales', () => {
+  it('shows the current independent Community Manager approval and keeps publication separate', () => {
     render(<UploadCard asset={asset} listing={listing} onPlay={() => undefined} />)
 
-    expect(screen.getByText(/Community Manager recommended this listing for final review/)).toBeInTheDocument()
-    expect(screen.getByText(/Listing reviewed for possible future activation; sales remain disabled/)).toBeInTheDocument()
+    expect(screen.getByText(/Community Manager approved the commercial review/)).toBeInTheDocument()
+    expect(screen.getByText(/Admin approved the commercial review. Publication and sales remain separate/)).toBeInTheDocument()
     expect(screen.getByText(/Approved for future activation/)).toBeInTheDocument()
   })
 

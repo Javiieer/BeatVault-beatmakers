@@ -11,6 +11,7 @@ import { HttpInputError } from './http'
 import { artworkPath, validateProfileImage } from './artwork'
 import type { ServerRepository } from './store'
 import type { SocialPost, SocialPostMedia } from './social-posts'
+import type { SocialStory, SocialStoryCursor } from './social-stories'
 
 export const socialPhotoMaxBytes = 20 * 1024 * 1024
 export const socialVideoMaxBytes = 100 * 1024 * 1024
@@ -45,7 +46,7 @@ async function reencodeSocialPhoto(bytes: Buffer, mimeType: 'image/jpeg' | 'imag
   }
 }
 
-async function ffprobeSocialVideo(path: string) {
+async function ffprobeSocialVideo(path: string, maxDurationSeconds = socialVideoMaxDurationSeconds) {
   const output = await new Promise<string>((resolvePromise, reject) => {
     const child = spawn(config.ffprobePath, ['-v', 'error', '-protocol_whitelist', 'file', '-show_entries', 'format=format_name,duration:stream=codec_type,codec_name,width,height', '-of', 'json', path], { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
     let stdout = ''
@@ -58,17 +59,17 @@ async function ffprobeSocialVideo(path: string) {
   })
   let metadata: { format?: { format_name?: string; duration?: string }; streams?: Array<{ codec_type?: string; codec_name?: string; width?: number; height?: number; duration?: string }> }
   try { metadata = JSON.parse(output) as typeof metadata } catch { throw new Error('SOCIAL_MEDIA_PROBE_FAILED') }
-  validateSocialVideoMetadata(metadata)
+  validateSocialVideoMetadata(metadata, maxDurationSeconds)
 }
 
-export function validateSocialVideoMetadata(metadata: { format?: { format_name?: string; duration?: string }; streams?: Array<{ codec_type?: string; codec_name?: string; width?: number; height?: number; duration?: string }> }) {
+export function validateSocialVideoMetadata(metadata: { format?: { format_name?: string; duration?: string }; streams?: Array<{ codec_type?: string; codec_name?: string; width?: number; height?: number; duration?: string }> }, maxDurationSeconds = socialVideoMaxDurationSeconds) {
   const video = metadata.streams?.find(stream => stream.codec_type === 'video')
   const duration = Number(metadata.format?.duration || video?.duration || 0)
-  if (!metadata.format?.format_name?.split(',').some(name => name === 'mov' || name === 'mp4') || !video || video.codec_name !== 'h264' || !Number.isSafeInteger(video.width) || !Number.isSafeInteger(video.height) || (video.width || 0) < 1 || (video.height || 0) < 1 || (video.width || 0) > socialVideoMaxWidth || (video.height || 0) > socialVideoMaxHeight || !Number.isFinite(duration) || duration <= 0 || duration > socialVideoMaxDurationSeconds) throw new HttpInputError(400, 'SOCIAL_VIDEO_LIMITS', 'El video debe ser MP4/H.264, durar hasta 3 minutos y no exceder 1920x1080.')
+  if (!metadata.format?.format_name?.split(',').some(name => name === 'mov' || name === 'mp4') || !video || video.codec_name !== 'h264' || !Number.isSafeInteger(video.width) || !Number.isSafeInteger(video.height) || (video.width || 0) < 1 || (video.height || 0) < 1 || (video.width || 0) > socialVideoMaxWidth || (video.height || 0) > socialVideoMaxHeight || !Number.isFinite(duration) || duration <= 0 || duration > maxDurationSeconds) throw new HttpInputError(400, 'SOCIAL_VIDEO_LIMITS', `El video debe ser MP4/H.264, durar hasta ${Math.floor(maxDurationSeconds / 60) || maxDurationSeconds} ${maxDurationSeconds < 60 ? 'segundos' : 'minutos'} y no exceder 1920x1080.`)
 }
 
 export type ReceivedSocialMedia = { media: SocialPostMedia; body: string; audience: 'public' | 'friends' | 'private' }
-export async function receiveSocialPostMedia(req: IncomingMessage, ownerId: string, kind: 'photo' | 'video'): Promise<ReceivedSocialMedia> {
+export async function receiveSocialPostMedia(req: IncomingMessage, ownerId: string, kind: 'photo' | 'video', options: { collection?: 'social-posts' | 'social-stories'; maxVideoDurationSeconds?: number } = {}): Promise<ReceivedSocialMedia> {
   if (req.headers['content-type']?.split(';')[0]?.toLowerCase() !== 'multipart/form-data') throw new HttpInputError(415, 'MULTIPART_REQUIRED', 'Se requiere una carga multipart.')
   const maxFile = kind === 'photo' ? socialPhotoMaxBytes : socialVideoMaxBytes
   const maxRequest = maxFile + 128 * 1024
@@ -116,7 +117,8 @@ export async function receiveSocialPostMedia(req: IncomingMessage, ownerId: stri
     })
     if (!sizeBytes) throw new HttpInputError(400, 'SOCIAL_MEDIA_EMPTY', 'El archivo está vacío.')
     if (body.length > 600 || !['public', 'friends', 'private'].includes(audience)) throw new HttpInputError(400, 'SOCIAL_POST_INVALID', 'Texto o audiencia inválidos.')
-    const storageKey = `social-posts/${safeOwner(ownerId)}/${id}`
+    const collection = options.collection ?? 'social-posts'
+    const storageKey = `${collection}/${safeOwner(ownerId)}/${id}`
     const destination = artworkPath(config.uploadDirectory, storageKey)
     await mkdir(join(destination, '..'), { recursive: true })
     let mimeType: SocialPostMedia['mimeType'] | undefined
@@ -134,7 +136,7 @@ export async function receiveSocialPostMedia(req: IncomingMessage, ownerId: stri
       try { const header = Buffer.alloc(32); const { bytesRead } = await handle.read(header, 0, header.length, 0); mimeType = detectMedia(header.subarray(0, bytesRead), declaredMime) }
       finally { await handle.close() }
       if (mimeType !== 'video/mp4') throw new HttpInputError(400, 'SOCIAL_MEDIA_INVALID', 'El archivo no es un contenedor MP4 válido.')
-      await ffprobeSocialVideo(temporary)
+      await ffprobeSocialVideo(temporary, options.maxVideoDurationSeconds)
       await runMediaProcess(config.ffmpegPath, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-xerror', '-protocol_whitelist', 'file', '-i', temporary, '-map', '0:v:0', '-t', `${socialVideoMaxDurationSeconds + 1}`, '-f', 'null', '-'])
     }
     await rename(temporary, destination)
@@ -143,7 +145,7 @@ export async function receiveSocialPostMedia(req: IncomingMessage, ownerId: stri
     return { media: { storageKey, mimeType: mimeType!, sizeBytes, sha256: hash.digest('hex') }, body: body.trim(), audience: audience as 'public' | 'friends' | 'private' }
   } catch (error) {
     await unlink(temporary).catch(() => undefined)
-    await unlink(artworkPath(config.uploadDirectory, `social-posts/${safeOwner(ownerId)}/${id}`)).catch(() => undefined)
+    await unlink(artworkPath(config.uploadDirectory, `${options.collection ?? 'social-posts'}/${safeOwner(ownerId)}/${id}`)).catch(() => undefined)
     throw error
   }
 }
@@ -157,12 +159,12 @@ function runMediaProcess(executable: string, args: string[]) {
   })
 }
 
-export async function removeSocialPostMedia(post: Pick<SocialPost, 'media'>) {
+export async function removeSocialPostMedia(post: Pick<SocialPost | SocialStory, 'media'>) {
   if (!post.media) return
   await unlink(artworkPath(config.uploadDirectory, post.media.storageKey)).catch(() => undefined)
 }
 
-export async function readSocialPostMedia(post: SocialPost) {
+export async function readSocialPostMedia(post: Pick<SocialPost | SocialStory, 'id' | 'media'>) {
   if (!post.media) return undefined
   const path = artworkPath(config.uploadDirectory, post.media.storageKey)
   try {
@@ -200,4 +202,35 @@ export async function reconcileSocialPostMedia(repo: ServerRepository) {
       if (!referenced.has(key)) await unlink(artworkPath(config.uploadDirectory, key)).catch(() => undefined)
     }
   }
+}
+
+export async function reconcileSocialStoryMedia(repo: ServerRepository) {
+  await deleteExpiredSocialStoryMedia(repo)
+  const root = join(config.uploadDirectory, 'social-stories')
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+  const referenced = new Set<string>()
+  const pageSize = 1000
+  let cursor: SocialStoryCursor | undefined
+  while (true) {
+    const stories = await repo.listSocialStories({ limit: pageSize, ...(cursor ? { cursor } : {}) })
+    for (const story of stories) if (story.media) referenced.add(story.media.storageKey)
+    if (stories.length < pageSize) break
+    const last = stories.at(-1)
+    if (!last || last.createdAt === cursor?.createdAt && last.id === cursor.id) throw new Error('SOCIAL_STORY_RECONCILIATION_CURSOR_STALLED')
+    cursor = { createdAt: last.createdAt, id: last.id }
+  }
+  for (const owner of entries) {
+    if (!owner.isDirectory() || !/^[a-zA-Z0-9_-]{1,80}$/.test(owner.name)) continue
+    for (const file of await readdir(join(root, owner.name), { withFileTypes: true }).catch(() => [])) {
+      if (!file.isFile() || !/^[a-f0-9-]{36}$/i.test(file.name)) continue
+      const key = `social-stories/${owner.name}/${file.name}`
+      if (!referenced.has(key)) await unlink(artworkPath(config.uploadDirectory, key)).catch(() => undefined)
+    }
+  }
+}
+
+export async function deleteExpiredSocialStoryMedia(repo: ServerRepository, now = new Date().toISOString()) {
+  const expired = await repo.deleteExpiredSocialStories(now)
+  for (const story of expired) await removeSocialPostMedia(story)
+  return expired.length
 }

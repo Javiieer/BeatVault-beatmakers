@@ -50,6 +50,45 @@ describe('JsonStore', () => {
       await rm(directory, { recursive: true, force: true })
     }
   })
+  it('shares social media quota across posts and standalone stories', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'beatvault-social-story-quota-'))
+    const previousDirectory = config.dataDirectory
+    config.dataDirectory = directory
+    try {
+      const repo = new LocalRepository()
+      const authorId = randomUUID()
+      const createdAt = new Date().toISOString()
+      await repo.createSocialStory({
+        id: randomUUID(), authorId, kind: 'photo', body: '', audience: 'private', createdAt,
+        expiresAt: new Date(Date.parse(createdAt) + 24 * 60 * 60 * 1000).toISOString(),
+        media: { storageKey: `social-stories/${authorId}/${randomUUID()}`, mimeType: 'image/jpeg', sizeBytes: 7, sha256: 'a'.repeat(64) },
+      }, 10)
+      const postCreatedAt = new Date().toISOString()
+      await expect(repo.createSocialPost({
+        id: randomUUID(), authorId, kind: 'photo', body: 'Feed image', audience: 'private', visibility: 'published', createdAt: postCreatedAt, updatedAt: postCreatedAt,
+        media: { storageKey: `social-posts/${authorId}/${randomUUID()}`, mimeType: 'image/jpeg', sizeBytes: 4, sha256: 'b'.repeat(64) },
+      }, 10)).rejects.toBeInstanceOf(StorageQuotaExceededError)
+    } finally {
+      config.dataDirectory = previousDirectory
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+  it('deletes expired stories from the persistent local repository', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'beatvault-story-expiry-'))
+    const previousDirectory = config.dataDirectory
+    config.dataDirectory = directory
+    try {
+      const repo = new LocalRepository()
+      const createdAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
+      const oldStory = { id: randomUUID(), authorId: 'story-owner', kind: 'status' as const, body: 'Old update', audience: 'private' as const, createdAt, expiresAt: new Date(Date.parse(createdAt) + 24 * 60 * 60 * 1000).toISOString() }
+      await repo.createSocialStory(oldStory, 512 * 1024 * 1024)
+      expect(await repo.deleteExpiredSocialStories(new Date().toISOString())).toEqual([oldStory])
+      expect(await repo.listSocialStories({ expiresAfter: new Date().toISOString(), limit: 20 })).toEqual([])
+    } finally {
+      config.dataDirectory = previousDirectory
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
   it('persists and clears manual account storage limits', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'beatvault-storage-quota-'))
     const previousDirectory = config.dataDirectory

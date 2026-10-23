@@ -25,6 +25,8 @@ describe('social media validation and reconciliation', () => {
   it('requires bounded MP4/H.264 metadata', () => {
     const valid = { format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '180.000' }, streams: [{ codec_type: 'video', codec_name: 'h264', width: 1920, height: 1080 }] }
     expect(() => validateSocialVideoMetadata(valid)).not.toThrow()
+    expect(() => validateSocialVideoMetadata({ ...valid, format: { ...valid.format, duration: '30' } }, 30)).not.toThrow()
+    expect(() => validateSocialVideoMetadata(valid, 30)).toThrow('30 segundos')
     expect(() => validateSocialVideoMetadata({ ...valid, format: { ...valid.format, duration: '180.01' } })).toThrow('El video debe ser MP4/H.264')
     expect(() => validateSocialVideoMetadata({ ...valid, streams: [{ ...valid.streams[0], width: 1921 }] })).toThrow('El video debe ser MP4/H.264')
     expect(() => validateSocialVideoMetadata({ ...valid, streams: [{ ...valid.streams[0], codec_name: 'mpeg4' }] })).toThrow('El video debe ser MP4/H.264')
@@ -61,7 +63,7 @@ describe('social media validation and reconciliation', () => {
     expect(sourceMetadata.xmp).toBeDefined()
     expect(sourceMetadata.orientation).toBe(6)
 
-    const uploadPhoto = async (bytes: Buffer, mime: 'image/jpeg' | 'image/png') => {
+    const uploadPhoto = async (bytes: Buffer, mime: 'image/jpeg' | 'image/png', collection: 'social-posts' | 'social-stories' = 'social-posts') => {
       const boundary = `social-${randomUUID()}`
       const fields = [
         `--${boundary}\r\nContent-Disposition: form-data; name="body"\r\n\r\nPhoto test\r\n`,
@@ -72,7 +74,7 @@ describe('social media validation and reconciliation', () => {
       const request = Object.assign(Readable.from([payload]), {
         headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, 'content-length': String(payload.length) },
       })
-      const received = await receiveSocialPostMedia(request as unknown as IncomingMessage, 'social-photo-owner', 'photo')
+      const received = await receiveSocialPostMedia(request as unknown as IncomingMessage, 'social-photo-owner', 'photo', { collection })
       const stored = await readFile(join(config.uploadDirectory, received.media.storageKey))
       expect(received.media.sizeBytes).toBe(stored.length)
       return { received, stored }
@@ -116,6 +118,8 @@ describe('social media validation and reconciliation', () => {
     expect(pngMetadata.hasAlpha).toBe(true)
     expect(info.channels).toBe(4)
     expect([pixels[3], pixels[7]]).toEqual([0, 127])
+    const storyImage = await uploadPhoto(alphaPng, 'image/png', 'social-stories')
+    expect(storyImage.received.media.storageKey).toMatch(/^social-stories\/social-photo-owner\//)
   })
 
   it('removes orphaned media and crash-left temporary files without touching referenced posts', async () => {
