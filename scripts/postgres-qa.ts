@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
 import { request as httpRequest } from 'node:http'
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -159,13 +159,35 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
   const restoreDb = `beatvault_test_restore_${randomUUID().replaceAll('-', '').slice(0, 12)}`
   const restoreUrl = new URL(databaseUrl)
   restoreUrl.pathname = `/${restoreDb}`
-  const backupDirectory = await mkdtemp(join(tmpdir(), 'beatvault-restore-qa-'))
+  const configuredRecoveryRoot = process.env.BEATVAULT_TEST_RECOVERY_ROOT
+  const emulatedRecoveryRoot = resolve('D:/BeatVault/backups/emulated-disk')
+  let backupDirectory: string
+  let persistentBackup = false
+  if (configuredRecoveryRoot) {
+    assert(process.platform === 'win32' && resolve(configuredRecoveryRoot).toLowerCase() === emulatedRecoveryRoot.toLowerCase(), 'La QA persistente sólo acepta D:\\BeatVault\\backups\\emulated-disk.')
+    for (const directory of [resolve('D:/BeatVault'), resolve('D:/BeatVault/backups'), emulatedRecoveryRoot]) {
+      try {
+        const info = await lstat(directory)
+        assert(info.isDirectory() && !info.isSymbolicLink(), `La carpeta de respaldo contiene un punto de reanálisis o no es directorio: ${directory}`)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        await mkdir(directory)
+      }
+    }
+    backupDirectory = join(emulatedRecoveryRoot, `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}`)
+    await mkdir(backupDirectory)
+    persistentBackup = true
+  } else {
+    backupDirectory = await mkdtemp(join(tmpdir(), 'beatvault-restore-qa-'))
+  }
+  const restoreDirectory = await mkdtemp(join(tmpdir(), 'beatvault-restore-check-'))
   const dumpPath = join(backupDirectory, 'database.dump')
   const mediaArchive = join(backupDirectory, 'uploads.tar.gz')
-  const restoredMedia = join(backupDirectory, 'restored-uploads')
+  const restoredMedia = join(restoreDirectory, 'restored-uploads')
   const username = decodeURIComponent(database.username)
   let restorePool: Pool | undefined
   let targetApiStarted = false
+  let restoreVerified = false
   try {
     await stopApi()
     const dump = pgTool('pg_dump', ['-Fc', '--no-owner', '--no-acl', '-U', username, '-d', databaseName])
@@ -250,13 +272,33 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
       const restoredThumbnail = await fetch(`${base()}/api/catalog/${creatorContentId}/artwork/thumbnail`, { headers: { cookie: restoredCreator.cookie } })
       assert(restoredThumbnail.status === 200 && restoredThumbnail.headers.get('content-type') === 'image/webp' && Buffer.from(await restoredThumbnail.arrayBuffer()).equals(expectedThumbnail), 'La API restaurada no pudo servir la miniatura WebP recuperada.')
     }
+    if (persistentBackup) {
+      const dumpBytes = await readFile(dumpPath)
+      const archiveBytes = await readFile(mediaArchive)
+      const manifest = {
+        createdAt: new Date().toISOString(),
+        sourceDatabase: databaseName,
+        syntheticQaDataOnly: true,
+        restoredIntoIsolatedDatabase: restoreDb,
+        restoredMediaInTemporaryDirectory: true,
+        physicalIndependenceProven: false,
+        artifacts: {
+          database: { file: 'database.dump', sizeBytes: dumpBytes.length, sha256: createHash('sha256').update(dumpBytes).digest('hex') },
+          media: { file: 'uploads.tar.gz', sizeBytes: archiveBytes.length, sha256: createHash('sha256').update(archiveBytes).digest('hex') },
+        },
+      }
+      await writeFile(join(backupDirectory, 'verification.json'), `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' })
+      restoreVerified = true
+    }
     console.log('PASS: PostgreSQL custom-format backup/restore, table row counts, package history, chat, social post interactions, catalog, audio, original artwork and thumbnail.')
   } finally {
     if (targetApiStarted || api) await stopApi()
     await restorePool?.end()
     const dropped = pgTool('dropdb', ['--if-exists', '-U', username, restoreDb])
     if (dropped.status !== 0) console.error(`Restore QA cleanup warning; temporary database ${restoreDb} may need removal: ${dropped.stderr.toString()}`)
-    await rm(backupDirectory, { recursive: true, force: true })
+    await rm(restoreDirectory, { recursive: true, force: true })
+    if (!persistentBackup || !restoreVerified) await rm(backupDirectory, { recursive: true, force: true })
+    else console.log(`Persisted synthetic QA backup on D: ${backupDirectory}`)
   }
 }
 

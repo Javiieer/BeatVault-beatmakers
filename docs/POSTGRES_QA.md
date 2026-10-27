@@ -22,6 +22,18 @@ Fresh 001-029 and existing 028 to 029 upgrade were also exercised. The owner's i
 data was separately restored and compared exactly across 32 tables. See
 [local operation and evidence](POSTGRES_LOCAL.md).
 
+To persist only the synthetic QA backup on the D: emulation folder, set
+`$env:BEATVAULT_TEST_RECOVERY_ROOT='D:\BeatVault\backups\emulated-disk'` before
+`npm.cmd run test:postgres:local`. Each successful run writes a unique `run-*` folder
+with a custom PostgreSQL dump, a tar archive of QA uploads and `verification.json`
+containing their SHA-256 hashes. The QA restores from D: into a disposable database and
+temporary media directory, then removes those restore targets. The retained artifacts
+come only from `beatvault_test_native` and generated QA uploads; they do not include
+`beatvault_local` or the owner's primary uploads. D: is still the same physical disk as
+those primary uploads, so this folder simulates a third destination but cannot prove
+physical independence. The run applies changes after a later checkout must use a fresh
+shell so it sees the per-user FFmpeg PATH if media tests are desired.
+
 `npm run test:postgres` runs live integration checks against an isolated local
 PostgreSQL database. It refuses remote hosts and database names unless they match
 `beatvault_test_*` or `beatvault_audit_*`. The current schema includes migrations
