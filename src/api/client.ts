@@ -21,9 +21,9 @@ function isApiResult<T>(value: unknown, isData: Decoder<T>): value is ApiResult<
 export class ApiClient {
   constructor(private readonly baseUrl = import.meta.env.VITE_API_BASE_URL || defaultApiBaseUrl, private readonly timeoutMs = 4000, private readonly fetcher: typeof fetch = fetch) {}
 
-  async request<T>(path: string, init: RequestInit, isData: Decoder<T>): Promise<ApiResult<T>> {
+  async request<T>(path: string, init: RequestInit, isData: Decoder<T>, timeoutMs = this.timeoutMs): Promise<ApiResult<T>> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const csrf = typeof document !== "undefined" ? document.cookie.split('; ').find(value => value.startsWith('beatvault_csrf='))?.split('=')[1] : undefined;
       const headers = { ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...(init.method && init.method !== "GET" ? { "X-CSRF-Token": csrf || "" } : {}), ...init.headers };
@@ -67,14 +67,48 @@ export const isAccountStorageUsage = (value: unknown): value is AccountStorageUs
     (item.quotaSource === 'account' || item.quotaSource === 'plan' || item.quotaSource === 'server' || item.quotaSource === 'none') && ['free', 'creator', 'studio'].includes(item.planId as string);
 };
 export const getAccountStorageUsage = () => authClient.request('/api/account/storage', { method: 'GET' }, isAccountStorageUsage);
-export type AccountPlanSnapshot = { planId: 'free' | 'creator' | 'studio'; status: 'local'; plan: { id: 'free' | 'creator' | 'studio'; name: string; description: string; storageLimitBytes: number | null }; plans: Array<{ id: 'free' | 'creator' | 'studio'; name: string; description: string; storageLimitBytes: number | null }>; pricing: 'undecided'; billing: 'disabled' };
+export type CommercePolicySnapshot = { mode: 'disabled' | 'test'; platformCommissionBps: number; planBasedFees: false; promotionsApplied: false };
+export type AccountPlanSnapshot = { planId: 'free' | 'creator' | 'studio'; status: 'local'; plan: { id: 'free' | 'creator' | 'studio'; name: string; description: string; storageLimitBytes: number | null }; plans: Array<{ id: 'free' | 'creator' | 'studio'; name: string; description: string; storageLimitBytes: number | null }>; pricing: 'undecided'; billing: 'disabled'; commerce?: CommercePolicySnapshot };
 const isPlanDefinition = (value: unknown): value is AccountPlanSnapshot['plan'] => Boolean(value && typeof value === 'object' && ['free', 'creator', 'studio'].includes((value as Record<string, unknown>).id as string) && typeof (value as Record<string, unknown>).name === 'string' && typeof (value as Record<string, unknown>).description === 'string' && ((value as Record<string, unknown>).storageLimitBytes === null || typeof (value as Record<string, unknown>).storageLimitBytes === 'number'));
-export const isAccountPlanSnapshot = (value: unknown): value is AccountPlanSnapshot => Boolean(value && typeof value === 'object' && ['free', 'creator', 'studio'].includes((value as Record<string, unknown>).planId as string) && (value as Record<string, unknown>).status === 'local' && isPlanDefinition((value as Record<string, unknown>).plan) && Array.isArray((value as Record<string, unknown>).plans) && ((value as Record<string, unknown>).plans as unknown[]).every(isPlanDefinition) && (value as Record<string, unknown>).pricing === 'undecided' && (value as Record<string, unknown>).billing === 'disabled');
+export const isAccountPlanSnapshot = (value: unknown): value is AccountPlanSnapshot => {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  const commerce = row.commerce as Partial<CommercePolicySnapshot> | undefined;
+  const validCommerce = commerce === undefined || Boolean(commerce && ['disabled', 'test'].includes(commerce.mode || '') && Number.isSafeInteger(commerce.platformCommissionBps) && typeof commerce.platformCommissionBps === 'number' && commerce.platformCommissionBps >= 0 && commerce.platformCommissionBps < 10000 && commerce.planBasedFees === false && commerce.promotionsApplied === false);
+  return ['free', 'creator', 'studio'].includes(row.planId as string) && row.status === 'local' && isPlanDefinition(row.plan) && Array.isArray(row.plans) && row.plans.every(isPlanDefinition) && row.pricing === 'undecided' && row.billing === 'disabled' && validCommerce;
+};
 export const getAccountPlan = () => authClient.request('/api/account/plan', { method: 'GET' }, isAccountPlanSnapshot);
-export type StripeConnectStatus = { enabled: boolean; connected: boolean; chargesEnabled: boolean; payoutsEnabled: boolean; detailsSubmitted: boolean; deauthorized: boolean };
-export const isStripeConnectStatus = (value: unknown): value is StripeConnectStatus => Boolean(value && typeof value === 'object' && ['enabled', 'connected', 'chargesEnabled', 'payoutsEnabled', 'detailsSubmitted', 'deauthorized'].every(key => typeof (value as Record<string, unknown>)[key] === 'boolean'));
-export const getStripeConnectStatus = () => authClient.request('/api/connect/account', { method: 'GET' }, isStripeConnectStatus);
-export const startStripeConnectOnboarding = () => authClient.request('/api/connect/onboarding', { method: 'POST', body: JSON.stringify({}) }, (value): value is { url: string } => Boolean(value && typeof value === 'object' && typeof (value as Record<string, unknown>).url === 'string' && (value as Record<string, unknown>).url?.toString().startsWith('https://connect.stripe.com/')));
+const mercadoPagoOrigins = new Set(['https://www.mercadopago.com.mx', 'https://sandbox.mercadopago.com.mx']);
+export function safeMercadoPagoUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    return mercadoPagoOrigins.has(url.origin) && !url.username && !url.password && !url.hash && url.pathname.startsWith('/checkout/') ? url.href : undefined;
+  } catch { return undefined; }
+}
+const mercadoPagoOAuthOrigin = 'https://auth.mercadopago.com.mx';
+export function safeMercadoPagoOAuthUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    const expected = ['client_id', 'response_type', 'platform_id', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method'];
+    if (url.origin !== mercadoPagoOAuthOrigin || url.pathname !== '/authorization' || url.username || url.password || url.hash || url.searchParams.size !== expected.length ||
+      expected.some(key => url.searchParams.getAll(key).length !== 1) || [...url.searchParams.keys()].some(key => !expected.includes(key))) return undefined;
+    const redirect = new URL(url.searchParams.get('redirect_uri')!);
+    const redirectIsLoopback = ['localhost', '127.0.0.1', '[::1]'].includes(redirect.hostname);
+    return /^[0-9]{1,40}$/.test(url.searchParams.get('client_id')!) && url.searchParams.get('response_type') === 'code' &&
+      url.searchParams.get('platform_id') === 'mp' && url.searchParams.get('code_challenge_method') === 'S256' &&
+      /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get('state')!) && /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get('code_challenge')!) &&
+      (redirect.protocol === 'https:' || redirect.protocol === 'http:' && redirectIsLoopback) && !redirect.username && !redirect.password && !redirect.search && !redirect.hash ? url.href : undefined;
+  } catch { return undefined; }
+}
+export type MercadoPagoSellerStatus = { enabled: boolean; connected: boolean; tokenExpiresAt?: string };
+export const isMercadoPagoSellerStatus = (value: unknown): value is MercadoPagoSellerStatus => {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.enabled === 'boolean' && typeof row.connected === 'boolean' &&
+    (row.tokenExpiresAt === undefined || typeof row.tokenExpiresAt === 'string' && Number.isFinite(Date.parse(row.tokenExpiresAt)));
+};
+export const getMercadoPagoSellerStatus = () => authClient.request('/api/payments/mercadopago/seller', { method: 'GET' }, isMercadoPagoSellerStatus);
+export const startMercadoPagoOAuth = () => authClient.request('/api/payments/mercadopago/oauth/start', { method: 'POST', body: JSON.stringify({}) }, (value): value is { url: string } => Boolean(value && typeof value === 'object' && typeof (value as Record<string, unknown>).url === 'string' && safeMercadoPagoOAuthUrl((value as Record<string, unknown>).url as string)));
 const currencyClient = new ApiClient(undefined, 8000);
 export const getCurrencyRates = () => currencyClient.request('/api/currency-rates', { method: 'GET' }, isExchangeRates);
 export const isAssetRecord = (value: unknown): value is AssetRecord => { if (!value || typeof value !== "object") return false; const item = value as Record<string, unknown>; return typeof item.id === "string" && typeof item.ownerId === "string" && typeof item.originalName === "string" && typeof item.storageKey === "string" && typeof item.mimeType === "string" && typeof item.sizeBytes === "number" && typeof item.contentHash === "string" && ["available", "missing", "metadata-only"].includes(item.state as string) && typeof item.createdAt === "string" && typeof item.updatedAt === "string" && (item.previewStorageKey === undefined || typeof item.previewStorageKey === 'string') && (item.previewMimeType === undefined || item.previewMimeType === 'audio/mp4') && (item.previewSizeBytes === undefined || typeof item.previewSizeBytes === 'number' && item.previewSizeBytes > 0); };

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "r
 import { Check, Globe, Image as ImageIcon, LoaderCircle, LockKeyhole, Send, Type, UsersRound, Video, X } from "lucide-react";
 import { saveLocalHomePost, type LocalHomePost } from "../data/homePosts";
 import { createSocialPost, type SocialAudience, type SocialPostView } from "../data/socialPostRepository";
+import { imageUploadAccept, imageUploadMime } from '../domains/media/imageFormats';
 
 type ComposerMode = "status" | "photo" | "video";
 const maxPhotoBytes = 20 * 1024 * 1024;
@@ -76,8 +77,9 @@ export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (
     if (!selected) return;
     const extension = selected.name.toLowerCase().split(".").pop() || "";
     const definition = mediaTypes[extension];
-    if (!definition || definition.mode !== mode || (selected.type && selected.type.toLowerCase() !== definition.mime && !(extension === "jpg" && selected.type === "image/jpg"))) {
-      setError(mode === "photo" ? "Elige una imagen JPG o PNG." : "Elige un video MP4.");
+    const accepted = mode === 'photo' ? Boolean(imageUploadMime(selected)) : definition?.mode === mode && (!selected.type || selected.type.toLowerCase() === definition.mime);
+    if (!accepted) {
+      setError(mode === "photo" ? "Elige una imagen JPG, PNG, WebP o AVIF." : "Elige un video MP4.");
       event.currentTarget.value = "";
       return;
     }
@@ -131,7 +133,7 @@ export function HomeComposer({ scope, onPublish }: { scope: string; onPublish: (
       <button type="button" className={mode === "status" ? "selected" : ""} aria-pressed={mode === "status"} onClick={() => chooseMode("status")}><Type size={16} /> Estado</button>
       <button type="button" className={mode === "photo" ? "selected" : ""} aria-pressed={mode === "photo"} onClick={() => chooseMode("photo")}><ImageIcon size={16} /> Foto</button>
       <button type="button" className={mode === "video" ? "selected" : ""} aria-pressed={mode === "video"} onClick={() => chooseMode("video")}><Video size={16} /> Video</button>
-      <input ref={input} className="sr-only" type="file" accept={mode === "photo" ? "image/jpeg,image/png" : "video/mp4"} onChange={selectMedia} />
+      <input ref={input} className="sr-only" type="file" accept={mode === "photo" ? imageUploadAccept : "video/mp4"} onChange={selectMedia} />
     </div><div className="home-composer-submit-row"><div className="home-audience-control" ref={audienceControl}>
       <button ref={audienceTrigger} className="home-audience-trigger" type="button" title={`Privacidad: ${audienceLabels[audience]}`} aria-label={`Privacidad de la publicación: ${audienceLabels[audience]}`} aria-expanded={audienceMenuOpen} aria-controls={audienceMenuOpen ? "home-audience-menu" : undefined} onClick={toggleAudienceMenu}>
         <span className="home-audience-icon" data-audience={audience} aria-hidden="true">{audience === "public" ? <Globe size={17} /> : audience === "friends" ? <UsersRound size={17} /> : <LockKeyhole size={17} />}</span>

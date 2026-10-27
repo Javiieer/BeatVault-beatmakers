@@ -1,7 +1,7 @@
 import { formatFileSize, validateUploadFile, type FileMetadata, type UploadFileError } from "./localUploadDraft";
 
 export type ImportStatus = "pending" | "validating" | "ready" | "rejected" | "metadata-unavailable" | "preview-unavailable";
-export type ImportQueueItem = { id: string; file: File; status: ImportStatus; error?: string; metadata?: FileMetadata; previewUrl?: string };
+export type ImportQueueItem = { id: string; file: File; status: ImportStatus; error?: string; metadata?: FileMetadata; previewUrl?: string; title?: string };
 
 export function importErrorMessage(error: UploadFileError): string {
   if (error === "empty") return "El archivo está vacío o no tiene nombre.";

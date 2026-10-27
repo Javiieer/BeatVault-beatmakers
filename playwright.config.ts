@@ -4,7 +4,7 @@ export default defineConfig({
   testDir: "./tests",
   outputDir: "./artifacts/playwright",
   reporter: [["html", { outputFolder: "artifacts/playwright-report", open: "never" }], ["list"]],
-  workers: 2,
+  workers: process.platform === 'win32' ? 1 : 2,
   use: { baseURL: "http://127.0.0.1:5187", trace: "retain-on-failure", screenshot: "only-on-failure" },
   webServer: [
     { command: "node --import tsx scripts/e2e-api.ts", url: "http://127.0.0.1:45174/api/health", reuseExistingServer: false, timeout: 120000 },

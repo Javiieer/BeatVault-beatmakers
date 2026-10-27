@@ -8,9 +8,25 @@ const local: CatalogAsset = { id: "same", name: "Local", type: "One-shot", metad
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 const page = { entries: [{ contentId: "same", type: "loop", title: "Remote", creatorId: "creator", tagIds: ["ambient"], previewIds: [], publicationStatus: "published" }], total: 1 };
 describe("CatalogRepository", () => {
+  it('loads public details without hydrating private drafts from cache', async () => {
+    const entry = { ...page.entries[0], type: 'beat' };
+    const fetcher = vi.fn().mockResolvedValue(response({ ok: true, data: entry }));
+    const repo = new CatalogRepository(new ApiClient('http://api', 100, fetcher), 'owner');
+    expect((await repo.publishedDetail('same')).asset?.name).toBe('Remote');
+    expect(fetcher).toHaveBeenCalledWith('http://api/api/catalog/same', expect.anything());
+    fetcher.mockResolvedValueOnce(response({ ok: true, data: { ...entry, publicationStatus: 'draft' } }));
+    expect(await repo.publishedDetail('same')).toEqual({ notFound: true });
+    fetcher.mockResolvedValueOnce(response({ ok: true, data: { ...entry, contentId: 'other' } }));
+    expect(await repo.publishedDetail('same')).toEqual({ notFound: true });
+    fetcher.mockRejectedValueOnce(new Error('offline'));
+    expect((await repo.publishedDetail('same')).asset).toBeUndefined();
+  });
   it('rejects malformed audio metadata before rendering it', () => {
     for (const audio of [null, {}, { originalName: 123, mimeType: 'audio/wav', sizeBytes: 2, state: 'available' }]) {
       expect(isCatalogPage({ ...page, entries: [{ ...page.entries[0], audio }] })).toBe(false);
+    }
+    for (const type of [undefined, null, {}, 'unknown', '<script>']) {
+      expect(isCatalogPage({ ...page, entries: [{ ...page.entries[0], type }] })).toBe(false);
     }
   });
   it('isolates caches and drafts without migrating unowned legacy storage', () => {

@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { ValidationError, validateCreateProject, validateCreateCatalog, validateUpdateCatalog } from './validation'
+import { ValidationError, validateCreateProject, validateCreateCatalog, validateUpdateCatalog, validateBeatListingInput } from './validation'
 
 describe('creator content scope', () => {
+  it('rejects stems in new seller offers and accepts MP3/WAV', () => {
+    const input = {
+      description: 'A local beat offer with supported delivery formats.', genre: 'Hip-hop', explicitContent: false,
+      rights: { sellerCompositionShareBps: 10000, sellerMasterShareBps: 10000, sampleDisclosure: 'none', sampleProofAvailable: false, declarationAccepted: true, collaborators: [] },
+      offers: [{ id: 'standard', label: 'Standard', amountMinor: 3000, currency: 'USD', deliverables: ['wav'], usageSummary: 'Personal recording and performance license.', termsVersion: 'non-exclusive-offer-draft-v1', status: 'draft-only' }],
+    }
+    expect(validateBeatListingInput(input).offers[0].deliverables).toEqual(['wav'])
+    expect(() => validateBeatListingInput({ ...input, offers: [{ ...input.offers[0], deliverables: ['wav', 'stems'] }] })).toThrow('Los stems quedan fuera')
+  })
   it('accepts beats and normalizes one-shots as catalog samples', () => {
     expect(validateCreateCatalog({ title: 'Beat', type: 'Beat' }).type).toBe('beat')
     expect(validateCreateCatalog({ title: 'Kick', type: 'One-shot' }).type).toBe('sample')

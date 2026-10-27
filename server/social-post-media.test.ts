@@ -1,14 +1,19 @@
 import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { dirname, join } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { Readable } from 'node:stream'
 import type { IncomingMessage } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
 import { config } from './config'
 import { LocalRepository, type ServerRepository } from './store'
-import { reconcileSocialPostMedia, receiveSocialPostMedia, validateSocialVideoMetadata } from './social-post-media'
+import { reconcileSocialPostMedia, receiveSocialPostMedia, validateSanitizedSocialVideoMetadata, validateSocialVideoMetadata, preserveStoryReportEvidence, deleteExpiredSocialStoryReportEvidence, reconcileSocialStoryReportEvidence } from './social-post-media'
+import { artworkPath } from './artwork'
+
+const ffmpegEncoders = spawnSync(config.ffmpegPath, ['-hide_banner', '-encoders'], { encoding: 'utf8', windowsHide: true })
+const availableH264Encoder = ['libx264', 'libopenh264'].find(encoder => ffmpegEncoders.status === 0 && ffmpegEncoders.stdout.includes(encoder))
 
 describe('social media validation and reconciliation', () => {
   let priorData = ''
@@ -25,9 +30,93 @@ describe('social media validation and reconciliation', () => {
   it('requires bounded MP4/H.264 metadata', () => {
     const valid = { format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '180.000' }, streams: [{ codec_type: 'video', codec_name: 'h264', width: 1920, height: 1080 }] }
     expect(() => validateSocialVideoMetadata(valid)).not.toThrow()
+    expect(() => validateSocialVideoMetadata({ ...valid, format: { ...valid.format, duration: '30' } }, 30)).not.toThrow()
+    expect(() => validateSocialVideoMetadata(valid, 30)).toThrow('30 segundos')
     expect(() => validateSocialVideoMetadata({ ...valid, format: { ...valid.format, duration: '180.01' } })).toThrow('El video debe ser MP4/H.264')
     expect(() => validateSocialVideoMetadata({ ...valid, streams: [{ ...valid.streams[0], width: 1921 }] })).toThrow('El video debe ser MP4/H.264')
     expect(() => validateSocialVideoMetadata({ ...valid, streams: [{ ...valid.streams[0], codec_name: 'mpeg4' }] })).toThrow('El video debe ser MP4/H.264')
+  })
+
+  it('keeps private Story evidence after source deletion and deletes it only after resolved retention', async () => {
+    uploadsDir = await mkdtemp(join(tmpdir(), 'beatvault-story-evidence-'))
+    priorUploads = config.uploadDirectory
+    config.uploadDirectory = uploadsDir
+    const authorId = randomUUID(), reportId = randomUUID(), storyId = randomUUID()
+    const bytes = Buffer.from('private normalized story evidence')
+    const storageKey = `social-stories/${authorId}/${randomUUID()}`
+    const story = { id: storyId, authorId, kind: 'photo' as const, body: '', audience: 'public' as const, media: { storageKey, mimeType: 'image/png' as const, sizeBytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString() }
+    await mkdir(dirname(artworkPath(uploadsDir, storageKey)), { recursive: true })
+    await writeFile(artworkPath(uploadsDir, storageKey), bytes)
+    const evidence = await preserveStoryReportEvidence(reportId, story)
+    expect(evidence).toMatchObject({ storageKey: `moderation-evidence/stories/${reportId}`, mimeType: 'image/png', sizeBytes: bytes.length })
+    await rm(artworkPath(uploadsDir, storageKey))
+    expect(await readFile(artworkPath(uploadsDir, evidence!.storageKey))).toEqual(bytes)
+    const pendingRepo = { listExpiredSocialStoryEvidence: vi.fn().mockResolvedValue([]), clearSocialStoryEvidence: vi.fn() } as unknown as ServerRepository
+    await deleteExpiredSocialStoryReportEvidence(pendingRepo)
+    expect(await readFile(artworkPath(uploadsDir, evidence!.storageKey))).toEqual(bytes)
+    const resolvedReport = { id: reportId, evidenceStorageKey: evidence!.storageKey, status: 'reviewed', evidenceDeleteAt: new Date(Date.now() - 1).toISOString() }
+    const resolvedRepo = { listExpiredSocialStoryEvidence: vi.fn().mockResolvedValue([resolvedReport]), clearSocialStoryEvidence: vi.fn() } as unknown as ServerRepository
+    expect(await deleteExpiredSocialStoryReportEvidence(resolvedRepo)).toBe(1)
+    await expect(readFile(artworkPath(uploadsDir, evidence!.storageKey))).rejects.toThrow()
+    expect(resolvedRepo.clearSocialStoryEvidence).toHaveBeenCalledWith(reportId, expect.any(String))
+    const retryId = randomUUID()
+    const blockedPathKey = `moderation-evidence/stories/${retryId}`
+    await mkdir(artworkPath(uploadsDir, blockedPathKey), { recursive: true })
+    const retryRepo = { listExpiredSocialStoryEvidence: vi.fn().mockResolvedValue([{ id: retryId, evidenceStorageKey: blockedPathKey }]), clearSocialStoryEvidence: vi.fn() } as unknown as ServerRepository
+    await expect(deleteExpiredSocialStoryReportEvidence(retryRepo)).rejects.toBeTruthy()
+    expect(retryRepo.clearSocialStoryEvidence).not.toHaveBeenCalled()
+    await rm(artworkPath(uploadsDir, blockedPathKey), { recursive: true, force: true })
+    expect(await deleteExpiredSocialStoryReportEvidence(retryRepo)).toBe(1)
+    expect(retryRepo.clearSocialStoryEvidence).toHaveBeenCalledWith(retryId, expect.any(String))
+    const orphanKey = `moderation-evidence/stories/${randomUUID()}`
+    await mkdir(dirname(artworkPath(uploadsDir, orphanKey)), { recursive: true })
+    await writeFile(artworkPath(uploadsDir, orphanKey), bytes)
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    await utimes(artworkPath(uploadsDir, orphanKey), old, old)
+    const reconcileRepo = { listExpiredSocialStoryEvidence: vi.fn().mockResolvedValue([]), listSocialStoryEvidenceStorageKeys: vi.fn().mockResolvedValue([]), clearSocialStoryEvidence: vi.fn() } as unknown as ServerRepository
+    expect(await reconcileSocialStoryReportEvidence(reconcileRepo)).toBe(1)
+    await expect(readFile(artworkPath(uploadsDir, orphanKey))).rejects.toThrow()
+  })
+
+  it('re-encodes social videos and strips source metadata before storage', async context => {
+    if (!availableH264Encoder) context.skip()
+    priorUploads = config.uploadDirectory
+    uploadsDir = await mkdtemp(join(tmpdir(), 'beatvault-social-video-'))
+    config.uploadDirectory = uploadsDir
+    const source = join(uploadsDir, 'source-with-location.mp4')
+    const generated = spawnSync(config.ffmpegPath, [
+      '-nostdin', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=320x240:d=1',
+      '-metadata', 'location=19.4N99.1W', '-metadata', 'creation_time=2026-01-01T00:00:00Z', '-movflags', '+use_metadata_tags',
+      '-c:v', availableH264Encoder!, '-b:v', '600k', '-y', source,
+    ], { encoding: 'utf8', windowsHide: true })
+    expect(generated.status, generated.stderr).toBe(0)
+    const sourceProbe = spawnSync(config.ffprobePath, ['-v', 'error', '-show_entries', 'format_tags:stream_tags', '-of', 'json', source], { encoding: 'utf8', windowsHide: true })
+    expect(sourceProbe.status, sourceProbe.stderr).toBe(0)
+    expect(sourceProbe.stdout).toMatch(/location|creation_time/)
+
+    const boundary = `social-video-${randomUUID()}`
+    const body = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="body"\r\n\r\nVideo test\r\n--${boundary}\r\nContent-Disposition: form-data; name="audience"\r\n\r\npublic\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="source.mp4"\r\nContent-Type: video/mp4\r\n\r\n`)
+    const payload = Buffer.concat([body, await readFile(source), Buffer.from(`\r\n--${boundary}--\r\n`)])
+    const request = Object.assign(Readable.from([payload]), { headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, 'content-length': String(payload.length) } })
+    const received = await receiveSocialPostMedia(request as unknown as IncomingMessage, 'social-video-owner', 'video', { collection: 'social-stories', maxVideoDurationSeconds: 30 })
+    const storedPath = join(uploadsDir, received.media.storageKey)
+    const stored = await readFile(storedPath)
+    expect(stored.equals(await readFile(source))).toBe(false)
+    expect(received.media.sizeBytes).toBe(stored.length)
+    const outputProbe = spawnSync(config.ffprobePath, ['-v', 'error', '-show_entries', 'format=format_name,duration:format_tags:stream=codec_type,codec_name,width,height,duration:stream_tags:stream_side_data', '-of', 'json', storedPath], { encoding: 'utf8', windowsHide: true })
+    expect(outputProbe.status, outputProbe.stderr).toBe(0)
+    const metadata = JSON.parse(outputProbe.stdout) as Parameters<typeof validateSanitizedSocialVideoMetadata>[0]
+    expect(() => validateSanitizedSocialVideoMetadata(metadata)).not.toThrow()
+    expect(() => validateSocialVideoMetadata(metadata, 30)).not.toThrow()
+    expect(JSON.stringify(metadata).toLowerCase()).not.toMatch(/location|creation_time|gps|camera|device|timecode/)
+  }, 150_000)
+
+  it('rejects retained location, device and rotation metadata in normalized video output', () => {
+    expect(() => validateSanitizedSocialVideoMetadata({ format: { tags: { location: '19.4N99.1W' } } })).toThrow('SOCIAL_VIDEO_METADATA_NOT_STRIPPED')
+    expect(() => validateSanitizedSocialVideoMetadata({ streams: [{ tags: { creation_time: '2026-01-01T00:00:00Z' } }] })).toThrow('SOCIAL_VIDEO_METADATA_NOT_STRIPPED')
+    expect(() => validateSanitizedSocialVideoMetadata({ streams: [{ side_data_list: [{ side_data_type: 'Display Matrix' }] }] })).toThrow('SOCIAL_VIDEO_METADATA_NOT_STRIPPED')
+    expect(() => validateSanitizedSocialVideoMetadata({ format: { tags: { major_brand: 'location' } } })).toThrow('SOCIAL_VIDEO_METADATA_NOT_STRIPPED')
+    expect(() => validateSanitizedSocialVideoMetadata({ streams: [{ tags: { encoder: 'Lavc GPS-camera-location' } }] })).toThrow('SOCIAL_VIDEO_METADATA_NOT_STRIPPED')
   })
 
   it('strips JPEG GPS/XMP metadata, applies EXIF orientation, and keeps PNG transparency', async () => {
@@ -61,7 +150,7 @@ describe('social media validation and reconciliation', () => {
     expect(sourceMetadata.xmp).toBeDefined()
     expect(sourceMetadata.orientation).toBe(6)
 
-    const uploadPhoto = async (bytes: Buffer, mime: 'image/jpeg' | 'image/png') => {
+    const uploadPhoto = async (bytes: Buffer, mime: 'image/jpeg' | 'image/png', collection: 'social-posts' | 'social-stories' = 'social-posts') => {
       const boundary = `social-${randomUUID()}`
       const fields = [
         `--${boundary}\r\nContent-Disposition: form-data; name="body"\r\n\r\nPhoto test\r\n`,
@@ -72,7 +161,7 @@ describe('social media validation and reconciliation', () => {
       const request = Object.assign(Readable.from([payload]), {
         headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, 'content-length': String(payload.length) },
       })
-      const received = await receiveSocialPostMedia(request as unknown as IncomingMessage, 'social-photo-owner', 'photo')
+      const received = await receiveSocialPostMedia(request as unknown as IncomingMessage, 'social-photo-owner', 'photo', { collection })
       const stored = await readFile(join(config.uploadDirectory, received.media.storageKey))
       expect(received.media.sizeBytes).toBe(stored.length)
       return { received, stored }
@@ -116,6 +205,8 @@ describe('social media validation and reconciliation', () => {
     expect(pngMetadata.hasAlpha).toBe(true)
     expect(info.channels).toBe(4)
     expect([pixels[3], pixels[7]]).toEqual([0, 127])
+    const storyImage = await uploadPhoto(alphaPng, 'image/png', 'social-stories')
+    expect(storyImage.received.media.storageKey).toMatch(/^social-stories\/social-photo-owner\//)
   })
 
   it('removes orphaned media and crash-left temporary files without touching referenced posts', async () => {

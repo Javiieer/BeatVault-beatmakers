@@ -111,6 +111,7 @@ export function isBeatListingInput(value: unknown): value is BeatListingInput {
 
 export function isBeatListingReady(value: unknown): value is BeatListingInput {
   if (!isBeatListingInput(value)) return false
+  if (value.offers.some(offer => offer.deliverables.includes('stems'))) return false
   const rights = value.rights
   const compositionTotal = rights.sellerCompositionShareBps + rights.collaborators.reduce((sum, item) => sum + item.compositionShareBps, 0)
   const masterTotal = rights.sellerMasterShareBps + rights.collaborators.reduce((sum, item) => sum + item.masterShareBps, 0)

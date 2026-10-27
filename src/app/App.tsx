@@ -25,7 +25,7 @@ import "../styles/scrollbars.css";
 import { customThemeStyle, readStoredTheme, type Theme } from "./theme";
 import { readUserSettings } from "../data/userSettings";
 import { clearSessionPreviews, removeSessionPreview, setSessionPreview } from "../data/sessionPreviewMap";
-import { getPathname, getQuery } from "./routing";
+import { canonicalMarketplaceHash, marketplaceNavigationPath, getPathname, getQuery, loginHref, loginDestination } from "./routing";
 import { ProjectRepository } from "../data/projectRepository";
 import { authClient, isAuthUser, isNull, uploadAsset, uploadArtwork, type AuthUser } from "../api/client";
 import { Login } from "../components/Login";
@@ -41,7 +41,6 @@ const HomePage = lazy(() => import("../components/Home").then(({ Home }) => ({ d
 const ShortsPage = lazy(() => import("../components/ShortsFeed").then(({ ShortsFeed }) => ({ default: ShortsFeed })));
 const UploadPage = lazy(() => import("../components/Upload").then(({ Upload }) => ({ default: Upload })));
 const StudioPage = lazy(() => import("../components/Studio").then(({ Studio }) => ({ default: Studio })));
-const BeatsPage = lazy(() => import("../components/Beats").then(({ Beats }) => ({ default: Beats })));
 const BeatDetailPage = lazy(() => import("../components/Beats").then(({ BeatDetail }) => ({ default: BeatDetail })));
 const MarketplacePage = lazy(() => import("../components/Marketplace").then(({ Marketplace }) => ({ default: Marketplace })));
 const LibraryPage = lazy(() => import("../components/Library").then(({ Library }) => ({ default: Library })));
@@ -55,8 +54,23 @@ const MarketplaceReviewPage = lazy(() => import("../components/MarketplaceReview
 
 const publicStoreCatalog = new CatalogRepository();
 const searchPublicStore = (filters: MarketplaceFilters) => publicStoreCatalog.marketplacePage(filters);
+const loadPublishedDetail = (id: string) => publicStoreCatalog.publishedDetail(id);
 
 const navIcons = { home: HomeIcon, disc: Disc3, library: LibraryIcon, music: Music2, video: Video, users: Users, messages: MessageCircle, store: Store, grid: Grid2X2, sparkles: Sparkles, upload: UploadIcon, chart: ChartNoAxesColumn, settings: Settings, plans: CreditCard, admin: ShieldCheck } as const;
+function PublicMarketplace({ path, hash }: { path: string; hash: string }) {
+  const [activeAsset, setActiveAsset] = useState<AudioAsset>();
+  const closePlayer = useCallback(() => setActiveAsset(undefined), []);
+  const play = (asset: AudioAsset) => setActiveAsset({ ...asset, downloadUrl: undefined, previewUrl: `/api/catalog/${encodeURIComponent(asset.id)}/preview` });
+  const params = getQuery(hash);
+  const creatorId = path === '/store' ? params.get('id') || undefined : undefined;
+  const tab = params.get('tab');
+  return <div className={`app-shell${activeAsset ? ' has-player' : ''}`}><main className="public-store-view">
+    <div className="public-store-nav"><a href="#/marketplace">BeatVault Marketplace</a><a href={loginHref(hash)}>Sign in</a></div>
+    <Suspense fallback={<p className="muted" role="status">Loading Marketplace…</p>}>
+      {path === '/beat-detail' ? <BeatDetailPage key={hash} onLoad={loadPublishedDetail} onPlay={play} /> : <MarketplacePage key={creatorId || 'public-market'} creatorId={creatorId} catalogAssets={[]} onSearch={searchPublicStore} onPlay={play} initialTab={tab === 'library' || tab === 'purchases' ? tab : 'explore'} />}
+    </Suspense>
+  </main><AudioPlayer asset={activeAsset} onClose={closePlayer} /></div>;
+}
 function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Promise<void> }) {
   const scope = user?.id || 'demo';
   const [projectRepository] = useState(() => new ProjectRepository(undefined, scope));
@@ -194,7 +208,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
       )
     : [];
   const searchableAssets = Array.from(
-    new Map([...assets, ...catalogAssets].map((asset) => [asset.id, asset])).values(),
+    new Map([...(user ? [] : assets), ...catalogAssets].map((asset) => [asset.id, asset])).values(),
   );
   const matchingAssets = normalizedGlobalQuery
     ? searchableAssets.filter((asset) =>
@@ -249,6 +263,8 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
     return { error: result.error };
   };
   const refreshCatalog = useCallback(async () => {
+    setCatalogLoading(true);
+    try {
     const result = await catalogRepository.list();
     const hydrated = await Promise.all(result.assets.map(async asset => {
       if (asset.cover?.startsWith('/api/catalog/')) return asset;
@@ -258,6 +274,8 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
       return { ...asset, cover };
     }));
     setCatalogAssets(hydrated); setCatalogSource(result.source); setCatalogError(result.error);
+    } catch { setCatalogError('No se pudo volver a cargar el catálogo. Intenta de nuevo.'); }
+    finally { setCatalogLoading(false); }
   }, [catalogRepository, scope]);
   const searchMarketplace = useCallback((filters: Parameters<CatalogRepository['marketplacePage']>[0]) => catalogRepository.marketplacePage(filters), [catalogRepository]);
   const loadBeatListings = useCallback(() => sellerListingRepository.list(), [sellerListingRepository]);
@@ -276,9 +294,9 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
         <nav id="primary-navigation" aria-label="Primary navigation">
           {[...nav, ...(user?.role === "admin" ? secondary : [])].map((item) => (
             <a
-              className={path === item.path ? "active" : ""}
+              className={marketplaceNavigationPath(path) === item.path ? "active" : ""}
               href={`#${item.path}`}
-              aria-current={path === item.path ? "page" : undefined}
+              aria-current={marketplaceNavigationPath(path) === item.path ? "page" : undefined}
               onClick={() => setMenuOpen(false)}
               key={item.path}
             >
@@ -335,7 +353,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
                <div className="global-search-results" role="list" aria-label="Local search results">
                  {matchingProjects.map((project) => (
                    <a
-                      href={`#/beat-detail?id=${encodeURIComponent(project.id)}`}
+                      href={`#/studio?search=${encodeURIComponent(project.name)}`}
                      key={`project-${project.id}`}
                      onClick={() => setGlobalQuery("")}
                    >
@@ -346,7 +364,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
                  ))}
                  {matchingAssets.map((asset) => (
                    <a
-                     href={`#/library?search=${encodeURIComponent(asset.name)}`}
+                     href={'publicationStatus' in asset && asset.publicationStatus !== 'published' ? `#/studio?search=${encodeURIComponent(asset.name)}` : `#/marketplace?tab=explore&search=${encodeURIComponent(asset.name)}`}
                      key={`asset-${asset.id}`}
                      onClick={() => {
                        window.dispatchEvent(
@@ -375,7 +393,7 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
         </header>
         <div className="content">
           <Suspense fallback={<p className="muted" role="status">Loading BeatVault...</p>}>
-            {renderPage(path, setActiveAsset, allProjects, catalogAssets, catalogSource, catalogError,
+            {renderPage(path, setActiveAsset, catalogAssets, catalogSource, catalogError,
               publishAsset, sessionPreviews, updateCatalogAsset, deleteCatalogAsset, user, refreshCatalog, retryCatalogPreview, searchMarketplace, loadBeatListings, saveBeatListing, catalogLoading)}
           </Suspense>
 
@@ -390,7 +408,6 @@ function AuthenticatedApp({ user, logout }: { user?: AuthUser; logout: () => Pro
 function renderPage(
   path: string,
   setActiveAsset: (asset: AudioAsset) => void,
-  allProjects: Project[],
   catalogAssets: CatalogAsset[],
   catalogSource: CatalogSource,
   catalogError: string | undefined,
@@ -415,16 +432,18 @@ function renderPage(
   if (path === '/chat') return <ChatPage key={user?.id || 'demo'} userId={user?.id} initialPeerId={getQuery(window.location.hash).get('peer') || undefined} />;
   if (path === "/home" || path === "/dashboard" || path === "/")
     return <HomePage key={user?.id || "demo"} scope={user?.id || "demo"} uploads={feedAssets} onPlay={setActiveAsset} />;
-  if (path === "/beats") return <BeatsPage catalogAssets={catalogAssets} onPlay={setActiveAsset} />;
-  if (path === "/marketplace") return <MarketplacePage catalogAssets={feedAssets} onPlay={setActiveAsset} onSearch={onSearchMarketplace} />;
+  if (path === '/marketplace' || path === '/beats' || path === '/library') {
+    const tab = path === '/library' ? 'library' : getQuery(window.location.hash).get('tab');
+    return <MarketplacePage catalogAssets={feedAssets} onPlay={setActiveAsset} onSearch={onSearchMarketplace} userId={user?.id}
+      initialTab={tab === 'library' || tab === 'purchases' ? tab : 'explore'}
+      libraryContent={<LibraryPage embedded userId={user?.id} onPlay={setActiveAsset} catalogAssets={catalogAssets} sessionPreviews={sessionPreviews} catalogSource={catalogSource} catalogError={catalogError} onUpdateCatalogAsset={onUpdateCatalogAsset} onDeleteCatalogAsset={onDeleteCatalogAsset} />} />;
+  }
   if (path === "/store") {
     const creatorId = getQuery(window.location.hash).get('id');
-    return creatorId ? <MarketplacePage key={`store-${creatorId}`} catalogAssets={[]} onPlay={setActiveAsset} onSearch={onSearchMarketplace} creatorId={creatorId} /> : <Placeholder name="Creator store" />;
+    return creatorId ? <MarketplacePage key={`store-${creatorId}`} catalogAssets={[]} onPlay={setActiveAsset} onSearch={onSearchMarketplace} creatorId={creatorId} userId={user?.id} /> : <Placeholder name="Creator store" />;
   }
-  if (path === "/library")
-    return <LibraryPage catalogAssets={catalogAssets} sessionPreviews={sessionPreviews} catalogSource={catalogSource} catalogError={catalogError} onUpdateCatalogAsset={onUpdateCatalogAsset} onDeleteCatalogAsset={onDeleteCatalogAsset} />;
   if (path === "/studio" || path === "/my-uploads")
-    return <StudioPage scope={user?.id || 'demo'} loadError={user ? catalogError : undefined} uploads={uploads} onPlay={setActiveAsset} onUpdate={onUpdateCatalogAsset} onRetryPreview={user ? onRetryCatalogPreview : undefined} onLoadBeatListings={user ? onLoadBeatListings : undefined} onSaveBeatListing={user ? onSaveBeatListing : undefined} />;
+    return <StudioPage scope={user?.id || 'demo'} loadError={user ? catalogError : undefined} loading={catalogLoading} onReload={onReviewed} uploads={uploads} onPlay={setActiveAsset} onUpdate={onUpdateCatalogAsset} onDelete={onDeleteCatalogAsset} onRetryPreview={user ? onRetryCatalogPreview : undefined} onLoadBeatListings={user ? onLoadBeatListings : undefined} onSaveBeatListing={user ? onSaveBeatListing : undefined} />;
   if (path === "/upload") return <UploadPage scope={user?.id || 'demo'} onPublish={publishAsset} onRemoteUpload={user ? uploadAsset : undefined} onRemoteArtworkUpload={user ? uploadArtwork : undefined} />;
   if (path === "/plans" || path === "/subscription") return <PlansPage />;
   if (path === "/admin") return <AdminPage onReviewed={onReviewed} />;
@@ -433,16 +452,24 @@ function renderPage(
      const query = getQuery(window.location.hash);
     return <ShortsPage sharedShortId={query.get("short")} />;
   }
-   if (path.startsWith("/beat-detail")) return <BeatDetailPage projects={allProjects} onPlay={setActiveAsset} />;
+   if (path === '/beat-detail') return <BeatDetailPage key={window.location.hash} onLoad={loadPublishedDetail} onPlay={setActiveAsset} />;
   const name =
     modules.find((item) => item.path === path)?.label || "Page not found";
   return <Placeholder name={name} />;
 }
 function App() {
   const [hash, setHash] = useState(window.location.hash);
+  useEffect(() => {
+    const canonical = canonicalMarketplaceHash(hash);
+    if (canonical === hash) return;
+    window.history.replaceState(null, '', canonical);
+    setHash(canonical);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  }, [hash]);
   useEffect(() => { const update = () => setHash(window.location.hash); window.addEventListener('hashchange', update); return () => window.removeEventListener('hashchange', update); }, []);
   const [authState, setAuthState] = useState<"checking" | "offline" | "required" | "authenticated">("checking");
   const [user, setUser] = useState<AuthUser>();
+  useEffect(() => { if (user && getPathname(hash) === '/login') window.location.hash = loginDestination(hash); }, [hash, user]);
   const [authError, setAuthError] = useState<string>();
   const [authLoading, setAuthLoading] = useState(false);
   useEffect(() => {
@@ -454,7 +481,7 @@ function App() {
     return () => window.removeEventListener('beatvault:account-updated', updateAccount);
   }, []);
   useEffect(() => { void authClient.request("/api/auth/me", { method: "GET" }, isAuthUser).then(result => { if (result.ok) { setUser(result.data); setAuthState("authenticated"); } else if (result.error.code === "UNAUTHORIZED") setAuthState("required"); else setAuthState("offline"); }); }, []);
-  const login = async (email: string, password: string) => { setAuthLoading(true); setAuthError(undefined); const result = await authClient.request("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, isAuthUser); setAuthLoading(false); if (result.ok) { setUser(result.data); setAuthState("authenticated"); } else setAuthError(result.error.message); };
+  const login = async (email: string, password: string) => { setAuthLoading(true); setAuthError(undefined); const result = await authClient.request("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, isAuthUser); setAuthLoading(false); if (result.ok) { setUser(result.data); setAuthState("authenticated"); if (getPathname(window.location.hash) === '/login') window.location.hash = loginDestination(window.location.hash); } else setAuthError(result.error.message); };
   const register = async (email: string, password: string) => { setAuthLoading(true); setAuthError(undefined); const result = await authClient.request("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password }) }, isAuthUser); setAuthLoading(false); if (result.ok) { await login(email, password); } else setAuthError(result.error.message); };
   const logout = async () => {
     const result = await authClient.request("/api/auth/logout", { method: "POST" }, isNull);
@@ -464,10 +491,10 @@ function App() {
   const authPath = getPathname(hash);
   if (authPath === '/forgot-password' || authPath === '/password-reset') return <Suspense fallback={<Login loading onSubmit={login} onRegister={register} />}><PasswordRecoveryPage mode={authPath === '/forgot-password' ? 'request' : 'reset'} token={getQuery(hash).get('token') || ''} /></Suspense>;
   if (authState === "checking") return <Login loading onSubmit={login} onRegister={register} />;
-  const publicStoreId = authPath === '/store' ? getQuery(hash).get('id') : null;
-  if ((authState === 'required' || authState === 'offline') && publicStoreId) return <div className="app-shell"><main className="public-store-view"><div className="public-store-nav"><a href="#/marketplace">BeatVault Marketplace</a><a href="#/dashboard">Sign in</a></div><Suspense fallback={<p className="muted" role="status">Loading store...</p>}><MarketplacePage key={`public-store-${publicStoreId}`} creatorId={publicStoreId} catalogAssets={[]} onPlay={() => undefined} onSearch={searchPublicStore} /></Suspense></main></div>;
+  if (authPath === '/login' && !user) return <Login loading={authLoading} error={authError} onSubmit={login} onRegister={register} />;
+  if ((authState === 'required' || authState === 'offline' && ['/store', '/beat-detail'].includes(authPath)) && ['/marketplace', '/store', '/beat-detail', '/beats', '/library'].includes(authPath)) return <PublicMarketplace path={authPath} hash={hash} />;
   const publicProfileId = getPathname(hash) === '/profile' ? getQuery(hash).get('id') : null;
-  if ((authState === 'required' || authState === 'offline') && publicProfileId) return <div className="app-shell"><main className="public-producer-view"><div className="public-producer-nav"><a href="#/dashboard">BeatVault</a><a href="#/dashboard">Iniciar sesion</a></div><Suspense fallback={<p className="muted" role="status">Loading profile...</p>}><CreatorProfilePage key={publicProfileId} targetId={publicProfileId} onPlay={() => undefined} /></Suspense></main></div>;
+  if ((authState === 'required' || authState === 'offline') && publicProfileId) return <div className="app-shell"><main className="public-producer-view"><div className="public-producer-nav"><a href="#/dashboard">BeatVault</a><a href={loginHref(hash)}>Iniciar sesion</a></div><Suspense fallback={<p className="muted" role="status">Loading profile...</p>}><CreatorProfilePage key={publicProfileId} targetId={publicProfileId} onPlay={() => undefined} /></Suspense></main></div>;
   if (authState === "required") return <Login loading={authLoading} error={authError} onSubmit={login} onRegister={register} />;
   return <AuthenticatedApp key={user?.id || 'demo'} user={user} logout={logout} />;
 }

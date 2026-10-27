@@ -47,7 +47,8 @@ export function validateUploadFile(file: Pick<File, "name" | "size" | "type">): 
   if (!file.name.trim() || file.size <= 0) return "empty";
   if (file.size > maxUploadFileSize) return "too-large";
   const extension = file.name.toLowerCase().split(".").pop() ?? "";
-  const supportedMime = !file.type || (supportedAudioMimeTypes as readonly string[]).includes(file.type);
+  const declaredMime = file.type.toLowerCase().split(';', 1)[0].trim();
+  const supportedMime = !declaredMime || (supportedAudioMimeTypes as readonly string[]).includes(declaredMime);
   const supportedExtension = supportedAudioExtensions.includes(extension);
   if (!supportedMime || !supportedExtension) return "unsupported-audio";
   return null;

@@ -1,16 +1,19 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "./Home";
 
-const { readSocialFeed, readProfileSocialPosts, readSocialAccountState, setSocialFollow, setSocialPostBookmark, readSocialPostInteractionsBatch, createSocialPostComment, toggleSocialPostReaction } = vi.hoisted(() => ({ readSocialFeed: vi.fn(), readProfileSocialPosts: vi.fn(), readSocialAccountState: vi.fn(), setSocialFollow: vi.fn(), setSocialPostBookmark: vi.fn(), readSocialPostInteractionsBatch: vi.fn(), createSocialPostComment: vi.fn(), toggleSocialPostReaction: vi.fn() }));
+const { readSocialPost, readSocialFeed, readProfileSocialPosts, readSocialStories, readSocialAccountState, setSocialFollow, setSocialPostBookmark, readSocialPostInteractionsBatch, createSocialPostComment, toggleSocialPostReaction } = vi.hoisted(() => ({ readSocialPost: vi.fn(), readSocialFeed: vi.fn(), readProfileSocialPosts: vi.fn(), readSocialStories: vi.fn(), readSocialAccountState: vi.fn(), setSocialFollow: vi.fn(), setSocialPostBookmark: vi.fn(), readSocialPostInteractionsBatch: vi.fn(), createSocialPostComment: vi.fn(), toggleSocialPostReaction: vi.fn() }));
 vi.mock("./HomeComposer", () => ({ HomeComposer: () => null }));
 vi.mock("../data/homePosts", () => ({ readLocalHomePosts: async () => [] }));
-vi.mock("../data/socialPostRepository", () => ({ readSocialFeed, readProfileSocialPosts, readSocialAccountState, setSocialFollow, setSocialPostBookmark, readSocialPostInteractionsBatch, createSocialPostComment, toggleSocialPostReaction, deleteSocialPost: vi.fn(), reportSocialPost: vi.fn() }));
+vi.mock("../data/socialStoryRepository", () => ({ readSocialStories, deleteSocialStory: vi.fn() }));
+vi.mock("../data/socialPostRepository", () => ({ readSocialPost, readSocialFeed, readProfileSocialPosts, readSocialAccountState, setSocialFollow, setSocialPostBookmark, readSocialPostInteractionsBatch, createSocialPostComment, toggleSocialPostReaction, deleteSocialPost: vi.fn(), reportSocialPost: vi.fn() }));
 
 beforeEach(() => {
   localStorage.clear();
+  readSocialPost.mockReset().mockResolvedValue({ ok: false, error: { code: 'POST_NOT_FOUND', message: 'Unavailable' } });
   readSocialFeed.mockReset().mockResolvedValue({ ok: true, data: { posts: [] } });
   readProfileSocialPosts.mockReset().mockResolvedValue({ ok: true, data: { posts: [] } });
+  readSocialStories.mockReset().mockResolvedValue({ ok: true, data: { stories: [] } });
   readSocialAccountState.mockReset().mockResolvedValue({ ok: true, data: { followedAccountIds: [], bookmarkedPostIds: [] } });
   setSocialFollow.mockReset().mockImplementation(async (_id: string, following: boolean) => ({ ok: true, data: { following } }));
   setSocialPostBookmark.mockReset().mockImplementation(async (_id: string, bookmarked: boolean) => ({ ok: true, data: { bookmarked } }));
@@ -23,7 +26,7 @@ beforeEach(() => {
     this.dispatchEvent(new Event("close"));
   } });
 });
-afterEach(() => { vi.restoreAllMocks(); Reflect.deleteProperty(HTMLDialogElement.prototype, "showModal"); Reflect.deleteProperty(HTMLDialogElement.prototype, "close"); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); Reflect.deleteProperty(HTMLDialogElement.prototype, "showModal"); Reflect.deleteProperty(HTMLDialogElement.prototype, "close"); });
 
 describe("home photo viewer", () => {
   it("opens photos with a side comment panel and keeps Shorts as navigation", async () => {
@@ -39,6 +42,30 @@ describe("home photo viewer", () => {
 
     await waitFor(() => expect(dialog).toHaveTextContent("Me encanta esta textura"));
     expect(screen.getByRole("link", { name: "Abrir Short de Kade Seven" })).toHaveAttribute("href", "#/shorts");
+  });
+});
+
+describe("notification post deep links", () => {
+  it("scrolls to the server post named by the notification URL", async () => {
+    const post = { id: "d276ad36-9d07-4d17-97e6-075ab8a81a0e", author: { id: "creator-2", displayName: "Creator Two" }, kind: "status", body: "Post linked from notification", audience: "public", visibility: "published", createdAt: new Date().toISOString() };
+    const previousUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const scrollDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    window.history.replaceState(null, "", `/#/home?post=${post.id}`);
+    readSocialFeed.mockResolvedValue({ ok: true, data: { posts: [post] } });
+    readSocialPost.mockResolvedValue({ ok: true, data: post });
+
+    try {
+      render(<Home uploads={[]} onPlay={vi.fn()} scope="creator-1" />);
+      const article = await screen.findByText(post.body);
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" }));
+      expect(article.closest("article")).toHaveAttribute("id", `feed-post-social-${post.id}`);
+    } finally {
+      if (scrollDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", scrollDescriptor);
+      else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+      window.history.replaceState(null, "", previousUrl || "/");
+    }
   });
 });
 
@@ -65,6 +92,30 @@ describe("authenticated Home post refresh", () => {
     await waitFor(() => expect(readSocialFeed).toHaveBeenCalled());
     expect(screen.queryByRole("button", { name: "Ampliar foto de Ari Sol" })).not.toBeInTheDocument();
     expect(screen.queryByText("¿Qué le pondrías a este bajo: drums secos o una textura más sucia?")).not.toBeInTheDocument();
+  });
+
+  it("shows a quiet update prompt and refreshes only after the user requests it", async () => {
+    const author = { id: "creator-2", displayName: "Creator Two" };
+    const oldPost = { id: "old-post", author, kind: "status", body: "Existing post", audience: "public", visibility: "published", createdAt: new Date(Date.now() - 1000).toISOString() };
+    const newPost = { ...oldPost, id: "new-post", body: "New community post", createdAt: new Date().toISOString() };
+    readSocialFeed.mockResolvedValueOnce({ ok: true, data: { posts: [oldPost] } }).mockResolvedValueOnce({ ok: true, data: { posts: [newPost, oldPost] } });
+    const streams: Array<{ onmessage: ((event: MessageEvent) => void) | null; close: ReturnType<typeof vi.fn> }> = [];
+    class MockEventSource {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      close = vi.fn();
+      constructor() { streams.push(this); }
+    }
+    vi.stubGlobal("EventSource", MockEventSource);
+    render(<Home uploads={[]} onPlay={vi.fn()} scope="creator-1" />);
+
+    await screen.findAllByText("Existing post");
+    expect(streams).toHaveLength(1);
+    act(() => streams[0].onmessage?.({ data: JSON.stringify({ type: "new-posts" }) } as MessageEvent));
+    fireEvent.click(await screen.findByRole("button", { name: "Hay publicaciones nuevas · Ver ahora" }));
+
+    expect((await screen.findAllByText("New community post")).length).toBeGreaterThan(0);
+    await waitFor(() => expect(readSocialFeed).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("button", { name: "Hay publicaciones nuevas · Ver ahora" })).not.toBeInTheDocument();
   });
 
   it("reloads owner-only audiences from the profile endpoint and deduplicates feed posts", async () => {

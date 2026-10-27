@@ -11,16 +11,16 @@
 .market-summary strong { font-size: 16px; line-height: 1.2; }
 .market-summary span { color: var(--muted); font-size: 11px; }
 .market-summary .badge { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
-.stripe-connect-panel { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 18px; margin: 0 0 18px; }
-.stripe-connect-copy { min-width: 0; }
-.stripe-connect-copy h2 { margin: 3px 0 5px; font-size: 17px; }
-.stripe-connect-copy .description { margin: 0; }
-.stripe-connect-panel > .button { flex: 0 0 auto; }
-.stripe-connect-state, .stripe-connect-copy .form-error { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; font-size: 12px; }
-.stripe-connect-state { color: var(--accent); }
-.stripe-connect-panel .spin { animation: stripe-spin 1s linear infinite; }
-@keyframes stripe-spin { to { transform: rotate(360deg); } }
-@media (max-width: 600px) { .stripe-connect-panel { align-items: flex-start; flex-direction: column; } .stripe-connect-panel > .button { width: 100%; justify-content: center; } }
+.mercadopago-connect-panel { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 18px; margin: 0 0 18px; }
+.mercadopago-connect-copy { min-width: 0; }
+.mercadopago-connect-copy h2 { margin: 3px 0 5px; font-size: 17px; }
+.mercadopago-connect-copy .description { margin: 0; }
+.mercadopago-connect-panel > .button { flex: 0 0 auto; }
+.mercadopago-connect-state, .mercadopago-connect-copy .form-error { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; font-size: 12px; }
+.mercadopago-connect-state { color: var(--accent); }
+.mercadopago-connect-panel .spin { animation: mercadopago-spin 1s linear infinite; }
+@keyframes mercadopago-spin { to { transform: rotate(360deg); } }
+@media (max-width: 600px) { .mercadopago-connect-panel { align-items: flex-start; flex-direction: column; } .mercadopago-connect-panel > .button { width: 100%; justify-content: center; } }
 .market-purchases { display: grid; gap: 8px; margin: 0 0 18px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .market-checkout-status { margin: 0 0 14px; padding: 11px 14px; border-left: 3px solid var(--accent); background: var(--surface); color: var(--text); font-size: 13px; }
 .market-purchases h2 { margin: 0 0 2px; font-size: 16px; }
@@ -127,3 +127,28 @@
   .public-store-view { padding: 16px; }
   .public-store-nav { margin-bottom: 16px; }
 }
+
+.market-tabs { display: flex; flex-direction: row; gap: 5px; padding: 4px; margin: 0 0 22px; border-bottom: 1px solid var(--border); }
+.market-tabs button { min-height: 42px; padding: 0 18px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
+.market-tabs button[aria-current="page"] { border-bottom-color: var(--primary); color: var(--text); background: var(--surface); }
+.market-tabs button:focus-visible, .market-inline-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.market-card-title a { color: inherit; text-decoration: none; }
+.market-card-title a:hover { text-decoration: underline; }
+.market-save { justify-content: center; min-height: 36px; }
+.market-save[aria-pressed="true"] { color: var(--primary); }
+.market-save-status, .market-section-description { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.market-section-description { margin: 0 0 12px; }
+.market-error { padding: 14px; margin: 0 0 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.market-error p { margin: 0 0 10px; }
+.market-inline-link { padding: 0; border: 0; background: transparent; color: var(--primary); font: inherit; cursor: pointer; text-decoration: underline; }
+.market-purchase-downloads { display: flex; flex-wrap: wrap; gap: 8px; }
+.market-purchase-license { max-width: 700px; line-height: 1.5; }
+@media (max-width: 560px) {
+  .market-tabs { gap: 0; padding: 0; }
+  .market-tabs button { flex: 1; padding: 0 7px; font-size: 13px; }
+  .market-purchase-downloads { width: 100%; }
+  .market-purchase-downloads .button { width: auto; flex: 1; }
+}
+.market-offer { display: grid; gap: 5px; }
+.market-offer-formats, .market-offer-unavailable { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.market-offer .button:disabled { cursor: not-allowed; opacity: .65; }

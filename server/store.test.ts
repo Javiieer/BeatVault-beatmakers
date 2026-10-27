@@ -1,12 +1,36 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { JsonStore, LocalRepository, StorageQuotaExceededError, type AssetRecord } from './store'
 import { config } from './config'
+import type { AuditEvent } from './security'
 
 describe('JsonStore', () => {
+  it('serializes a follow racing a block and recovers its audit outbox after a disk failure', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'beatvault-social-block-'))
+    const previousDirectory = config.dataDirectory
+    config.dataDirectory = directory
+    try {
+      const repo = new LocalRepository()
+      const blockerId = randomUUID(), blockedId = randomUUID(), now = new Date().toISOString()
+      const event: AuditEvent = { id: randomUUID(), timestamp: now, action: 'create', requestId: randomUUID(), actorId: blockerId, targetId: blockedId, success: true, metadata: { resource: 'social-account-block' } }
+      await mkdir(join(directory, 'audit.json'))
+      const results = await Promise.allSettled([
+        repo.createSocialAccountBlockWithAudit({ blockerId, blockedId, createdAt: now }, event),
+        repo.followSocialAccount(blockedId, blockerId, 500),
+      ])
+      expect(results[0].status).toBe('fulfilled')
+      expect(await repo.areSocialAccountsBlocked(blockerId, blockedId)).toBe(true)
+      expect((await repo.getSocialAccountState(blockedId)).followedAccountIds).not.toContain(blockerId)
+      await expect(repo.drainSocialBlockAudit()).rejects.toBeTruthy()
+      await rm(join(directory, 'audit.json'), { recursive: true, force: true })
+      await repo.drainSocialBlockAudit()
+      expect(JSON.parse(await readFile(join(directory, 'audit.json'), 'utf8'))).toMatchObject([{ id: event.id, metadata: { resource: 'social-account-block' } }])
+    } finally { config.dataDirectory = previousDirectory; await rm(directory, { recursive: true, force: true }) }
+  })
+
   it('serializes concurrent read-modify-write operations without losing updates', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'beatvault-json-store-'))
     try {
@@ -26,7 +50,8 @@ describe('JsonStore', () => {
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
-  })
+    // Allow Windows disk variance while retaining all 80-update integrity assertions.
+  }, 15000)
 
   it('admits concurrent account uploads atomically and releases usage on deletion', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'beatvault-account-quota-'))
@@ -45,6 +70,45 @@ describe('JsonStore', () => {
       if (accepted?.status === 'fulfilled') await repo.deleteAsset(accepted.value.id, ownerId)
       expect(await repo.getStorageUsage(ownerId)).toBe(7)
       expect(await repo.listStorageUsage()).toContainEqual(expect.objectContaining({ ownerId, usedBytes: 7, originalCount: 1, previewBytes: 4, previewCount: 1, storedBytes: 11 }))
+    } finally {
+      config.dataDirectory = previousDirectory
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+  it('shares social media quota across posts and standalone stories', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'beatvault-social-story-quota-'))
+    const previousDirectory = config.dataDirectory
+    config.dataDirectory = directory
+    try {
+      const repo = new LocalRepository()
+      const authorId = randomUUID()
+      const createdAt = new Date().toISOString()
+      await repo.createSocialStory({
+        id: randomUUID(), authorId, kind: 'photo', body: '', audience: 'private', createdAt,
+        expiresAt: new Date(Date.parse(createdAt) + 24 * 60 * 60 * 1000).toISOString(),
+        media: { storageKey: `social-stories/${authorId}/${randomUUID()}`, mimeType: 'image/jpeg', sizeBytes: 7, sha256: 'a'.repeat(64) },
+      }, 10)
+      const postCreatedAt = new Date().toISOString()
+      await expect(repo.createSocialPost({
+        id: randomUUID(), authorId, kind: 'photo', body: 'Feed image', audience: 'private', visibility: 'published', createdAt: postCreatedAt, updatedAt: postCreatedAt,
+        media: { storageKey: `social-posts/${authorId}/${randomUUID()}`, mimeType: 'image/jpeg', sizeBytes: 4, sha256: 'b'.repeat(64) },
+      }, 10)).rejects.toBeInstanceOf(StorageQuotaExceededError)
+    } finally {
+      config.dataDirectory = previousDirectory
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+  it('deletes expired stories from the persistent local repository', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'beatvault-story-expiry-'))
+    const previousDirectory = config.dataDirectory
+    config.dataDirectory = directory
+    try {
+      const repo = new LocalRepository()
+      const createdAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
+      const oldStory = { id: randomUUID(), authorId: 'story-owner', kind: 'status' as const, body: 'Old update', audience: 'private' as const, createdAt, expiresAt: new Date(Date.parse(createdAt) + 24 * 60 * 60 * 1000).toISOString() }
+      await repo.createSocialStory(oldStory, 512 * 1024 * 1024)
+      expect(await repo.deleteExpiredSocialStories(new Date().toISOString())).toEqual([oldStory])
+      expect(await repo.listSocialStories({ expiresAfter: new Date().toISOString(), limit: 20 })).toEqual([])
     } finally {
       config.dataDirectory = previousDirectory
       await rm(directory, { recursive: true, force: true })

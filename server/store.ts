@@ -6,6 +6,7 @@ import type { ArtworkRecord } from './artwork'
 import type { ProjectRecord } from '../src/domains/core/contracts'
 import { validateCatalogEntry, validateProjectRecord } from './validation'
 import { config } from './config'
+import { isPurchaseEntitlement, type PurchaseEntitlement } from './purchase-entitlements'
 import type { Account } from './auth'
 import { isPlanId } from './plans'
 import { isCreatorProfile, type CreatorProfile } from '../src/domains/profile'
@@ -15,19 +16,50 @@ import { isPromotionRule, type PromotionRule } from '../src/domains/marketplace/
 import { isBeatListingRecord, type BeatListingRecord } from '../src/domains/marketplace/sellerListings'
 import { isSellerEvidenceRecord, sellerEvidenceMaxFiles, type SellerEvidenceRecord } from '../src/domains/marketplace/sellerEvidence'
 import { isSocialPost, isSocialPostComment, isSocialPostReport, type SocialPost, type SocialPostComment, type SocialPostCursor, type SocialPostReport, type SocialPostVisibility } from './social-posts'
+import { isSocialStory, isSocialStoryReport, socialStoryMaxActivePerAccount, type SocialStory, type SocialStoryCursor, type SocialStoryReport } from './social-stories'
 import { compareNotificationOrder, isNotificationRecord, isValidNotificationTimestamp, normalizeNotificationCursor, normalizeNotificationRecord, notificationLimit, type NotificationPage, type NotificationPageOptions, type NotificationRecord, type NotificationSeed } from './notifications'
+import type { AuditEvent } from './security'
+import { applyMarketplaceReview, isMarketplaceReviewState, marketplaceRevision, type MarketplaceReviewJournal, type MarketplaceReviewState, type MarketplaceReviewWrite } from './marketplace-review-state'
+import type { MercadoPagoOAuthIntent as ProviderOAuthIntent, MercadoPagoPreference, MercadoPagoPreferenceClaim, MercadoPagoPreferenceReservation, MercadoPagoPreferenceStore, MercadoPagoRepository, MercadoPagoScope, MercadoPagoSellerLink as ProviderSellerLink } from './mercadopago'
+export type { MercadoPagoPreference, MercadoPagoPreferenceClaim, MercadoPagoPreferenceReservation, MercadoPagoScope } from './mercadopago'
 export type AssetState = 'available' | 'missing' | 'metadata-only'
 export type AssetRecord = { id: string; ownerId: string; originalName: string; storageKey: string; mimeType: string; sizeBytes: number; contentHash: string; state: AssetState; createdAt: string; updatedAt: string; previewStorageKey?: string; previewMimeType?: string; previewSizeBytes?: number }
 export type StorageUsageRecord = { ownerId: string; usedBytes: number; originalCount: number; artworkBytes: number; artworkCount: number; previewBytes: number; previewCount: number; storedBytes: number }
 export type StorageQuotaRecord = { ownerId: string; limitBytes: number; updatedBy: string; updatedAt: string }
 export type StripeConnectRecord = { accountId: string; stripeAccountId: string; chargesEnabled: boolean; payoutsEnabled: boolean; detailsSubmitted: boolean; deauthorized: boolean; updatedAt: string }
+export type PaymentProvider = 'stripe' | 'mercadopago'
+export type MercadoPagoMode = 'test' | 'production'
+export type PaymentEnvironment = MercadoPagoMode
+/** Token fields contain caller-encrypted ciphertext only; this repository never encrypts, decrypts, or logs them. */
+export type MercadoPagoSellerLink = ProviderSellerLink
+/** OAuth state and PKCE verifier are stored only as a digest and caller-encrypted ciphertext. */
+export type MercadoPagoOAuthIntent = ProviderOAuthIntent
+export type MercadoPagoPaymentStatus = 'created' | 'pending' | 'approved' | 'rejected' | 'cancelled' | 'expired' | 'refund_pending' | 'refunded' | 'partially_refunded' | 'disputed'
+export type MercadoPagoOrderPayment = { id: string; orderId: string; sellerId: string; mode: PaymentEnvironment; applicationId: string; providerUserId: string; idempotencyKey: string; preferenceId: string; checkoutUrl: string; externalReference: string; amountMinor: number; currency: 'MXN'; quote: { sourceAmountMinor: number; sourceCurrency: 'usd'; exchangeRateUsdMxn: number; marketplaceFeeMinor: number; sellerNetMinor: number }; status: MercadoPagoPaymentStatus; createdAt: string; updatedAt: string }
+export type MercadoPagoProviderPayment = { paymentId: string; attemptId: string; orderId: string; applicationId?: string; clientId?: string; mode: PaymentEnvironment; providerUserId: string; amountMinor: number; refundedMinor: number; currency: 'MXN'; status: string; statusDetail: string; normalizedStatus: 'pending' | 'paid' | 'failed' | 'refunded' | 'partially_refunded' | 'disputed'; createdAt: string; updatedAt: string }
+export type ProviderWebhookEvent = { provider: PaymentProvider; environment: PaymentEnvironment; eventId: string; eventType: string; createdAt: string }
+type MercadoPagoPreferenceReservationRecord = MercadoPagoPreferenceReservation & { status: 'reserved' | 'complete' | 'uncertain'; result?: MercadoPagoPreference; updatedAt: number }
 export type SessionRecord = { tokenHash: string; accountId: string; csrfTokenHash: string; expiresAt: number }
-export type BeatOrder = { id: string; buyerId: string; sellerId: string; contentId: string; offerId: string; title: string; amountMinor: number; commissionMinor: number; processingEstimateMinor: number; applicationFeeMinor: number; sellerNetMinor: number; currency: 'usd'; status: 'pending' | 'paid' | 'failed' | 'refund_pending' | 'refunded' | 'partially_refunded' | 'disputed'; stripeCheckoutSessionId?: string; stripePaymentIntentId?: string; stripeRefundId?: string; refundRequestedAt?: string; refundRequestedBy?: string; disputeId?: string; disputeReason?: string; createdAt: string; paidAt?: string }
+export type BeatOrderStatus = 'pending' | 'paid' | 'failed' | 'refund_pending' | 'refunded' | 'partially_refunded' | 'disputed'
+export type BeatOrder = { id: string; buyerId: string; sellerId: string; contentId: string; offerId: string; title: string; amountMinor: number; commissionMinor: number; processingEstimateMinor: number; applicationFeeMinor: number; sellerNetMinor: number; currency: 'usd' | 'mxn'; paymentProvider?: 'stripe' | 'mercadopago'; status: BeatOrderStatus; fulfillment?: PurchaseEntitlement; stripeCheckoutSessionId?: string; stripePaymentIntentId?: string; stripeDestinationAccountId?: string; stripeCheckoutBaseUrl?: string; stripeRefundId?: string; mercadoPagoClientId?: string; mercadoPagoMode?: MercadoPagoMode; mercadoPagoPreferenceId?: string; mercadoPagoPaymentId?: string; mercadoPagoQuote?: { sourceAmountMinor: number; sourceCurrency: 'usd'; exchangeRateUsdMxn: number; amountMinor: number; currency: 'mxn'; commissionMinor: number; sellerNetMinor: number }; refundRequestedAt?: string; refundRequestedBy?: string; disputeId?: string; disputeReason?: string; createdAt: string; paidAt?: string }
+export type BeatOrderMutableFields = 'status' | 'stripeCheckoutSessionId' | 'stripePaymentIntentId' | 'stripeDestinationAccountId' | 'stripeCheckoutBaseUrl' | 'stripeRefundId' | 'mercadoPagoClientId' | 'mercadoPagoMode' | 'mercadoPagoPreferenceId' | 'mercadoPagoPaymentId' | 'mercadoPagoQuote' | 'paymentProvider' | 'refundRequestedAt' | 'refundRequestedBy' | 'disputeId' | 'disputeReason' | 'paidAt'
 export class StorageQuotaExceededError extends Error {
   constructor(readonly usedBytes: number, readonly limitBytes: number, readonly requestedBytes: number) { super('STORAGE_QUOTA_EXCEEDED'); this.name = 'StorageQuotaExceededError' }
 }
 export type Friendship = { id: string; requesterId: string; recipientId: string; status: 'pending' | 'accepted'; createdAt: string; updatedAt: string }
+export type SocialAccountBlock = { blockerId: string; blockedId: string; createdAt: string }
+export type SocialStoryReportCursor = { createdAt: string; id: string }
+export type SocialStoryReportPage = { reports: SocialStoryReport[]; nextCursor: SocialStoryReportCursor | null }
+const isSocialAccountBlock = (value: unknown): value is SocialAccountBlock => {
+  if (!value || typeof value !== 'object') return false
+  const block = value as Partial<SocialAccountBlock>
+  return typeof block.blockerId === 'string' && block.blockerId.length > 0 && block.blockerId.length <= 80 &&
+    typeof block.blockedId === 'string' && block.blockedId.length > 0 && block.blockedId.length <= 80 && block.blockerId !== block.blockedId &&
+    typeof block.createdAt === 'string' && Number.isFinite(Date.parse(block.createdAt))
+}
 type SocialPostReactionRecord = { postId: string; actorId: string; createdAt: string }
+type CatalogFavoriteRecord = { accountId: string; contentId: string; createdAt: string }
+const isCatalogFavorite = (value: unknown): value is CatalogFavoriteRecord => Boolean(value && typeof value === 'object' && typeof (value as CatalogFavoriteRecord).accountId === 'string' && typeof (value as CatalogFavoriteRecord).contentId === 'string' && typeof (value as CatalogFavoriteRecord).createdAt === 'string')
 const isSocialPostReactionRecord = (value: unknown): value is SocialPostReactionRecord => {
   if (!value || typeof value !== 'object') return false
   const reaction = value as Partial<SocialPostReactionRecord>
@@ -35,6 +67,15 @@ const isSocialPostReactionRecord = (value: unknown): value is SocialPostReaction
 }
 type SocialFollowRecord = { followerId: string; followingId: string; createdAt: string }
 type SocialPostBookmarkRecord = { accountId: string; postId: string; createdAt: string }
+type SocialModerationJournalEntry = { kind: 'post' | 'story'; reportId: string; report: SocialPostReport | SocialStoryReport; event: AuditEvent; delivered: boolean }
+type SocialBlockJournalEntry = { blockerId: string; blockedId: string; block: SocialAccountBlock | null; event: AuditEvent; delivered: boolean }
+const isSocialBlockJournalEntry = (value: unknown): value is SocialBlockJournalEntry => Boolean(value && typeof value === 'object' && typeof (value as SocialBlockJournalEntry).blockerId === 'string' && typeof (value as SocialBlockJournalEntry).blockedId === 'string' && ((value as SocialBlockJournalEntry).block === null || isSocialAccountBlock((value as SocialBlockJournalEntry).block)) && typeof (value as SocialBlockJournalEntry).event?.id === 'string' && typeof (value as SocialBlockJournalEntry).delivered === 'boolean')
+const isSocialModerationJournalEntry = (value: unknown): value is SocialModerationJournalEntry => {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<SocialModerationJournalEntry>
+  return (item.kind === 'post' && isSocialPostReport(item.report) || item.kind === 'story' && isSocialStoryReport(item.report)) &&
+    typeof item.reportId === 'string' && item.reportId === item.report?.id && !!item.event && typeof item.event.id === 'string' && typeof item.delivered === 'boolean'
+}
 export type SocialAccountState = { followedAccountIds: string[]; bookmarkedPostIds: string[] }
 const isSocialFollowRecord = (value: unknown): value is SocialFollowRecord => {
   if (!value || typeof value !== 'object') return false
@@ -63,6 +104,17 @@ const notificationRecordFor = (seed: NotificationSeed, recipientId: string, acto
   ...seed, recipientId, actorId, type, resourceType, resourceId, sourceId, eventKey: `${type}:${sourceId}`, readAt: null,
 })
 const localStorageQueues = new Map<string, Promise<void>>()
+const socialMediaQueues = new Map<string, Promise<void>>()
+async function withSocialMediaLock<T>(accountId: string, action: () => Promise<T>): Promise<T> {
+  const previous = socialMediaQueues.get(accountId) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>(resolve => { release = resolve })
+  const tail = previous.catch(() => undefined).then(() => current)
+  socialMediaQueues.set(accountId, tail)
+  await previous.catch(() => undefined)
+  try { return await action() }
+  finally { release(); if (socialMediaQueues.get(accountId) === tail) socialMediaQueues.delete(accountId) }
+}
 async function withLocalStorageLock<T>(ownerId: string, action: () => Promise<T>): Promise<T> {
   const previous = localStorageQueues.get(ownerId) ?? Promise.resolve()
   let release!: () => void
@@ -104,7 +156,17 @@ export class JsonStore {
     }
   }
 }
-export interface ServerRepository {
+export interface ServerRepository extends MercadoPagoRepository, MercadoPagoPreferenceStore {
+  findSellerLink(accountId: string, applicationId: string, mode: PaymentEnvironment): Promise<MercadoPagoSellerLink | undefined>
+  findSellerLink(scope: MercadoPagoScope): Promise<MercadoPagoSellerLink | undefined>
+  findSellerLinkByProviderUserId(providerUserId: string, applicationId: string, mode: PaymentEnvironment): Promise<MercadoPagoSellerLink | undefined>
+  listFavoriteIds(accountId: string): Promise<string[]>
+  addFavorite(accountId: string, contentId: string, limit: number): Promise<void>
+  removeFavorite(accountId: string, contentId: string): Promise<void>
+  findMarketplaceReviewState(contentId: string, ownerId: string): Promise<MarketplaceReviewState | undefined>
+  importMarketplaceReviewState(state: MarketplaceReviewState, expectedRevision: string): Promise<MarketplaceReviewState>
+  saveMarketplaceReview(input: MarketplaceReviewWrite, event: AuditEvent): Promise<MarketplaceReviewState>
+  drainMarketplaceReviewAudit(): Promise<void>
   findProfile(accountId: string): Promise<CreatorProfile | undefined>
   saveProfile(profile: CreatorProfile): Promise<CreatorProfile>
   listPublicProfiles(query: string, excludeAccountId: string): Promise<CreatorProfile[]>
@@ -112,6 +174,12 @@ export interface ServerRepository {
   createFriendship(friendship: Friendship): Promise<Friendship>
   updateFriendship(id: string, actorId: string, status: Friendship['status']): Promise<Friendship | undefined>
   deleteFriendship(id: string, actorId: string, status: Friendship['status']): Promise<boolean>
+  listSocialAccountBlocks(accountId: string): Promise<SocialAccountBlock[]>
+  areSocialAccountsBlocked(firstAccountId: string, secondAccountId: string): Promise<boolean>
+  createSocialAccountBlock(block: SocialAccountBlock): Promise<void>
+  deleteSocialAccountBlock(blockerId: string, blockedId: string): Promise<boolean>
+  createSocialAccountBlockWithAudit(block: SocialAccountBlock, event: AuditEvent): Promise<void>
+  deleteSocialAccountBlockWithAudit(blockerId: string, blockedId: string, event: AuditEvent): Promise<boolean>
   createNotification(notification: NotificationRecord): Promise<NotificationRecord>
   createSocialPostCommentWithNotification(comment: SocialPostComment, notification?: NotificationSeed): Promise<NotificationMutation<SocialPostComment>>
   toggleSocialPostReactionWithNotification(postId: string, actorId: string, notification?: NotificationSeed): Promise<NotificationMutation<boolean>>
@@ -140,6 +208,11 @@ export interface ServerRepository {
   unbookmarkSocialPost(accountId: string, postId: string): Promise<void>
   deleteSocialPost(id: string, authorId: string): Promise<SocialPost | undefined>
   reviewSocialPost(id: string, status: Extract<SocialPostVisibility, 'published' | 'rejected' | 'removed'>, staffId: string, note?: string): Promise<SocialPost | undefined>
+  createSocialStory(story: SocialStory, mediaLimitBytes: number): Promise<SocialStory>
+  findSocialStory(id: string): Promise<SocialStory | undefined>
+  listSocialStories(options: { expiresAfter?: string; cursor?: SocialStoryCursor; limit: number }): Promise<SocialStory[]>
+  deleteSocialStory(id: string, authorId: string): Promise<SocialStory | undefined>
+  deleteExpiredSocialStories(now: string): Promise<SocialStory[]>
   listSocialPostComments(postId: string, limit?: number): Promise<SocialPostComment[]>
   createSocialPostComment(comment: SocialPostComment): Promise<SocialPostComment>
   listSocialPostReactions(postId: string): Promise<string[]>
@@ -149,6 +222,17 @@ export interface ServerRepository {
   deleteSocialPostReport(id: string, reporterId: string): Promise<boolean>
   listSocialPostReports(status?: SocialPostReport['status']): Promise<SocialPostReport[]>
   reviewSocialPostReport(id: string, status: Extract<SocialPostReport['status'], 'reviewed' | 'dismissed'>, staffId: string): Promise<SocialPostReport | undefined>
+  createSocialStoryReport(report: SocialStoryReport): Promise<SocialStoryReport>
+  deleteSocialStoryReport(id: string, reporterId: string): Promise<boolean>
+  listSocialStoryReports(status?: SocialStoryReport['status']): Promise<SocialStoryReport[]>
+  pageSocialStoryReports(status: SocialStoryReport['status'] | undefined, cursor: SocialStoryReportCursor | undefined, limit: number): Promise<SocialStoryReportPage>
+  listExpiredSocialStoryEvidence(now: string, limit: number): Promise<SocialStoryReport[]>
+  clearSocialStoryEvidence(reportId: string, expiredAt: string): Promise<void>
+  listSocialStoryEvidenceStorageKeys(): Promise<string[]>
+  reviewSocialStoryReport(id: string, status: Extract<SocialStoryReport['status'], 'reviewed' | 'dismissed'>, staffId: string, event: AuditEvent): Promise<SocialStoryReport | undefined>
+  reviewSocialPostReportWithAudit(id: string, status: Extract<SocialPostReport['status'], 'reviewed' | 'dismissed'>, staffId: string, event: AuditEvent): Promise<SocialPostReport | undefined>
+  drainSocialModerationAudit(): Promise<void>
+  drainSocialBlockAudit(): Promise<void>
   findAccountByEmail(email: string): Promise<Account | undefined>
   findAccountById(id: string): Promise<Account | undefined>
   listAccounts(): Promise<Account[]>
@@ -200,26 +284,50 @@ export interface ServerRepository {
   saveStripeConnectAccount(record: StripeConnectRecord): Promise<void>
   hasProcessedStripeEvent(eventId: string): Promise<boolean>
   recordProcessedStripeEvent(eventId: string, eventType: string): Promise<boolean>
+  createMercadoPagoOrderPayment(payment: MercadoPagoOrderPayment): Promise<MercadoPagoOrderPayment>
+  findMercadoPagoOrderPayment(id: string): Promise<MercadoPagoOrderPayment | undefined>
+  findMercadoPagoOrderPayments(orderId: string): Promise<MercadoPagoOrderPayment[]>
+  findMercadoPagoOrderPaymentByPreference(applicationId: string, mode: PaymentEnvironment, providerUserId: string, preferenceId: string): Promise<MercadoPagoOrderPayment | undefined>
+  findMercadoPagoOrderPaymentByProviderPaymentId(applicationId: string, mode: PaymentEnvironment, paymentId: string): Promise<MercadoPagoOrderPayment | undefined>
+  transitionMercadoPagoOrderPayment(id: string, from: MercadoPagoPaymentStatus[], patch: Partial<Pick<MercadoPagoOrderPayment, 'status' | 'updatedAt'>>): Promise<MercadoPagoOrderPayment | undefined>
+  createMercadoPagoProviderPayment(payment: MercadoPagoProviderPayment): Promise<MercadoPagoProviderPayment>
+  findMercadoPagoProviderPaymentById(applicationId: string, mode: PaymentEnvironment, paymentId: string): Promise<MercadoPagoProviderPayment | undefined>
+  listMercadoPagoProviderPaymentsByOrder(orderId: string): Promise<MercadoPagoProviderPayment[]>
+  transitionMercadoPagoProviderPayment(paymentId: string, applicationId: string, mode: PaymentEnvironment, from: MercadoPagoProviderPayment['normalizedStatus'][], patch: Partial<Pick<MercadoPagoProviderPayment, 'refundedMinor' | 'status' | 'statusDetail' | 'normalizedStatus' | 'updatedAt'>>): Promise<MercadoPagoProviderPayment | undefined>
+  hasProcessedProviderWebhookEvent(provider: PaymentProvider, environment: PaymentEnvironment, eventId: string): Promise<boolean>
+  recordProcessedProviderWebhookEvent(event: ProviderWebhookEvent): Promise<boolean>
+  hasProcessedMercadoPagoEvent(mode: PaymentEnvironment, eventId: string): Promise<boolean>
+  recordProcessedMercadoPagoEvent(mode: PaymentEnvironment, eventId: string, eventType: string): Promise<boolean>
   createBeatOrder(order: BeatOrder): Promise<BeatOrder>
   findBeatOrder(id: string): Promise<BeatOrder | undefined>
   listBeatOrders(buyerId: string): Promise<BeatOrder[]>
   listAllBeatOrders(): Promise<BeatOrder[]>
-  updateBeatOrder(id: string, patch: Partial<Pick<BeatOrder, 'status' | 'stripeCheckoutSessionId' | 'stripePaymentIntentId' | 'stripeRefundId' | 'refundRequestedAt' | 'refundRequestedBy' | 'disputeId' | 'disputeReason' | 'paidAt'>>): Promise<BeatOrder | undefined>
+  updateBeatOrder(id: string, patch: Partial<Pick<BeatOrder, BeatOrderMutableFields>>): Promise<BeatOrder | undefined>
+  transitionBeatOrder(id: string, from: BeatOrderStatus[], patch: Partial<Pick<BeatOrder, Exclude<BeatOrderMutableFields, 'status'>>> & Pick<BeatOrder, 'status'>): Promise<BeatOrder | undefined>
   findBeatOrderByCheckoutSessionId(sessionId: string): Promise<BeatOrder | undefined>
   findBeatOrderByPaymentIntentId(paymentIntentId: string): Promise<BeatOrder | undefined>
+  findBeatOrderByMercadoPagoPreferenceId(preferenceId: string): Promise<BeatOrder | undefined>
+  findBeatOrderByMercadoPagoPaymentId(paymentId: string): Promise<BeatOrder | undefined>
 }
 
 export class LocalRepository implements ServerRepository {
+  private readonly favorites = new JsonStore(`${config.dataDirectory}/catalog-favorites.json`)
+  private readonly marketplaceReviewJournal = new JsonStore(`${config.dataDirectory}/marketplace-review-state.json`)
   private readonly profiles = new JsonStore(`${config.dataDirectory}/profiles.json`)
   private readonly friendships = new JsonStore(`${config.dataDirectory}/friendships.json`)
+  private readonly socialAccountBlocks = new JsonStore(`${config.dataDirectory}/social-account-blocks.json`)
+  private readonly socialBlockJournal = new JsonStore(`${config.dataDirectory}/social-block-journal.json`)
   private readonly messages = new JsonStore(`${config.dataDirectory}/messages.json`)
   private readonly socialComments = new JsonStore(`${config.dataDirectory}/social-comments.json`)
   private readonly socialReactions = new JsonStore(`${config.dataDirectory}/social-reactions.json`)
   private readonly socialActivities = new JsonStore(`${config.dataDirectory}/social-activities.json`)
   private readonly socialPosts = new JsonStore(`${config.dataDirectory}/social-posts.json`)
+  private readonly socialStories = new JsonStore(`${config.dataDirectory}/social-stories.json`)
   private readonly notifications: JsonStore
   private readonly notificationOutbox = new JsonStore(`${config.dataDirectory}/notification-outbox.json`)
   private readonly socialPostReports = new JsonStore(`${config.dataDirectory}/social-post-reports.json`)
+  private readonly socialStoryReports = new JsonStore(`${config.dataDirectory}/social-story-reports.json`)
+  private readonly socialModerationJournal = new JsonStore(`${config.dataDirectory}/social-moderation-journal.json`)
   private readonly socialPostComments = new JsonStore(`${config.dataDirectory}/social-post-comments.json`)
   private readonly socialPostReactions = new JsonStore(`${config.dataDirectory}/social-post-reactions.json`)
   private readonly socialFollows = new JsonStore(`${config.dataDirectory}/social-follows.json`)
@@ -230,6 +338,12 @@ export class LocalRepository implements ServerRepository {
   private readonly sellerEvidence = new JsonStore(`${config.dataDirectory}/seller-evidence.json`)
   private readonly stripeConnectAccounts = new JsonStore(`${config.dataDirectory}/stripe-connect-accounts.json`)
   private readonly stripeEvents = new JsonStore(`${config.dataDirectory}/stripe-events.json`)
+  private readonly mercadoPagoSellerAccounts = new JsonStore(`${config.dataDirectory}/mercadopago-seller-accounts.json`)
+  private readonly mercadoPagoOAuthStates = new JsonStore(`${config.dataDirectory}/mercadopago-oauth-states.json`)
+  private readonly mercadoPagoOrderPayments = new JsonStore(`${config.dataDirectory}/mercadopago-order-payments.json`)
+  private readonly mercadoPagoProviderPayments = new JsonStore(`${config.dataDirectory}/mercadopago-provider-payments.json`)
+  private readonly mercadoPagoPreferenceReservations = new JsonStore(`${config.dataDirectory}/mercadopago-preference-reservations.json`)
+  private readonly providerWebhookEvents = new JsonStore(`${config.dataDirectory}/provider-webhook-events.json`)
   private readonly beatOrders = new JsonStore(`${config.dataDirectory}/beat-orders.json`)
   private readonly sessions = new JsonStore(`${config.dataDirectory}/auth-sessions.json`)
   constructor(
@@ -240,6 +354,58 @@ export class LocalRepository implements ServerRepository {
     private readonly artwork = new JsonStore(`${config.dataDirectory}/catalog-artwork.json`),
     notifications = new JsonStore(`${config.dataDirectory}/notifications.json`),
   ) { this.notifications = notifications }
+  async listFavoriteIds(accountId: string) { return (await this.favorites.read<CatalogFavoriteRecord[]>([], isCatalogFavorite)).filter(item => item.accountId === accountId).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.contentId.localeCompare(b.contentId)).map(item => item.contentId) }
+  addFavorite(accountId: string, contentId: string, limit: number) {
+    return withLocalStorageLock(`favorites:${accountId}`, async () => {
+      const entry = (await this.listCatalog()).find(item => item.contentId === contentId && item.publicationStatus === 'published')
+      if (!entry) throw new Error('FAVORITE_NOT_AVAILABLE')
+      await this.favorites.update<CatalogFavoriteRecord[], void>([], isCatalogFavorite, items => {
+        if (items.some(item => item.accountId === accountId && item.contentId === contentId)) return { value: items, result: undefined }
+        if (items.filter(item => item.accountId === accountId).length >= limit) throw new Error('FAVORITES_LIMIT')
+        return { value: [...items, { accountId, contentId, createdAt: new Date().toISOString() }], result: undefined }
+      })
+    })
+  }
+  async removeFavorite(accountId: string, contentId: string) { await this.favorites.update<CatalogFavoriteRecord[], void>([], isCatalogFavorite, items => ({ value: items.filter(item => item.accountId !== accountId || item.contentId !== contentId), result: undefined })) }
+  async findMarketplaceReviewState(contentId: string, ownerId: string) { return (await this.marketplaceReviewJournal.read<MarketplaceReviewJournal[]>([], isMarketplaceReviewState)).find(item => item.contentId === contentId && item.ownerId === ownerId) }
+  importMarketplaceReviewState(state: MarketplaceReviewState, expectedRevision: string) {
+    return withLocalStorageLock(`marketplace:${state.contentId}`, async () => {
+      const listing = await this.findBeatListingDraft(state.contentId, state.ownerId)
+      if (!listing || marketplaceRevision(listing, await this.listSellerEvidence(state.contentId, state.ownerId)) !== expectedRevision) throw new Error('LISTING_REVISION_CHANGED')
+      return this.marketplaceReviewJournal.update<MarketplaceReviewJournal[], MarketplaceReviewState>([], isMarketplaceReviewState, items => {
+        const existing = items.find(item => item.contentId === state.contentId)
+        return existing ? { value: items, result: existing } : { value: [...items, state], result: state }
+      })
+    })
+  }
+  async saveMarketplaceReview(input: MarketplaceReviewWrite, event: AuditEvent) {
+    const saved = await withLocalStorageLock(`marketplace:${input.contentId}`, async () => {
+      const listing = await this.findBeatListingDraft(input.contentId, input.ownerId)
+      if (!listing || marketplaceRevision(listing, await this.listSellerEvidence(input.contentId, input.ownerId)) !== input.expectedRevision) throw new Error('LISTING_REVISION_CHANGED')
+      const previous = await this.findMarketplaceReviewState(input.contentId, input.ownerId)
+      const actor = await this.findAccountById(input.review.reviewerId)
+      const recommender = previous?.communityReview ? await this.findAccountById(previous.communityReview.reviewerId) : undefined
+      const state = applyMarketplaceReview(previous, input, actor?.role, recommender?.role)
+      return this.marketplaceReviewJournal.update<MarketplaceReviewJournal[], MarketplaceReviewState>([], isMarketplaceReviewState, items => ({ value: [...items.filter(item => item.contentId !== input.contentId), { ...state, auditOutbox: [...(items.find(item => item.contentId === input.contentId)?.auditOutbox || []), event] }], result: state }))
+    })
+    await this.drainMarketplaceReviewAudit()
+    return saved
+  }
+  async drainMarketplaceReviewAudit() {
+    await withLocalStorageLock(`marketplace-audit-outbox:${config.dataDirectory}`, async () => {
+      const states = await this.marketplaceReviewJournal.read<MarketplaceReviewJournal[]>([], isMarketplaceReviewState)
+      const pending = states.flatMap(item => item.auditOutbox || [])
+      if (!pending.length) return
+      const auditFile = new JsonStore(`${config.dataDirectory}/audit.json`)
+      await auditFile.update<AuditEvent[], void>([], value => Boolean(value && typeof value === 'object' && typeof (value as AuditEvent).id === 'string'), events => {
+        const known = new Set(events.map(item => item.id))
+        const merged = [...events, ...pending.filter(item => !known.has(item.id))].sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+        return { value: merged.slice(-config.audit.maxEntries), result: undefined }
+      })
+      const delivered = new Set(pending.map(item => item.id))
+      await this.marketplaceReviewJournal.update<MarketplaceReviewJournal[], void>([], isMarketplaceReviewState, records => ({ value: records.map(item => ({ ...item, auditOutbox: item.auditOutbox?.filter(event => !delivered.has(event.id)) })), result: undefined }))
+    })
+  }
   listPromotions() { return this.promotions.read<PromotionRule[]>([], isPromotionRule).then(items => items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) }
   savePromotion(promotion: PromotionRule) {
     return this.promotions.update<PromotionRule[], PromotionRule>([], isPromotionRule, items => ({ value: [...items.filter(item => item.id !== promotion.id), promotion], result: promotion }))
@@ -254,43 +420,159 @@ export class LocalRepository implements ServerRepository {
   listAllBeatListingDrafts() { return this.beatListingDrafts.read<BeatListingRecord[]>([], isBeatListingRecord).then(items => items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) }
   findBeatListingDraft(contentId: string, ownerId: string) { return this.beatListingDrafts.read<BeatListingRecord[]>([], isBeatListingRecord).then(items => items.find(item => item.contentId === contentId && item.ownerId === ownerId)) }
   saveBeatListingDraft(record: BeatListingRecord) {
-    return this.beatListingDrafts.update<BeatListingRecord[], BeatListingRecord>([], isBeatListingRecord, items => {
+    return withLocalStorageLock(`marketplace:${record.contentId}`, () => this.beatListingDrafts.update<BeatListingRecord[], BeatListingRecord>([], isBeatListingRecord, items => {
       const existing = items.find(item => item.contentId === record.contentId)
       if (existing && existing.ownerId !== record.ownerId) throw new Error('LISTING_NOT_FOUND')
-      const saved = existing ? { ...record, createdAt: existing.createdAt } : record
+      const saved = existing ? { ...record, createdAt: existing.createdAt, ...((existing as BeatListingRecord & { reviewEvidenceRevision?: string }).reviewEvidenceRevision ? { reviewEvidenceRevision: (existing as BeatListingRecord & { reviewEvidenceRevision?: string }).reviewEvidenceRevision } : {}) } : record
       return { value: [...items.filter(item => item.contentId !== record.contentId), saved], result: saved }
-    })
+    }))
   }
   listSellerEvidence(contentId: string, ownerId?: string) { return this.sellerEvidence.read<SellerEvidenceRecord[]>([], isSellerEvidenceRecord).then(items => items.filter(item => item.contentId === contentId && (ownerId === undefined || item.ownerId === ownerId)).sort((a, b) => a.createdAt.localeCompare(b.createdAt))) }
   findSellerEvidence(id: string) { return this.sellerEvidence.read<SellerEvidenceRecord[]>([], isSellerEvidenceRecord).then(items => items.find(item => item.id === id)) }
-  saveSellerEvidence(record: SellerEvidenceRecord) { return this.sellerEvidence.update<SellerEvidenceRecord[], SellerEvidenceRecord>([], isSellerEvidenceRecord, items => {
+  saveSellerEvidence(record: SellerEvidenceRecord) { return withLocalStorageLock(`marketplace:${record.contentId}`, async () => {
+    await this.beatListingDrafts.update<BeatListingRecord[], void>([], isBeatListingRecord, items => ({ value: items.map(item => item.contentId === record.contentId && item.ownerId === record.ownerId ? { ...item, reviewEvidenceRevision: randomUUID() } : item), result: undefined }))
+    return this.sellerEvidence.update<SellerEvidenceRecord[], SellerEvidenceRecord>([], isSellerEvidenceRecord, items => {
     if (items.some(item => item.id === record.id)) throw new Error('EVIDENCE_EXISTS')
     if (items.filter(item => item.contentId === record.contentId && item.ownerId === record.ownerId).length >= sellerEvidenceMaxFiles) throw new Error('EVIDENCE_LIMIT')
     return { value: [...items, record], result: record }
-  }) }
-  deleteSellerEvidence(id: string, ownerId: string) { return this.sellerEvidence.update<SellerEvidenceRecord[], boolean>([], isSellerEvidenceRecord, items => {
+  }) }) }
+  async deleteSellerEvidence(id: string, ownerId: string) {
+    const existing = await this.findSellerEvidence(id)
+    if (!existing || existing.ownerId !== ownerId) return false
+    return withLocalStorageLock(`marketplace:${existing.contentId}`, async () => {
+    await this.beatListingDrafts.update<BeatListingRecord[], void>([], isBeatListingRecord, items => ({ value: items.map(item => item.contentId === existing.contentId && item.ownerId === ownerId ? { ...item, reviewEvidenceRevision: randomUUID() } : item), result: undefined }))
+    return this.sellerEvidence.update<SellerEvidenceRecord[], boolean>([], isSellerEvidenceRecord, items => {
     const next = items.filter(item => item.id !== id || item.ownerId !== ownerId)
     return { value: next, result: next.length !== items.length }
-  }) }
+  }) }) }
   findStripeConnectAccount(accountId: string) { return this.stripeConnectAccounts.read<StripeConnectRecord[]>([], isStripeConnectRecord).then(items => items.find(item => item.accountId === accountId)) }
   findStripeConnectAccountByStripeId(stripeAccountId: string) { return this.stripeConnectAccounts.read<StripeConnectRecord[]>([], isStripeConnectRecord).then(items => items.find(item => item.stripeAccountId === stripeAccountId)) }
   async saveStripeConnectAccount(record: StripeConnectRecord) { await this.stripeConnectAccounts.update<StripeConnectRecord[], void>([], isStripeConnectRecord, items => ({ value: [...items.filter(item => item.accountId !== record.accountId && item.stripeAccountId !== record.stripeAccountId), record], result: undefined })) }
   hasProcessedStripeEvent(eventId: string) { return this.stripeEvents.read<Array<{ eventId: string; eventType: string; createdAt: string }>>([], isStripeEvent).then(events => events.some(event => event.eventId === eventId)) }
   recordProcessedStripeEvent(eventId: string, eventType: string) { return this.stripeEvents.update<Array<{ eventId: string; eventType: string; createdAt: string }>, boolean>([], isStripeEvent, events => events.some(event => event.eventId === eventId) ? { value: events, result: false } : { value: [...events, { eventId, eventType, createdAt: new Date().toISOString() }], result: true }) }
-  createBeatOrder(order: BeatOrder) { return this.beatOrders.update<BeatOrder[], BeatOrder>([], isBeatOrder, orders => {
-    const existing = orders.find(item => item.id === order.id)
-    if (existing) return { value: orders, result: existing }
-    return { value: [...orders, order], result: order }
+  async findSellerLink(accountIdOrScope: string | MercadoPagoScope, applicationId?: string, mode?: PaymentEnvironment) { const scope = typeof accountIdOrScope === 'string' ? { accountId: accountIdOrScope, applicationId: applicationId!, mode: mode! } : accountIdOrScope; return (await this.mercadoPagoSellerAccounts.read<MercadoPagoSellerLink[]>([], isMercadoPagoSellerLink)).find(item => item.accountId === scope.accountId && item.applicationId === scope.applicationId && item.mode === scope.mode) }
+  async findSellerLinkByProviderUserId(providerUserId: string, applicationId: string, mode: PaymentEnvironment) { return (await this.mercadoPagoSellerAccounts.read<MercadoPagoSellerLink[]>([], isMercadoPagoSellerLink)).find(item => item.providerUserId === providerUserId && item.applicationId === applicationId && item.mode === mode) }
+  saveSellerLink(link: MercadoPagoSellerLink, expectedVersion: number) { if (!isMercadoPagoSellerLink(link) || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0 || link.version !== expectedVersion + 1) throw new Error('MERCADOPAGO_SELLER_LINK_INVALID'); return this.mercadoPagoSellerAccounts.update<MercadoPagoSellerLink[], boolean>([], isMercadoPagoSellerLink, items => {
+    const existing = items.find(item => item.accountId === link.accountId && item.applicationId === link.applicationId && item.mode === link.mode)
+    const linked = items.some(item => item.applicationId === link.applicationId && item.mode === link.mode && item.providerUserId === link.providerUserId && item.accountId !== link.accountId)
+    if (linked) throw new Error('MERCADOPAGO_ACCOUNT_ALREADY_LINKED')
+    if ((existing?.version ?? 0) !== expectedVersion) return { value: items, result: false }
+    return { value: [...items.filter(item => !(item.accountId === link.accountId && item.applicationId === link.applicationId && item.mode === link.mode)), link], result: true }
+  }) }
+  createOAuthIntent(intent: MercadoPagoOAuthIntent) { if (!isMercadoPagoOAuthIntent(intent)) throw new Error('MERCADOPAGO_OAUTH_INTENT_INVALID'); return this.mercadoPagoOAuthStates.update<MercadoPagoOAuthIntent[], void>([], isMercadoPagoOAuthIntent, items => {
+    if (items.some(item => item.stateHash === intent.stateHash)) throw new Error('MERCADOPAGO_OAUTH_INTENT_EXISTS')
+    return { value: [...items, intent], result: undefined }
+  }) }
+  consumeOAuthIntent(stateHash: string, sessionBindingHash: string, now: string) { return this.mercadoPagoOAuthStates.update<MercadoPagoOAuthIntent[], MercadoPagoOAuthIntent | undefined>([], isMercadoPagoOAuthIntent, items => {
+    const intent = items.find(item => item.stateHash === stateHash && item.sessionBindingHash === sessionBindingHash && Date.parse(item.expiresAt) > Date.parse(now))
+    return { value: intent ? items.filter(item => item.stateHash !== stateHash) : items, result: intent }
+  }) }
+  deleteExpiredOAuthIntents(now: string) { const cutoff = Date.parse(now); return this.mercadoPagoOAuthStates.update<MercadoPagoOAuthIntent[], number>([], isMercadoPagoOAuthIntent, items => { const next = items.filter(item => Date.parse(item.expiresAt) > cutoff); return { value: next, result: items.length - next.length } }) }
+  withSellerLock<T>(scope: MercadoPagoScope, action: () => Promise<T>) { return withLocalStorageLock(`mercadopago-seller:${scope.applicationId}:${scope.mode}:${scope.accountId}`, action) }
+  reservePreference(request: MercadoPagoPreferenceReservation): Promise<MercadoPagoPreferenceClaim> { return this.mercadoPagoPreferenceReservations.update<MercadoPagoPreferenceReservationRecord[], MercadoPagoPreferenceClaim>([], isMercadoPagoPreferenceReservationRecord, records => {
+    const existing = records.find(record => record.key === request.key)
+    if (!existing) return { value: [...records, { ...request, status: 'reserved', updatedAt: Date.now() }], result: { state: 'reserved' } }
+    if (existing.fingerprint !== request.fingerprint || existing.applicationId !== request.applicationId || existing.mode !== request.mode || existing.accountId !== request.accountId || existing.orderId !== request.orderId || existing.buyerId !== request.buyerId || existing.operationId !== request.operationId) return { value: records, result: { state: 'conflict' } }
+    if (existing.status === 'complete' && existing.result) return { value: records, result: { state: 'complete', result: existing.result } }
+    if (existing.status === 'uncertain') return { value: records, result: { state: 'uncertain' } }
+    if (existing.updatedAt < Date.now() - 120_000) return { value: records.map(record => record.key === request.key ? { ...record, status: 'uncertain', updatedAt: Date.now() } : record), result: { state: 'uncertain' } }
+    return { value: records, result: { state: 'busy' } }
+  }) }
+  completePreference(key: string, fingerprint: string, result: MercadoPagoPreference) { return this.mercadoPagoPreferenceReservations.update<MercadoPagoPreferenceReservationRecord[], void>([], isMercadoPagoPreferenceReservationRecord, records => {
+    const existing = records.find(record => record.key === key)
+    if (!existing || existing.fingerprint !== fingerprint || existing.status !== 'reserved') throw new Error('MERCADOPAGO_PREFERENCE_RESERVATION_CONFLICT')
+    return { value: records.map(record => record.key === key ? { ...record, status: 'complete', result, updatedAt: Date.now() } : record), result: undefined }
+  }) }
+  failPreference(key: string, fingerprint: string, uncertain: boolean) { return this.mercadoPagoPreferenceReservations.update<MercadoPagoPreferenceReservationRecord[], void>([], isMercadoPagoPreferenceReservationRecord, records => {
+    const existing = records.find(record => record.key === key)
+    if (!existing || existing.fingerprint !== fingerprint || existing.status !== 'reserved') return { value: records, result: undefined }
+    return { value: uncertain ? records.map(record => record.key === key ? { ...record, status: 'uncertain', updatedAt: Date.now() } : record) : records.filter(record => record.key !== key), result: undefined }
+  }) }
+  async createMercadoPagoOrderPayment(payment: MercadoPagoOrderPayment) {
+    if (!isMercadoPagoOrderPayment(payment)) throw new Error('MERCADOPAGO_PAYMENT_INVALID')
+    const order = await this.findBeatOrder(payment.orderId)
+    if (!order || order.sellerId !== payment.sellerId || order.currency !== 'mxn' || order.paymentProvider !== 'mercadopago' || order.mercadoPagoMode !== payment.mode || order.mercadoPagoClientId !== payment.applicationId || order.mercadoPagoPreferenceId !== payment.preferenceId || !order.mercadoPagoQuote || order.mercadoPagoQuote.amountMinor !== payment.amountMinor || order.mercadoPagoQuote.sourceAmountMinor !== payment.quote.sourceAmountMinor || order.mercadoPagoQuote.exchangeRateUsdMxn !== payment.quote.exchangeRateUsdMxn || order.mercadoPagoQuote.commissionMinor !== payment.quote.marketplaceFeeMinor || order.mercadoPagoQuote.sellerNetMinor !== payment.quote.sellerNetMinor) throw new Error('MERCADOPAGO_ORDER_SELLER_MISMATCH')
+    return this.mercadoPagoOrderPayments.update<MercadoPagoOrderPayment[], MercadoPagoOrderPayment>([], isMercadoPagoOrderPayment, items => {
+    const existing = items.find(item => item.applicationId === payment.applicationId && item.mode === payment.mode && item.providerUserId === payment.providerUserId && item.idempotencyKey === payment.idempotencyKey)
+    if (existing) {
+      if (existing.orderId !== payment.orderId || existing.sellerId !== payment.sellerId || existing.amountMinor !== payment.amountMinor || existing.currency !== payment.currency || JSON.stringify(existing.quote) !== JSON.stringify(payment.quote)) throw new Error('MERCADOPAGO_PAYMENT_IDEMPOTENCY_CONFLICT')
+      return { value: items, result: existing }
+    }
+    if (items.some(item => item.id === payment.id || item.applicationId === payment.applicationId && item.mode === payment.mode && item.providerUserId === payment.providerUserId && item.preferenceId === payment.preferenceId)) throw new Error('MERCADOPAGO_PAYMENT_ID_CONFLICT')
+    return { value: [...items, payment], result: payment }
+    })
+  }
+  async findMercadoPagoOrderPayment(id: string) { return (await this.mercadoPagoOrderPayments.read<MercadoPagoOrderPayment[]>([], isMercadoPagoOrderPayment)).find(item => item.id === id) }
+  async findMercadoPagoOrderPayments(orderId: string) { return (await this.mercadoPagoOrderPayments.read<MercadoPagoOrderPayment[]>([], isMercadoPagoOrderPayment)).filter(item => item.orderId === orderId).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) }
+  async findMercadoPagoOrderPaymentByPreference(applicationId: string, mode: PaymentEnvironment, providerUserId: string, preferenceId: string) { return (await this.mercadoPagoOrderPayments.read<MercadoPagoOrderPayment[]>([], isMercadoPagoOrderPayment)).find(item => item.applicationId === applicationId && item.mode === mode && item.providerUserId === providerUserId && item.preferenceId === preferenceId) }
+  async findMercadoPagoOrderPaymentByProviderPaymentId(applicationId: string, mode: PaymentEnvironment, paymentId: string) {
+    const payment = (await this.mercadoPagoProviderPayments.read<MercadoPagoProviderPayment[]>([], isMercadoPagoProviderPayment)).find(item => item.applicationId === applicationId && item.mode === mode && item.paymentId === paymentId)
+    return payment ? this.findMercadoPagoOrderPaymentByPreference(applicationId, mode, payment.providerUserId, payment.attemptId) : undefined
+  }
+  transitionMercadoPagoOrderPayment(id: string, from: MercadoPagoPaymentStatus[], patch: Partial<Pick<MercadoPagoOrderPayment, 'status' | 'updatedAt'>>) { if (patch.status !== undefined && !validMercadoPagoPaymentStatuses.includes(patch.status) || patch.updatedAt !== undefined && !Number.isFinite(Date.parse(patch.updatedAt))) throw new Error('MERCADOPAGO_PAYMENT_PATCH_INVALID'); return this.mercadoPagoOrderPayments.update<MercadoPagoOrderPayment[], MercadoPagoOrderPayment | undefined>([], isMercadoPagoOrderPayment, items => {
+    const existing = items.find(item => item.id === id)
+    if (!existing || !from.includes(existing.status)) return { value: items, result: undefined }
+    const updated = { ...existing, ...patch }
+    return { value: items.map(item => item.id === id ? updated : item), result: updated }
+  }) }
+  async createMercadoPagoProviderPayment(payment: MercadoPagoProviderPayment) {
+    if (!isMercadoPagoProviderPayment(payment)) throw new Error('MERCADOPAGO_PROVIDER_PAYMENT_INVALID')
+    const applicationId = payment.applicationId ?? payment.clientId!
+    const savedPayment = { ...payment, applicationId, clientId: undefined }
+    const attempt = await this.findMercadoPagoOrderPaymentByPreference(applicationId, payment.mode, payment.providerUserId, payment.attemptId)
+    if (!attempt || attempt.orderId !== payment.orderId || attempt.amountMinor !== payment.amountMinor || attempt.currency !== payment.currency) throw new Error('MERCADOPAGO_PROVIDER_PAYMENT_MISMATCH')
+    return this.mercadoPagoProviderPayments.update<MercadoPagoProviderPayment[], MercadoPagoProviderPayment>([], isMercadoPagoProviderPayment, items => {
+      const existing = items.find(item => (item.applicationId ?? item.clientId) === applicationId && item.mode === payment.mode && item.paymentId === payment.paymentId)
+      if (existing) {
+        if (existing.orderId !== payment.orderId || existing.attemptId !== payment.attemptId || existing.amountMinor !== payment.amountMinor || existing.providerUserId !== payment.providerUserId) throw new Error('MERCADOPAGO_PROVIDER_PAYMENT_CONFLICT')
+        return { value: items, result: existing }
+      }
+      return { value: [...items, savedPayment], result: savedPayment }
+    })
+  }
+  async findMercadoPagoProviderPaymentById(applicationId: string, mode: PaymentEnvironment, paymentId: string) { return (await this.mercadoPagoProviderPayments.read<MercadoPagoProviderPayment[]>([], isMercadoPagoProviderPayment)).find(item => (item.applicationId ?? item.clientId) === applicationId && item.mode === mode && item.paymentId === paymentId) }
+  async listMercadoPagoProviderPaymentsByOrder(orderId: string) { return (await this.mercadoPagoProviderPayments.read<MercadoPagoProviderPayment[]>([], isMercadoPagoProviderPayment)).filter(item => item.orderId === orderId).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.paymentId.localeCompare(b.paymentId)) }
+  transitionMercadoPagoProviderPayment(paymentId: string, applicationId: string, mode: PaymentEnvironment, from: MercadoPagoProviderPayment['normalizedStatus'][], patch: Partial<Pick<MercadoPagoProviderPayment, 'refundedMinor' | 'status' | 'statusDetail' | 'normalizedStatus' | 'updatedAt'>>) { return this.mercadoPagoProviderPayments.update<MercadoPagoProviderPayment[], MercadoPagoProviderPayment | undefined>([], isMercadoPagoProviderPayment, items => {
+    const existing = items.find(item => item.applicationId === applicationId && item.mode === mode && item.paymentId === paymentId)
+    if (!existing || !from.includes(existing.normalizedStatus)) return { value: items, result: undefined }
+    const updated = { ...existing, ...patch }
+    if (!isMercadoPagoProviderPayment(updated)) throw new Error('MERCADOPAGO_PROVIDER_PAYMENT_PATCH_INVALID')
+    return { value: items.map(item => item.paymentId === paymentId && item.applicationId === applicationId && item.mode === mode ? updated : item), result: updated }
+  }) }
+  hasProcessedProviderWebhookEvent(provider: PaymentProvider, environment: PaymentEnvironment, eventId: string) { return this.providerWebhookEvents.read<ProviderWebhookEvent[]>([], isProviderWebhookEvent).then(events => events.some(event => event.provider === provider && event.environment === environment && event.eventId === eventId)) }
+  recordProcessedProviderWebhookEvent(event: ProviderWebhookEvent) { if (!isProviderWebhookEvent(event)) throw new Error('PROVIDER_WEBHOOK_EVENT_INVALID'); return this.providerWebhookEvents.update<ProviderWebhookEvent[], boolean>([], isProviderWebhookEvent, events => events.some(item => item.provider === event.provider && item.environment === event.environment && item.eventId === event.eventId) ? { value: events, result: false } : { value: [...events, event], result: true }) }
+  hasProcessedMercadoPagoEvent(mode: PaymentEnvironment, eventId: string) { return this.hasProcessedProviderWebhookEvent('mercadopago', mode, eventId) }
+  recordProcessedMercadoPagoEvent(mode: PaymentEnvironment, eventId: string, eventType: string) { return this.recordProcessedProviderWebhookEvent({ provider: 'mercadopago', environment: mode, eventId, eventType, createdAt: new Date().toISOString() }) }
+  createBeatOrder(order: BeatOrder) { return withLocalStorageLock(order.sellerId, async () => {
+    if (order.fulfillment) {
+      const asset = await this.findAsset(order.fulfillment.assetId, order.sellerId)
+      if (!isPurchaseEntitlement(order.fulfillment) || !asset || asset.state !== 'available' || asset.contentHash !== order.fulfillment.sourceHash || asset.sizeBytes !== order.fulfillment.sourceSizeBytes) throw new Error('ORDER_DELIVERABLES_UNAVAILABLE')
+    }
+    return this.beatOrders.update<BeatOrder[], BeatOrder>([], isBeatOrder, orders => {
+      const existing = orders.find(item => item.id === order.id)
+      if (existing) return { value: orders, result: existing }
+      return { value: [...orders, order], result: order }
+    })
   }) }
   findBeatOrder(id: string) { return this.beatOrders.read<BeatOrder[]>([], isBeatOrder).then(orders => orders.find(order => order.id === id)) }
   listBeatOrders(buyerId: string) { return this.beatOrders.read<BeatOrder[]>([], isBeatOrder).then(orders => orders.filter(order => order.buyerId === buyerId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))) }
   listAllBeatOrders() { return this.beatOrders.read<BeatOrder[]>([], isBeatOrder).then(orders => orders.sort((a, b) => b.createdAt.localeCompare(a.createdAt))) }
   findBeatOrderByCheckoutSessionId(sessionId: string) { return this.beatOrders.read<BeatOrder[]>([], isBeatOrder).then(orders => orders.find(order => order.stripeCheckoutSessionId === sessionId)) }
   findBeatOrderByPaymentIntentId(paymentIntentId: string) { return this.beatOrders.read<BeatOrder[]>([], isBeatOrder).then(orders => orders.find(order => order.stripePaymentIntentId === paymentIntentId)) }
-  updateBeatOrder(id: string, patch: Partial<Pick<BeatOrder, 'status' | 'stripeCheckoutSessionId' | 'stripePaymentIntentId' | 'stripeRefundId' | 'refundRequestedAt' | 'refundRequestedBy' | 'disputeId' | 'disputeReason' | 'paidAt'>>) {
+  findBeatOrderByMercadoPagoPreferenceId(preferenceId: string) { return this.beatOrders.read<BeatOrder[]>([], isBeatOrder).then(orders => orders.find(order => order.mercadoPagoPreferenceId === preferenceId)) }
+  findBeatOrderByMercadoPagoPaymentId(paymentId: string) { return this.beatOrders.read<BeatOrder[]>([], isBeatOrder).then(orders => orders.find(order => order.mercadoPagoPaymentId === paymentId)) }
+  updateBeatOrder(id: string, patch: Partial<Pick<BeatOrder, BeatOrderMutableFields>>) {
     return this.beatOrders.update<BeatOrder[], BeatOrder | undefined>([], isBeatOrder, orders => {
       const existing = orders.find(order => order.id === id)
       if (!existing) return { value: orders, result: undefined }
+      const updated = { ...existing, ...patch }
+      return { value: orders.map(order => order.id === id ? updated : order), result: updated }
+    })
+  }
+  transitionBeatOrder(id: string, from: BeatOrderStatus[], patch: Partial<Pick<BeatOrder, Exclude<BeatOrderMutableFields, 'status'>>> & Pick<BeatOrder, 'status'>) {
+    return this.beatOrders.update<BeatOrder[], BeatOrder | undefined>([], isBeatOrder, orders => {
+      const existing = orders.find(order => order.id === id)
+      if (!existing || !from.includes(existing.status)) return { value: orders, result: undefined }
       const updated = { ...existing, ...patch }
       return { value: orders.map(order => order.id === id ? updated : order), result: updated }
     })
@@ -303,21 +585,75 @@ export class LocalRepository implements ServerRepository {
     const normalized = query.trim().toLocaleLowerCase()
     return (await this.profiles.read<CreatorProfile[]>([], isCreatorProfile)).filter(profile => profile.publicProfile && profile.accountId !== excludeAccountId && (!normalized || `${profile.displayName} ${profile.bio} ${profile.genres.join(' ')}`.toLocaleLowerCase().includes(normalized))).slice(0, 50)
   }
-  listFriendships(accountId: string) { return this.friendships.read<Friendship[]>([], validFriendship).then(items => items.filter(item => item.requesterId === accountId || item.recipientId === accountId)) }
-  createFriendship(friendship: Friendship) { return this.friendships.update<Friendship[], Friendship>([], validFriendship, items => {
-    if (items.some(item => item.requesterId === friendship.requesterId && item.recipientId === friendship.recipientId || item.requesterId === friendship.recipientId && item.recipientId === friendship.requesterId)) throw new Error('FRIENDSHIP_EXISTS')
-    return { value: [...items, friendship], result: friendship }
-  }) }
-  updateFriendship(id: string, actorId: string, status: Friendship['status']) { return this.friendships.update<Friendship[], Friendship | undefined>([], validFriendship, items => {
-    const item = items.find(entry => entry.id === id && entry.recipientId === actorId && entry.status === 'pending')
-    if (!item) return { value: items, result: undefined }
-    const updated = { ...item, status, updatedAt: new Date().toISOString() }
-    return { value: items.map(entry => entry.id === id ? updated : entry), result: updated }
-  }) }
+  async listFriendships(accountId: string) {
+    const [items, blocks] = await Promise.all([this.friendships.read<Friendship[]>([], validFriendship), this.socialAccountBlocks.read<SocialAccountBlock[]>([], isSocialAccountBlock)])
+    return items.filter(item => (item.requesterId === accountId || item.recipientId === accountId) && !blocks.some(block => block.blockerId === accountId && block.blockedId === (item.requesterId === accountId ? item.recipientId : item.requesterId) || block.blockedId === accountId && block.blockerId === (item.requesterId === accountId ? item.recipientId : item.requesterId)))
+  }
+  async createFriendship(friendship: Friendship) {
+    return withLocalStorageLock(`social-block:${[friendship.requesterId, friendship.recipientId].sort().join(':')}`, async () => {
+      if (await this.areSocialAccountsBlocked(friendship.requesterId, friendship.recipientId)) throw new Error('SOCIAL_ACCOUNT_BLOCKED')
+      return this.friendships.update<Friendship[], Friendship>([], validFriendship, items => {
+        if (items.some(item => item.requesterId === friendship.requesterId && item.recipientId === friendship.recipientId || item.requesterId === friendship.recipientId && item.recipientId === friendship.requesterId)) throw new Error('FRIENDSHIP_EXISTS')
+        return { value: [...items, friendship], result: friendship }
+      })
+    })
+  }
+  async updateFriendship(id: string, actorId: string, status: Friendship['status']) {
+    const pending = (await this.friendships.read<Friendship[]>([], validFriendship)).find(entry => entry.id === id && entry.recipientId === actorId && entry.status === 'pending')
+    if (!pending) return undefined
+    return withLocalStorageLock(`social-block:${[pending.requesterId, actorId].sort().join(':')}`, async () => {
+      if (await this.areSocialAccountsBlocked(pending.requesterId, actorId)) return undefined
+      return this.friendships.update<Friendship[], Friendship | undefined>([], validFriendship, items => {
+        const item = items.find(entry => entry.id === id && entry.recipientId === actorId && entry.status === 'pending')
+        if (!item) return { value: items, result: undefined }
+        const updated = { ...item, status, updatedAt: new Date().toISOString() }
+        return { value: items.map(entry => entry.id === id ? updated : entry), result: updated }
+      })
+    })
+  }
   deleteFriendship(id: string, actorId: string, status: Friendship['status']) { return this.friendships.update<Friendship[], boolean>([], validFriendship, items => {
     const next = items.filter(item => item.id !== id || item.status !== status || (item.requesterId !== actorId && item.recipientId !== actorId))
     return { value: next, result: next.length !== items.length }
   }) }
+  async listSocialAccountBlocks(accountId: string) { const items = await this.effectiveSocialBlocks(); return items.filter(item => item.blockerId === accountId) }
+  private async effectiveSocialBlocks() {
+    const [base, journal] = await Promise.all([this.socialAccountBlocks.read<SocialAccountBlock[]>([], isSocialAccountBlock), this.socialBlockJournal.read<SocialBlockJournalEntry[]>([], isSocialBlockJournalEntry)])
+    const latest = new Map<string, SocialAccountBlock | null>()
+    for (const item of journal) latest.set(`${item.blockerId}\0${item.blockedId}`, item.block)
+    const merged = new Map(base.map(item => [`${item.blockerId}\0${item.blockedId}`, item]))
+    for (const [key, value] of latest) { if (value) merged.set(key, value); else merged.delete(key) }
+    return [...merged.values()]
+  }
+  async areSocialAccountsBlocked(firstAccountId: string, secondAccountId: string) {
+    if (firstAccountId === secondAccountId) return false
+    return (await this.effectiveSocialBlocks()).some(item => item.blockerId === firstAccountId && item.blockedId === secondAccountId || item.blockerId === secondAccountId && item.blockedId === firstAccountId)
+  }
+  createSocialAccountBlock(block: SocialAccountBlock) {
+    if (block.blockerId === block.blockedId) return Promise.reject(new Error('SOCIAL_SELF_BLOCK'))
+    return withLocalStorageLock(`social-block:${[block.blockerId, block.blockedId].sort().join(':')}`, async () => {
+      await this.socialAccountBlocks.update<SocialAccountBlock[], void>([], isSocialAccountBlock, items => ({ value: items.some(item => item.blockerId === block.blockerId && item.blockedId === block.blockedId) ? items : [...items, block], result: undefined }))
+      await this.friendships.update<Friendship[], void>([], validFriendship, items => ({ value: items.filter(item => !((item.requesterId === block.blockerId && item.recipientId === block.blockedId) || (item.requesterId === block.blockedId && item.recipientId === block.blockerId))), result: undefined }))
+      await this.socialFollows.update<SocialFollowRecord[], void>([], isSocialFollowRecord, items => ({ value: items.filter(item => !((item.followerId === block.blockerId && item.followingId === block.blockedId) || (item.followerId === block.blockedId && item.followingId === block.blockerId))), result: undefined }))
+    })
+  }
+  deleteSocialAccountBlock(blockerId: string, blockedId: string) { return this.socialAccountBlocks.update<SocialAccountBlock[], boolean>([], isSocialAccountBlock, items => { const next = items.filter(item => item.blockerId !== blockerId || item.blockedId !== blockedId); return { value: next, result: next.length !== items.length } }) }
+  async createSocialAccountBlockWithAudit(block: SocialAccountBlock, event: AuditEvent) {
+    if (block.blockerId === block.blockedId) throw new Error('SOCIAL_SELF_BLOCK')
+    await withLocalStorageLock(`social-block:${[block.blockerId, block.blockedId].sort().join(':')}`, async () => {
+      const current = await this.effectiveSocialBlocks()
+      if (current.some(item => item.blockerId === block.blockerId && item.blockedId === block.blockedId)) return
+      await this.socialBlockJournal.update<SocialBlockJournalEntry[], void>([], isSocialBlockJournalEntry, entries => ({ value: [...entries, { blockerId: block.blockerId, blockedId: block.blockedId, block, event, delivered: false }], result: undefined }))
+      await this.friendships.update<Friendship[], void>([], validFriendship, items => ({ value: items.filter(item => !((item.requesterId === block.blockerId && item.recipientId === block.blockedId) || (item.requesterId === block.blockedId && item.recipientId === block.blockerId))), result: undefined }))
+      await this.socialFollows.update<SocialFollowRecord[], void>([], isSocialFollowRecord, items => ({ value: items.filter(item => !((item.followerId === block.blockerId && item.followingId === block.blockedId) || (item.followerId === block.blockedId && item.followingId === block.blockerId))), result: undefined }))
+    })
+  }
+  async deleteSocialAccountBlockWithAudit(blockerId: string, blockedId: string, event: AuditEvent) {
+    return withLocalStorageLock(`social-block:${[blockerId, blockedId].sort().join(':')}`, async () => {
+      if (!(await this.effectiveSocialBlocks()).some(item => item.blockerId === blockerId && item.blockedId === blockedId)) return false
+      await this.socialBlockJournal.update<SocialBlockJournalEntry[], void>([], isSocialBlockJournalEntry, entries => ({ value: [...entries, { blockerId, blockedId, block: null, event, delivered: false }], result: undefined }))
+      return true
+    })
+  }
   async listChatConversations(accountId: string): Promise<ChatConversation[]> {
     const messages = await this.messages.read<DirectMessage[]>([], isDirectMessage)
     const conversations = new Map<string, ChatConversation>()
@@ -339,7 +675,12 @@ export class LocalRepository implements ServerRepository {
       .filter(message => message.senderId === accountId && message.recipientId === peerId || message.senderId === peerId && message.recipientId === accountId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-limit)
   }
-  createChatMessage(message: DirectMessage) { return this.messages.update<DirectMessage[], DirectMessage>([], isDirectMessage, messages => ({ value: [...messages, message], result: message })) }
+  async createChatMessage(message: DirectMessage) {
+    return withLocalStorageLock(`social-block:${[message.senderId, message.recipientId].sort().join(':')}`, async () => {
+      if (await this.areSocialAccountsBlocked(message.senderId, message.recipientId)) throw new Error('SOCIAL_ACCOUNT_BLOCKED')
+      return this.messages.update<DirectMessage[], DirectMessage>([], isDirectMessage, messages => ({ value: [...messages, message], result: message }))
+    })
+  }
   markChatMessagesRead(accountId: string, peerId: string, readAt: string) { return this.messages.update<DirectMessage[], number>([], isDirectMessage, messages => {
     let updated = 0
     const next = messages.map(message => {
@@ -475,6 +816,7 @@ export class LocalRepository implements ServerRepository {
       const recovered = await this.drainNotificationOutboxUnlocked()
       const pending = (await this.friendships.read<Friendship[]>([], validFriendship)).find(item => item.id === id && item.recipientId === actorId && item.status === 'pending')
       if (!pending) return { value: undefined, notifications: recovered }
+      if (await this.areSocialAccountsBlocked(pending.requesterId, actorId)) return { value: undefined, notifications: recovered }
       const event = notification
         ? notificationRecordFor(notification, pending.requesterId, actorId, 'friend_request_accepted', 'friendship', pending.id, pending.id)
         : undefined
@@ -517,12 +859,16 @@ export class LocalRepository implements ServerRepository {
       return { value: items.map((item, itemIndex) => itemIndex === index ? updated : item), result: updated }
     })
   }
-  createSocialPost(post: SocialPost, mediaLimitBytes: number) { return this.socialPosts.update<SocialPost[], SocialPost>([], isSocialPost, items => {
-    if (items.some(item => item.id === post.id)) throw new Error('SOCIAL_POST_EXISTS')
-    const used = items.filter(item => item.authorId === post.authorId).reduce((sum, item) => sum + (item.media?.sizeBytes || 0), 0)
-    const requested = post.media?.sizeBytes || 0
-    if (used + requested > mediaLimitBytes) throw new StorageQuotaExceededError(used, mediaLimitBytes, requested)
-    return { value: [...items, post], result: post }
+  createSocialPost(post: SocialPost, mediaLimitBytes: number) { return withSocialMediaLock(post.authorId, async () => {
+    const stories = await this.socialStories.read<SocialStory[]>([], isSocialStory)
+    return this.socialPosts.update<SocialPost[], SocialPost>([], isSocialPost, items => {
+      if (items.some(item => item.id === post.id)) throw new Error('SOCIAL_POST_EXISTS')
+      const used = items.filter(item => item.authorId === post.authorId).reduce((sum, item) => sum + (item.media?.sizeBytes || 0), 0)
+        + stories.filter(item => item.authorId === post.authorId).reduce((sum, item) => sum + (item.media?.sizeBytes || 0), 0)
+      const requested = post.media?.sizeBytes || 0
+      if (used + requested > mediaLimitBytes) throw new StorageQuotaExceededError(used, mediaLimitBytes, requested)
+      return { value: [...items, post], result: post }
+    })
   }) }
   findSocialPost(id: string) { return this.socialPosts.read<SocialPost[]>([], isSocialPost).then(items => items.find(item => item.id === id)) }
   listSocialPosts(options: { authorId?: string; cursor?: SocialPostCursor; limit: number; moderationOnly?: boolean; publishedOnly?: boolean }) {
@@ -545,10 +891,13 @@ export class LocalRepository implements ServerRepository {
   }
   followSocialAccount(followerId: string, followingId: string, maxFollows: number) {
     if (followerId === followingId) return Promise.reject(new Error('SOCIAL_SELF_FOLLOW'))
-    return this.socialFollows.update<SocialFollowRecord[], void>([], isSocialFollowRecord, items => {
-      if (items.some(item => item.followerId === followerId && item.followingId === followingId)) return { value: items, result: undefined }
-      if (items.filter(item => item.followerId === followerId).length >= maxFollows) throw new Error('SOCIAL_FOLLOW_LIMIT')
-      return { value: [...items, { followerId, followingId, createdAt: new Date().toISOString() }], result: undefined }
+    return withLocalStorageLock(`social-block:${[followerId, followingId].sort().join(':')}`, async () => {
+      if (await this.areSocialAccountsBlocked(followerId, followingId)) throw new Error('SOCIAL_ACCOUNT_BLOCKED')
+      return this.socialFollows.update<SocialFollowRecord[], void>([], isSocialFollowRecord, items => {
+        if (items.some(item => item.followerId === followerId && item.followingId === followingId)) return { value: items, result: undefined }
+        if (items.filter(item => item.followerId === followerId).length >= maxFollows) throw new Error('SOCIAL_FOLLOW_LIMIT')
+        return { value: [...items, { followerId, followingId, createdAt: new Date().toISOString() }], result: undefined }
+      })
     })
   }
   unfollowSocialAccount(followerId: string, followingId: string) {
@@ -594,6 +943,41 @@ export class LocalRepository implements ServerRepository {
       return { value: items.map(item => item.id === id ? updated : item), result: updated }
     })
   }
+  createSocialStory(story: SocialStory, mediaLimitBytes: number) { return withSocialMediaLock(story.authorId, async () => {
+    const [posts, allStories] = await Promise.all([
+      this.socialPosts.read<SocialPost[]>([], isSocialPost),
+      this.socialStories.read<SocialStory[]>([], isSocialStory),
+    ])
+    return this.socialStories.update<SocialStory[], SocialStory>([], isSocialStory, items => {
+      if (items.some(item => item.id === story.id)) throw new Error('SOCIAL_STORY_EXISTS')
+      const now = Date.parse(story.createdAt)
+      if (items.filter(item => item.authorId === story.authorId && Date.parse(item.expiresAt) > now).length >= socialStoryMaxActivePerAccount) throw new Error('SOCIAL_STORY_LIMIT')
+      const used = posts.filter(item => item.authorId === story.authorId).reduce((sum, item) => sum + (item.media?.sizeBytes || 0), 0)
+        + allStories.filter(item => item.authorId === story.authorId).reduce((sum, item) => sum + (item.media?.sizeBytes || 0), 0)
+      const requested = story.media?.sizeBytes || 0
+      if (used + requested > mediaLimitBytes) throw new StorageQuotaExceededError(used, mediaLimitBytes, requested)
+      return { value: [...items, story], result: story }
+    })
+  }) }
+  findSocialStory(id: string) { return this.socialStories.read<SocialStory[]>([], isSocialStory).then(items => items.find(item => item.id === id)) }
+  listSocialStories(options: { expiresAfter?: string; cursor?: SocialStoryCursor; limit: number }) {
+    return this.socialStories.read<SocialStory[]>([], isSocialStory).then(items => items
+      .filter(item => options.expiresAfter === undefined || item.expiresAt > options.expiresAfter)
+      .filter(item => !options.cursor || item.createdAt < options.cursor.createdAt || item.createdAt === options.cursor.createdAt && item.id < options.cursor.id)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, options.limit))
+  }
+  deleteSocialStory(id: string, authorId: string) {
+    return this.socialStories.update<SocialStory[], SocialStory | undefined>([], isSocialStory, items => {
+      const story = items.find(item => item.id === id && item.authorId === authorId)
+      return { value: story ? items.filter(item => item.id !== id) : items, result: story }
+    })
+  }
+  deleteExpiredSocialStories(now: string) {
+    return this.socialStories.update<SocialStory[], SocialStory[]>([], isSocialStory, items => {
+      const expired = items.filter(item => item.expiresAt <= now)
+      return { value: items.filter(item => item.expiresAt > now), result: expired }
+    })
+  }
   createSocialPostReport(report: SocialPostReport) { return this.socialPostReports.update<SocialPostReport[], SocialPostReport>([], isSocialPostReport, items => {
     if (items.some(item => item.postId === report.postId && item.reporterId === report.reporterId)) throw new Error('SOCIAL_REPORT_EXISTS')
     return { value: [...items, report], result: report }
@@ -602,13 +986,101 @@ export class LocalRepository implements ServerRepository {
     const next = items.filter(item => item.id !== id || item.reporterId !== reporterId)
     return { value: next, result: next.length !== items.length }
   }) }
-  listSocialPostReports(status?: SocialPostReport['status']) { return this.socialPostReports.read<SocialPostReport[]>([], isSocialPostReport).then(items => items.filter(item => status === undefined || item.status === status).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 500)) }
+  async listSocialPostReports(status?: SocialPostReport['status']) {
+    const [base, journal] = await Promise.all([this.socialPostReports.read<SocialPostReport[]>([], isSocialPostReport), this.socialModerationJournal.read<SocialModerationJournalEntry[]>([], isSocialModerationJournalEntry)])
+    const latest = new Map<string, SocialPostReport>()
+    for (const item of journal) if (item.kind === 'post') latest.set(item.reportId, item.report as SocialPostReport)
+    const merged = base.map(item => latest.get(item.id) || item)
+    return merged.filter(item => status === undefined || item.status === status).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 500)
+  }
   reviewSocialPostReport(id: string, status: Extract<SocialPostReport['status'], 'reviewed' | 'dismissed'>, staffId: string) {
     return this.socialPostReports.update<SocialPostReport[], SocialPostReport | undefined>([], isSocialPostReport, items => {
       const existing = items.find(item => item.id === id && item.status === 'open')
       if (!existing) return { value: items, result: undefined }
       const updated = { ...existing, status, reviewedBy: staffId, reviewedAt: new Date().toISOString() }
       return { value: items.map(item => item.id === id ? updated : item), result: updated }
+    })
+  }
+  async reviewSocialPostReportWithAudit(id: string, status: Extract<SocialPostReport['status'], 'reviewed' | 'dismissed'>, staffId: string, event: AuditEvent) {
+    return withLocalStorageLock(`social-moderation:${config.dataDirectory}`, async () => {
+      const [reports, journal] = await Promise.all([this.socialPostReports.read<SocialPostReport[]>([], isSocialPostReport), this.socialModerationJournal.read<SocialModerationJournalEntry[]>([], isSocialModerationJournalEntry)])
+      const overrides = new Map(journal.filter(item => item.kind === 'post').map(item => [item.reportId, item.report as SocialPostReport]))
+      const current = reports.map(item => overrides.get(item.id) || item).find(item => item.id === id && item.status === 'open')
+      if (!current) return undefined
+      const updated: SocialPostReport = { ...current, status, reviewedBy: staffId, reviewedAt: event.timestamp }
+      await this.socialModerationJournal.update<SocialModerationJournalEntry[], void>([], isSocialModerationJournalEntry, entries => ({ value: [...entries, { kind: 'post', reportId: id, report: updated, event, delivered: false }], result: undefined }))
+      return updated
+    })
+  }
+  async createSocialStoryReport(report: SocialStoryReport) {
+    return this.socialStoryReports.update<SocialStoryReport[], SocialStoryReport>([], isSocialStoryReport, items => {
+      if (items.some(item => item.storyId === report.storyId && item.reporterId === report.reporterId)) throw new Error('SOCIAL_REPORT_EXISTS')
+      return { value: [...items, report], result: report }
+    })
+  }
+  deleteSocialStoryReport(id: string, reporterId: string) { return this.socialStoryReports.update<SocialStoryReport[], boolean>([], isSocialStoryReport, items => { const next = items.filter(item => item.id !== id || item.reporterId !== reporterId); return { value: next, result: next.length !== items.length } }) }
+  async listSocialStoryReports(status?: SocialStoryReport['status']) {
+    const [base, journal] = await Promise.all([this.socialStoryReports.read<SocialStoryReport[]>([], isSocialStoryReport), this.socialModerationJournal.read<SocialModerationJournalEntry[]>([], isSocialModerationJournalEntry)])
+    const latest = new Map<string, SocialStoryReport>()
+    for (const item of journal) if (item.kind === 'story') latest.set(item.reportId, item.report as SocialStoryReport)
+    return base.map(item => latest.get(item.id) || item).filter(item => status === undefined || item.status === status).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+  }
+  async pageSocialStoryReports(status: SocialStoryReport['status'] | undefined, cursor: SocialStoryReportCursor | undefined, limit: number) {
+    const safeLimit = Number.isSafeInteger(limit) ? Math.min(100, Math.max(1, limit)) : 50
+    const all = await this.listSocialStoryReports(status)
+    const afterCursor = cursor ? all.filter(item => item.createdAt < cursor.createdAt || item.createdAt === cursor.createdAt && item.id < cursor.id) : all
+    const page = afterCursor.slice(0, safeLimit + 1)
+    const hasMore = page.length > safeLimit
+    const reports = page.slice(0, safeLimit)
+    const last = reports.at(-1)
+    return { reports, nextCursor: hasMore && last ? { createdAt: last.createdAt, id: last.id } : null }
+  }
+  async listExpiredSocialStoryEvidence(now: string, limit: number) { const cutoff = Date.parse(now); return (await this.listSocialStoryReports()).filter(item => item.evidenceStorageKey && (item.status === 'open' ? Date.parse(item.createdAt) + 90 * 86400000 <= cutoff : item.evidenceDeleteAt && Date.parse(item.evidenceDeleteAt) <= cutoff)).slice(0, limit) }
+  async clearSocialStoryEvidence(reportId: string, expiredAt: string) {
+    const clear = (item: SocialStoryReport): SocialStoryReport => ({ ...item, evidenceStorageKey: undefined, evidenceMimeType: undefined, evidenceSizeBytes: undefined, evidenceExpiredAt: expiredAt })
+    await this.socialStoryReports.update<SocialStoryReport[], void>([], isSocialStoryReport, items => ({ value: items.map(item => item.id === reportId ? clear(item) : item), result: undefined }))
+    await this.socialModerationJournal.update<SocialModerationJournalEntry[], void>([], isSocialModerationJournalEntry, entries => ({ value: entries.map(entry => entry.kind === 'story' && entry.reportId === reportId ? { ...entry, report: clear(entry.report as SocialStoryReport) } : entry), result: undefined }))
+  }
+  async listSocialStoryEvidenceStorageKeys() { return (await this.listSocialStoryReports()).flatMap(item => item.evidenceStorageKey ? [item.evidenceStorageKey] : []) }
+  async reviewSocialStoryReport(id: string, status: Extract<SocialStoryReport['status'], 'reviewed' | 'dismissed'>, staffId: string, event: AuditEvent) {
+    return withLocalStorageLock(`social-moderation:${config.dataDirectory}`, async () => {
+      const [reports, journal] = await Promise.all([this.socialStoryReports.read<SocialStoryReport[]>([], isSocialStoryReport), this.socialModerationJournal.read<SocialModerationJournalEntry[]>([], isSocialModerationJournalEntry)])
+      const overrides = new Map(journal.filter(item => item.kind === 'story').map(item => [item.reportId, item.report as SocialStoryReport]))
+      const current = reports.map(item => overrides.get(item.id) || item).find(item => item.id === id && item.status === 'open')
+      if (!current) return undefined
+      const reviewedAt = event.timestamp
+      const evidenceDeleteAt = new Date(Math.min(Date.parse(reviewedAt) + 30 * 86400000, Date.parse(current.createdAt) + 90 * 86400000)).toISOString()
+      const updated: SocialStoryReport = { ...current, status, reviewedBy: staffId, reviewedAt, ...(current.evidenceStorageKey ? { evidenceDeleteAt } : {}) }
+      await this.socialModerationJournal.update<SocialModerationJournalEntry[], void>([], isSocialModerationJournalEntry, entries => ({ value: [...entries, { kind: 'story', reportId: id, report: updated, event, delivered: false }], result: undefined }))
+      return updated
+    })
+  }
+  async drainSocialModerationAudit() {
+    await withLocalStorageLock(`social-moderation-audit:${config.dataDirectory}`, async () => {
+      const pending = (await this.socialModerationJournal.read<SocialModerationJournalEntry[]>([], isSocialModerationJournalEntry)).filter(item => !item.delivered)
+      if (!pending.length) return
+      const auditFile = new JsonStore(`${config.dataDirectory}/audit.json`)
+      await auditFile.update<AuditEvent[], void>([], value => Boolean(value && typeof value === 'object' && typeof (value as AuditEvent).id === 'string'), events => {
+        const known = new Set(events.map(item => item.id))
+        const merged = [...events, ...pending.map(item => item.event).filter(event => !known.has(event.id))].sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+        return { value: merged.slice(-config.audit.maxEntries), result: undefined }
+      })
+      const delivered = new Set(pending.map(item => item.event.id))
+      await this.socialModerationJournal.update<SocialModerationJournalEntry[], void>([], isSocialModerationJournalEntry, entries => ({ value: entries.map(item => delivered.has(item.event.id) ? { ...item, delivered: true } : item), result: undefined }))
+    })
+  }
+  async drainSocialBlockAudit() {
+    await withLocalStorageLock(`social-block-audit:${config.dataDirectory}`, async () => {
+      const pending = (await this.socialBlockJournal.read<SocialBlockJournalEntry[]>([], isSocialBlockJournalEntry)).filter(item => !item.delivered)
+      if (!pending.length) return
+      const auditFile = new JsonStore(`${config.dataDirectory}/audit.json`)
+      await auditFile.update<AuditEvent[], void>([], value => Boolean(value && typeof value === 'object' && typeof (value as AuditEvent).id === 'string'), events => {
+        const known = new Set(events.map(item => item.id))
+        const merged = [...events, ...pending.map(item => item.event).filter(event => !known.has(event.id))].sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+        return { value: merged.slice(-config.audit.maxEntries), result: undefined }
+      })
+      const delivered = new Set(pending.map(item => item.event.id))
+      await this.socialBlockJournal.update<SocialBlockJournalEntry[], void>([], isSocialBlockJournalEntry, entries => ({ value: entries.map(item => delivered.has(item.event.id) ? { ...item, delivered: true } : item), result: undefined }))
     })
   }
   findAccountByEmail(email: string) { return this.accounts.read<Account[]>([], this.validAccount).then(items => items.find(item => item.email === email)) }
@@ -721,6 +1193,7 @@ export class LocalRepository implements ServerRepository {
   updateAssetState(id: string, state: AssetState) { return this.assets.update<AssetRecord[], void>([], this.validAsset, items => ({ value: items.map(item => item.id === id ? { ...item, state, updatedAt: new Date().toISOString() } : item), result: undefined })) }
   updateAssetPreview(id: string, preview: Pick<AssetRecord, 'previewStorageKey' | 'previewMimeType' | 'previewSizeBytes'>) { return this.assets.update<AssetRecord[], void>([], this.validAsset, items => ({ value: items.map(item => item.id === id ? { ...item, ...preview, updatedAt: new Date().toISOString() } : item), result: undefined })) }
   deleteAsset(id: string, ownerId: string) { return withLocalStorageLock(ownerId, async () => {
+    if ((await this.listAllBeatOrders()).some(order => order.sellerId === ownerId && order.fulfillment?.assetId === id && !['failed', 'refunded'].includes(order.status))) throw new Error('PURCHASE_SOURCE_RETAINED')
     await this.artwork.update<ArtworkRecord[], void>([], isArtworkRecord, items => ({ value: items.filter(item => item.assetId !== id || item.ownerId !== ownerId), result: undefined }))
     await this.assets.update<AssetRecord[], void>([], this.validAsset, items => {
       const next = items.filter(item => item.id !== id || item.ownerId !== ownerId)
@@ -755,6 +1228,63 @@ const isStripeEvent = (value: unknown): value is { eventId: string; eventType: s
   const item = value as { eventId?: unknown; eventType?: unknown; createdAt?: unknown }
   return typeof item.eventId === 'string' && typeof item.eventType === 'string' && typeof item.createdAt === 'string'
 }
+const validPaymentEnvironment = (value: unknown): value is PaymentEnvironment => value === 'test' || value === 'production'
+export const isMercadoPagoSellerLink = (value: unknown): value is MercadoPagoSellerLink => {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<MercadoPagoSellerLink>
+  const encrypted = (token: unknown) => typeof token === 'string' && token.length <= 11050 && /^v\d+\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]+$/.test(token)
+  return typeof item.accountId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(item.accountId) && typeof item.applicationId === 'string' && /^[0-9]{1,40}$/.test(item.applicationId) && validPaymentEnvironment(item.mode) &&
+    typeof item.providerUserId === 'string' && /^[1-9][0-9]{0,31}$/.test(item.providerUserId) && encrypted(item.encryptedAccessToken) && encrypted(item.encryptedRefreshToken) && typeof item.accessTokenExpiresAt === 'string' && Number.isFinite(Date.parse(item.accessTokenExpiresAt)) &&
+    Number.isSafeInteger(item.version) && (item.version ?? 0) > 0 && ['connected', 'reauthorization_required', 'deauthorized'].includes(item.status || '') && typeof item.updatedAt === 'string' && Number.isFinite(Date.parse(item.updatedAt))
+}
+export const isMercadoPagoOAuthIntent = (value: unknown): value is MercadoPagoOAuthIntent => {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<MercadoPagoOAuthIntent>
+  const verifier = typeof item.encryptedCodeVerifier === 'string' && item.encryptedCodeVerifier.length <= 11050 && /^v\d+\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]+$/.test(item.encryptedCodeVerifier)
+  return typeof item.stateHash === 'string' && /^[a-f0-9]{64}$/.test(item.stateHash) && typeof item.accountId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(item.accountId) && typeof item.applicationId === 'string' && /^[0-9]{1,40}$/.test(item.applicationId) &&
+    validPaymentEnvironment(item.mode) && typeof item.sessionBindingHash === 'string' && /^[a-f0-9]{64}$/i.test(item.sessionBindingHash) && verifier && typeof item.createdAt === 'string' && Number.isFinite(Date.parse(item.createdAt)) && typeof item.expiresAt === 'string' && Number.isFinite(Date.parse(item.expiresAt)) && Date.parse(item.expiresAt) > Date.parse(item.createdAt)
+}
+const validMercadoPagoPaymentStatuses: MercadoPagoPaymentStatus[] = ['created', 'pending', 'approved', 'rejected', 'cancelled', 'expired', 'refund_pending', 'refunded', 'partially_refunded', 'disputed']
+const isMercadoPagoPreferenceReservationRecord = (value: unknown): value is MercadoPagoPreferenceReservationRecord => {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<MercadoPagoPreferenceReservationRecord>
+  const result = item.result
+  let checkoutSafe = false
+  try { const url = new URL(result?.checkoutUrl || ''); checkoutSafe = url.protocol === 'https:' && !url.username && !url.password } catch { /* Invalid checkout URL. */ }
+  return typeof item.accountId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(item.accountId) && typeof item.applicationId === 'string' && /^[0-9]{1,40}$/.test(item.applicationId) && validPaymentEnvironment(item.mode) &&
+    typeof item.key === 'string' && item.key.length >= 8 && item.key.length <= 512 && typeof item.fingerprint === 'string' && /^[a-f0-9]{64}$/.test(item.fingerprint) &&
+    typeof item.buyerId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(item.buyerId) && typeof item.orderId === 'string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(item.orderId) && typeof item.operationId === 'string' && /^[A-Za-z0-9:_-]{8,128}$/.test(item.operationId) &&
+    Number.isSafeInteger(item.updatedAt) && ['reserved', 'complete', 'uncertain'].includes(item.status || '') && (item.status !== 'complete' || Boolean(result && /^[A-Za-z0-9_-]{1,128}$/.test(result.preferenceId) && /^[1-9][0-9]{0,31}$/.test(result.collectorId) && result.orderId === item.orderId && Number.isSafeInteger(result.amountMinor) && result.amountMinor > 0 && Number.isSafeInteger(result.commissionMinor) && result.commissionMinor >= 0 && result.currency === 'MXN' && checkoutSafe))
+}
+export const isMercadoPagoOrderPayment = (value: unknown): value is MercadoPagoOrderPayment => {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<MercadoPagoOrderPayment>
+  let checkoutUrlValid = false
+  try { const url = new URL(item.checkoutUrl || ''); checkoutUrlValid = url.protocol === 'https:' && !url.username && !url.password } catch { /* Invalid URL. */ }
+  return typeof item.id === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(item.id) &&
+    typeof item.orderId === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(item.orderId) &&
+    typeof item.sellerId === 'string' && item.sellerId.length > 0 && item.sellerId.length <= 80 && validPaymentEnvironment(item.mode) &&
+    typeof item.applicationId === 'string' && /^[0-9]{1,40}$/.test(item.applicationId) && typeof item.providerUserId === 'string' && item.providerUserId.length > 0 && item.providerUserId.length <= 128 && typeof item.idempotencyKey === 'string' && /^[A-Za-z0-9:_-]{8,128}$/.test(item.idempotencyKey) &&
+    typeof item.preferenceId === 'string' && item.preferenceId.length > 0 && item.preferenceId.length <= 200 && checkoutUrlValid &&
+    item.externalReference === item.orderId &&
+    Number.isSafeInteger(item.amountMinor) && (item.amountMinor ?? 0) > 0 && item.currency === 'MXN' && Boolean(item.quote && Number.isSafeInteger(item.quote.sourceAmountMinor) && item.quote.sourceAmountMinor > 0 && item.quote.sourceCurrency === 'usd' && Number.isFinite(item.quote.exchangeRateUsdMxn) && item.quote.exchangeRateUsdMxn >= 5 && item.quote.exchangeRateUsdMxn <= 100 && Number.isSafeInteger(item.quote.marketplaceFeeMinor) && item.quote.marketplaceFeeMinor >= 0 && Number.isSafeInteger(item.quote.sellerNetMinor) && item.quote.sellerNetMinor > 0 && item.quote.marketplaceFeeMinor + item.quote.sellerNetMinor === item.amountMinor) && validMercadoPagoPaymentStatuses.includes(item.status as MercadoPagoPaymentStatus) &&
+    typeof item.createdAt === 'string' && Number.isFinite(Date.parse(item.createdAt)) && typeof item.updatedAt === 'string' && Number.isFinite(Date.parse(item.updatedAt))
+}
+export const isMercadoPagoProviderPayment = (value: unknown): value is MercadoPagoProviderPayment => {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<MercadoPagoProviderPayment>
+  return typeof item.paymentId === 'string' && /^[1-9][0-9]{0,31}$/.test(item.paymentId) && typeof item.attemptId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(item.attemptId) &&
+    typeof item.orderId === 'string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(item.orderId) && typeof (item.applicationId ?? item.clientId) === 'string' && /^[0-9]{1,40}$/.test((item.applicationId ?? item.clientId)!) && validPaymentEnvironment(item.mode) &&
+    typeof item.providerUserId === 'string' && /^[1-9][0-9]{0,31}$/.test(item.providerUserId) && Number.isSafeInteger(item.amountMinor) && (item.amountMinor ?? 0) > 0 && Number.isSafeInteger(item.refundedMinor) && (item.refundedMinor ?? -1) >= 0 && (item.refundedMinor ?? 0) <= (item.amountMinor ?? 0) && item.currency === 'MXN' &&
+    typeof item.status === 'string' && item.status.length > 0 && item.status.length <= 64 && typeof item.statusDetail === 'string' && item.statusDetail.length <= 100 && ['pending', 'paid', 'failed', 'refunded', 'partially_refunded', 'disputed'].includes(item.normalizedStatus || '') &&
+    typeof item.createdAt === 'string' && Number.isFinite(Date.parse(item.createdAt)) && typeof item.updatedAt === 'string' && Number.isFinite(Date.parse(item.updatedAt))
+}
+const isProviderWebhookEvent = (value: unknown): value is ProviderWebhookEvent => {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<ProviderWebhookEvent>
+  return (item.provider === 'stripe' || item.provider === 'mercadopago') && validPaymentEnvironment(item.environment) && typeof item.eventId === 'string' && item.eventId.length > 0 && item.eventId.length <= 200 &&
+    typeof item.eventType === 'string' && item.eventType.length > 0 && item.eventType.length <= 200 && typeof item.createdAt === 'string' && Number.isFinite(Date.parse(item.createdAt))
+}
 const isBeatOrder = (value: unknown): value is BeatOrder => {
   if (!value || typeof value !== 'object') return false
   const item = value as Partial<BeatOrder>
@@ -764,16 +1294,20 @@ const isBeatOrder = (value: unknown): value is BeatOrder => {
     Number.isSafeInteger(item.commissionMinor) && (item.commissionMinor ?? -1) >= 0 &&
     Number.isSafeInteger(item.processingEstimateMinor) && (item.processingEstimateMinor ?? -1) >= 0 &&
     Number.isSafeInteger(item.applicationFeeMinor) && (item.applicationFeeMinor ?? -1) >= 0 &&
-    Number.isSafeInteger(item.sellerNetMinor) && (item.sellerNetMinor ?? -1) >= 0 && item.currency === 'usd' &&
+    Number.isSafeInteger(item.sellerNetMinor) && (item.sellerNetMinor ?? -1) >= 0 && ['usd', 'mxn'].includes(item.currency || '') &&
+    (item.currency === 'usd' ? item.paymentProvider === undefined || item.paymentProvider === 'stripe' : item.paymentProvider === 'mercadopago' && typeof item.mercadoPagoClientId === 'string' && /^[0-9]{1,40}$/.test(item.mercadoPagoClientId) && validPaymentEnvironment(item.mercadoPagoMode) && (item.mercadoPagoPreferenceId === undefined || typeof item.mercadoPagoPreferenceId === 'string' && item.mercadoPagoPreferenceId.length > 0) && Boolean(item.mercadoPagoQuote && Number.isSafeInteger(item.mercadoPagoQuote.sourceAmountMinor) && item.mercadoPagoQuote.sourceAmountMinor > 0 && item.mercadoPagoQuote.sourceCurrency === 'usd' && Number.isFinite(item.mercadoPagoQuote.exchangeRateUsdMxn) && item.mercadoPagoQuote.exchangeRateUsdMxn >= 5 && item.mercadoPagoQuote.exchangeRateUsdMxn <= 100 && Number.isSafeInteger(item.mercadoPagoQuote.amountMinor) && item.mercadoPagoQuote.amountMinor === item.amountMinor && item.mercadoPagoQuote.currency === 'mxn' && Number.isSafeInteger(item.mercadoPagoQuote.commissionMinor) && item.mercadoPagoQuote.commissionMinor >= 0 && Number.isSafeInteger(item.mercadoPagoQuote.sellerNetMinor) && item.mercadoPagoQuote.commissionMinor + item.mercadoPagoQuote.sellerNetMinor === item.amountMinor) && (item.mercadoPagoPaymentId === undefined || typeof item.mercadoPagoPaymentId === 'string' && /^[1-9][0-9]{0,31}$/.test(item.mercadoPagoPaymentId))) &&
     ['pending', 'paid', 'failed', 'refund_pending', 'refunded', 'partially_refunded', 'disputed'].includes(item.status || '') && typeof item.createdAt === 'string' &&
     (item.stripeCheckoutSessionId === undefined || typeof item.stripeCheckoutSessionId === 'string') &&
     (item.stripePaymentIntentId === undefined || typeof item.stripePaymentIntentId === 'string') &&
+    (item.stripeDestinationAccountId === undefined || typeof item.stripeDestinationAccountId === 'string') &&
+    (item.stripeCheckoutBaseUrl === undefined || typeof item.stripeCheckoutBaseUrl === 'string') &&
     (item.stripeRefundId === undefined || typeof item.stripeRefundId === 'string') &&
     (item.refundRequestedAt === undefined || typeof item.refundRequestedAt === 'string') &&
     (item.refundRequestedBy === undefined || typeof item.refundRequestedBy === 'string') &&
     (item.disputeId === undefined || typeof item.disputeId === 'string') &&
     (item.disputeReason === undefined || typeof item.disputeReason === 'string') &&
-    (item.paidAt === undefined || typeof item.paidAt === 'string')
+    (item.paidAt === undefined || typeof item.paidAt === 'string') &&
+    (item.fulfillment === undefined || isPurchaseEntitlement(item.fulfillment))
 }
 const validFriendship = (value: unknown): value is Friendship => {
   if (!value || typeof value !== 'object') return false

@@ -1,253 +1,48 @@
-import { useState } from "react";
-import { assets } from "../data/mock";
-import { Badge, PageHeader } from "./ui";
-import type { AudioAsset, Project } from "../types";
-import { getQuery } from "../app/routing";
-import { ArrowLeft, ArrowUpRight, Play, Search } from "lucide-react";
-import type { CatalogAsset } from "../data/localCatalog";
+import { useEffect, useState } from 'react';
+import { ArrowLeft, AudioLines, Play, RotateCcw } from 'lucide-react';
+import type { AudioAsset } from '../types';
+import type { CatalogAsset } from '../data/localCatalog';
+import { getQuery } from '../app/routing';
+import { Badge, PageHeader } from './ui';
 
-export function Beats({
-  catalogAssets,
-  onPlay,
-}: {
-  catalogAssets: CatalogAsset[];
+type DetailResult = { asset?: CatalogAsset; error?: string; notFound?: boolean };
+
+export function BeatDetail({ onLoad, onPlay }: {
+  onLoad: (id: string) => Promise<DetailResult>;
   onPlay: (asset: AudioAsset) => void;
 }) {
-  const [query, setQuery] = useState("");
-  const [genre, setGenre] = useState("Todos los estilos");
-  const publishedBeats = catalogAssets.filter(asset => asset.publicationStatus === 'published' && asset.type.toLowerCase() === 'beat');
-  const genres = [
-    "Todos los estilos",
-    ...Array.from(new Set(publishedBeats.flatMap(asset => asset.tags.map(tag => tag.label)))).sort(),
-  ];
-  const visible = publishedBeats.filter((asset) => {
-    const searchable = `${asset.name} ${asset.tags.map(tag => tag.label).join(' ')}`.toLowerCase();
-    return (
-      (!query.trim() || searchable.includes(query.trim().toLowerCase())) &&
-      (genre === "Todos los estilos" || asset.tags.some(tag => tag.label === genre))
-    );
-  });
-  return (
-    <>
-      <PageHeader
-        eyebrow="Catálogo publicado"
-        title="Beats aprobados"
-        description="Escucha y explora beats que ya pasaron revisión."
-        action={<a className="button" href="#/upload">Publicar un beat <ArrowUpRight size={16} aria-hidden="true" /></a>}
-      />
-      <div className="beats-toolbar">
-        <label className="search" htmlFor="beats-search">
-          <Search size={18} aria-hidden="true" />
-          <span className="sr-only">Search beats</span>
-          <input
-            id="beats-search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Buscar beats y tags..."
-          />
-        </label>
-        <div className="filter-chips" aria-label="Filtrar beats por tag">
-          {genres.map((item) => (
-            <button
-              type="button"
-              key={item}
-              className={genre === item ? "active" : ""}
-              aria-pressed={genre === item}
-              onClick={() => setGenre(item)}
-            >
-              {item}
-            </button>
-          ))}
-        </div>
-      </div>
-      {visible.length ? (
-        <section className="beats-grid" aria-label="Beat catalog">
-          {visible.map((asset) => {
-            return (
-              <article className="beat-card panel" key={asset.id}>
-                <div className="beat-card-cover" style={{ backgroundImage: `url(${asset.cover ?? "/assets/demo/hard-808s.png"})` }} aria-label={`Portada de ${asset.name}`}><span aria-hidden="true">♫</span></div>
-                <div className="beat-card-body">
-                  <div className="section-heading">
-                    <div>
-                      <p className="eyebrow">{asset.tags.map(tag => `#${tag.label}`).join(' ') || 'Beat'}</p>
-                      <h2>{asset.name}</h2>
-                    </div>
-                    <Badge tone="active">Publicado</Badge>
-                  </div>
-                  <div className="beat-card-meta"><span>{asset.type}</span><span>Por {asset.ownerId || 'creador'}</span></div>
-                  <div className="beat-card-actions">
-                    {asset.previewUrl ? (
-                      <button
-                        type="button"
-                        className="button"
-                        aria-label={`Escuchar ${asset.name}`}
-                        onClick={() => onPlay(asset)}
-                      >
-                        <Play size={16} fill="currentColor" aria-hidden="true" /> Escuchar preview
-                      </button>
-                    ) : (
-                      <span
-                        className="preview-unavailable compact"
-                        role="status"
-                      >
-                        Preview no disponible
-                      </span>
-                    )}
-                    {asset.downloadUrl && <a className="button ghost" href={asset.downloadUrl} download>Descargar</a>}
-                  </div>
-                </div>
-              </article>
-            );
-          })}
-        </section>
-      ) : (
-        <section className="panel empty-state">
-          <h2>{publishedBeats.length ? 'No hay coincidencias' : 'Aún no hay beats publicados'}</h2>
-          <p>{publishedBeats.length ? 'Prueba otra búsqueda o tag.' : 'Cuando una subida sea aprobada, aparecerá aquí para todos los creadores.'}</p>
-        </section>
-      )}
-    </>
-  );
-}
-
-export function BeatDetail({
-  projects,
-  onPlay,
-}: {
-  projects: Project[];
-  onPlay: (asset: AudioAsset) => void;
-}) {
-  const params = getQuery(window.location.hash);
-  const requested = params.get("id") ?? params.get("name");
-  const project = projects.find(
-    (item) => item.id === requested || item.name === requested,
-  );
-  if (!project)
-    return (
-      <section className="panel empty-state beat-not-found" role="status">
-        <p className="eyebrow">Beat detail</p>
-        <h1>Beat not found</h1>
-        <p>
-          {requested
-            ? `“${requested}” is not in the local Beats catalog.`
-            : "This beat link is missing an identifier."}
-        </p>
-        <div className="beat-detail-actions">
-          <a className="button" href="#/beats">
-            Back to Beats
-          </a>
-          <a className="button ghost" href="#/shorts">
-            Back to Shorts
-          </a>
+  const id = getQuery(window.location.hash).get('id') || '';
+  const [result, setResult] = useState<DetailResult>();
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setResult(undefined);
+    if (!id) { setResult({ notFound: true }); return; }
+    void onLoad(id).then(value => { if (active) setResult(value); })
+      .catch(() => { if (active) setResult({ error: 'The catalog could not be loaded. Please try again.' }); });
+    return () => { active = false; };
+  }, [id, onLoad, attempt]);
+  const back = <a className="button ghost" href="#/marketplace"><ArrowLeft size={16} aria-hidden="true" /> Back to Marketplace</a>;
+  if (!result) return <section className="panel empty-state" role="status"><h1>Loading beat…</h1>{back}</section>;
+  if (result.error) return <section className="panel empty-state"><h1>Catalog unavailable</h1><p role="alert">{result.error}</p><button type="button" className="button" onClick={() => setAttempt(value => value + 1)}><RotateCcw size={16} /> Retry</button>{back}</section>;
+  const asset = result.asset;
+  if (!asset || result.notFound) return <section className="panel empty-state beat-not-found" role="status"><h1>Beat not found</h1><p>This link has no published catalog item available.</p>{back}</section>;
+  return <>
+    <PageHeader eyebrow="Marketplace / Published audio" title={asset.name} description="Listen to the public preview and review available offers." action={back} />
+    <div className="beat-detail-layout">
+      <section className="panel beat-hero">
+        <div className="beat-cover">{asset.cover ? <img src={asset.cover} alt={`Cover for ${asset.name}`} /> : <AudioLines size={48} aria-hidden="true" />}</div>
+        <div className="beat-copy">
+          <div className="creator-line"><strong>{asset.creatorName || 'BeatVault creator'}</strong>{asset.ownerId && <a href={`#/store?id=${encodeURIComponent(asset.ownerId)}`}>View creator store</a>}</div>
+          <div className="detail-tags">{asset.tags.map(tag => <Badge key={tag.label}>#{tag.label}</Badge>)}</div>
+          {asset.previewUrl ? <button type="button" className="button" onClick={() => onPlay(asset)} aria-label={`Play preview of ${asset.name}`}><Play size={16} aria-hidden="true" /> Play preview</button> : <p className="preview-unavailable" role="status">Preview unavailable</p>}
         </div>
       </section>
-    );
-  const creator =
-    project.name === "Night Shift"
-      ? "Milo North"
-      : project.name === "Dusty Room Loop"
-        ? "Ari Sol"
-        : "Kade Seven";
-  const tags =
-    project.name === "Night Shift"
-      ? ["dark", "808", "trap"]
-      : project.name === "Dusty Room Loop"
-        ? ["lo-fi", "sample", "soul"]
-        : ["alternative", "texture", "beats"];
-  const preview = assets.find((asset) => asset.name === project.name);
-  return (
-    <>
-      <PageHeader
-        eyebrow={`Beats / ${project.genre}`}
-        title={project.name}
-        description="A focused view of this local catalog reference and its available preview state."
-        action={
-          <div className="beat-detail-actions">
-            <a className="button" href="#/beats">
-            <ArrowLeft size={16} aria-hidden="true" /> Back to Beats
-            </a>
-            <a className="button ghost" href="#/shorts">
-              Discover in Shorts
-            </a>
-          </div>
-        }
-      />
-      <div className="beat-detail-layout">
-        <section className="panel beat-hero">
-          <div
-            className="beat-cover"
-            style={{
-              backgroundImage: `url(${project.cover ?? "/assets/demo/hard-808s.png"})`,
-            }}
-          >
-            <span aria-hidden="true">♫</span>
-          </div>
-          <div className="beat-copy">
-            <div className="creator-line">
-              <span className="avatar">
-                {creator.slice(0, 2).toUpperCase()}
-              </span>
-              <div>
-                <strong>{creator}</strong>
-                <small>@{creator.toLowerCase().replace(" ", "")}</small>
-              </div>
-            </div>
-            <p className="beat-description">
-              A producer-ready idea discovered through Shorts, ready to become
-              part of your next session.
-            </p>
-            <div className="detail-tags">
-              {tags.map((tag) => (
-                <Badge tone={tag === "dark" ? "violet" : "cyan"} key={tag}>
-                  #{tag}
-                </Badge>
-              ))}
-            </div>
-            {preview ? (
-              <div className="preview-affordance">
-                <button
-                  type="button"
-                  className="button"
-                  aria-label={`Play local preview of ${project.name}`}
-                  onClick={() => onPlay(preview)}
-                >
-                  <Play size={16} fill="currentColor" aria-hidden="true" /> Play local preview
-                </button>
-                <p className="preview-note">
-                  Bundled local audio reference. Playback stays in this browser.
-                </p>
-              </div>
-            ) : (
-              <div className="preview-unavailable" role="status">
-                <strong>Preview unavailable locally</strong>
-                <span>
-                  No bundled audio file is available for this beat yet.
-                </span>
-              </div>
-            )}
-          </div>
-        </section>
-        <aside className="panel beat-facts">
-          <p className="eyebrow">Beat context</p>
-          <div>
-            <span>Tempo</span>
-            <strong>{project.bpm} BPM</strong>
-          </div>
-          <div>
-            <span>Key</span>
-            <strong>{project.key}</strong>
-          </div>
-          <div>
-            <span>Genre</span>
-            <strong>{project.genre}</strong>
-          </div>
-          <div>
-            <span>Source</span>
-            <strong>Shorts discovery</strong>
-          </div>
-          <Badge tone="violet">Local catalog reference</Badge>
-        </aside>
-      </div>
-    </>
-  );
+      <aside className="panel beat-facts">
+        <h2>Available offers</h2>
+        {asset.purchaseOffers?.length ? asset.purchaseOffers.map(offer => <div key={offer.id}><strong>{offer.label}</strong><span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: offer.currency }).format(offer.amountMinor / 100)}</span><span>{offer.deliverables.map(format => format.toUpperCase()).join(' + ')}</span></div>) : <p>This published audio has no active sale offers.</p>}
+        <a className="button" href={`#/marketplace?tab=explore&search=${encodeURIComponent(asset.name)}`}>View in Marketplace</a>
+      </aside>
+    </div>
+  </>;
 }

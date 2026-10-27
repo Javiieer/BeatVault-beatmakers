@@ -1,12 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
+import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import { audit, auth, server } from './index'
 import { createRepository } from './repository'
 import { bootstrapAdmin } from './bootstrap'
 import { config } from './config'
 import { emptyProfile } from '../src/domains/profile'
+import sharp from 'sharp'
+import { artworkPath } from './artwork'
+const ffmpegEncoders = spawnSync(config.ffmpegPath, ['-hide_banner', '-encoders'], { encoding: 'utf8', windowsHide: true })
+const availableH264Encoder = ['libx264', 'libopenh264'].find(encoder => ffmpegEncoders.status === 0 && ffmpegEncoders.stdout.includes(encoder))
 describe('local API routes', () => {
  let origin = ''; let cookie = ''
  beforeAll(async () => { await auth.initialize(); await new Promise<void>(resolve => server.listen(0, resolve)); const address = server.address(); if (!address || typeof address === 'string') throw new Error('no address'); origin = `http://localhost:${address.port}` })
@@ -214,6 +219,190 @@ describe('local API routes', () => {
     expect((await fetch(`${origin}/api/posts/${privatePost.id}`, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
     await runtime.close()
   }, 20000)
+  it('blocks social visibility and supports private, durable moderation of Stories', async () => {
+    const password = 'Social-safety-test-password'
+    const makeUser = async (prefix: string) => {
+      const email = `${prefix}-${randomUUID()}@test.local`
+      await auth.register(email, password)
+      const session = await auth.login(email, password)
+      expect(session).toBeTruthy()
+      return { session: session!, headers: { cookie: `beatvault_session=${session!.token}`, 'x-csrf-token': session!.csrfToken, 'content-type': 'application/json' } }
+    }
+    const owner = await makeUser('safety-owner')
+    const viewer = await makeUser('safety-viewer')
+    const runtime = createRepository()
+    const avatarBytes = await sharp({ create: { width: 256, height: 256, channels: 3, background: '#3578c7' } }).png().toBuffer()
+    const avatarKey = `${owner.session.id}/profile-avatar-${randomUUID()}.png`
+    const avatarThumbKey = avatarKey.replace(/\.png$/, '.thumb.webp')
+    await mkdir(dirname(artworkPath(config.uploadDirectory, avatarKey)), { recursive: true })
+    await writeFile(artworkPath(config.uploadDirectory, avatarKey), avatarBytes)
+    const avatarThumb = Buffer.from('RIFF0000WEBPfake-thumbnail')
+    await writeFile(artworkPath(config.uploadDirectory, avatarThumbKey), avatarThumb)
+    const ownerAvatar = { storageKey: avatarKey, thumbnailStorageKey: avatarThumbKey, mimeType: 'image/png' as const, sizeBytes: avatarBytes.length, thumbnailSizeBytes: avatarThumb.length, width: 256, height: 256 }
+    await runtime.repository.saveProfile({ ...emptyProfile(owner.session.id), displayName: 'Safety Owner', publicProfile: true, avatarImage: ownerAvatar })
+    await runtime.repository.saveProfile({ ...emptyProfile(viewer.session.id), displayName: 'Safety Viewer', publicProfile: true })
+    const postResponse = await fetch(`${origin}/api/posts`, { method: 'POST', headers: owner.headers, body: JSON.stringify({ kind: 'status', body: 'Private after block', audience: 'public' }) })
+    expect(postResponse.status).toBe(201)
+    const post = (await postResponse.json() as { data: { id: string } }).data
+    expect((await fetch(`${origin}/api/friend-requests`, { method: 'POST', headers: viewer.headers, body: JSON.stringify({ targetId: owner.session.id }) })).status).toBe(201)
+    const storyResponse = await fetch(`${origin}/api/stories`, { method: 'POST', headers: owner.headers, body: JSON.stringify({ body: 'Reported story snapshot', audience: 'public' }) })
+    expect(storyResponse.status).toBe(201)
+    const story = (await storyResponse.json() as { data: { id: string } }).data
+    expect((await fetch(`${origin}/api/stories/${story.id}/reports`, { method: 'POST', headers: viewer.headers, body: JSON.stringify({ reason: 'harassment', details: 'Please review this story' }) })).status).toBe(201)
+    expect((await fetch(`${origin}/api/stories/${story.id}/reports`, { method: 'POST', headers: viewer.headers, body: JSON.stringify({ reason: 'spam', details: 'Duplicate report' }) })).status).toBe(409)
+    expect((await fetch(`${origin}/api/stories/${story.id}/reports`, { method: 'POST', headers: owner.headers, body: JSON.stringify({ reason: 'spam', details: 'Self report' }) })).status).toBe(404)
+    expect((await fetch(`${origin}/api/social-moderation/story-reports`, { headers: viewer.headers })).status).toBe(403)
+    const adminEnv = { ...process.env, BEATVAULT_ADMIN_EMAIL: `social-safety-admin-${randomUUID()}@test.local`, BEATVAULT_ADMIN_PASSWORD: 'Social-safety-admin-password', BEATVAULT_ADMIN_BOOTSTRAP_TOKEN: randomUUID() + randomUUID() }
+    const adminData = await bootstrapAdmin(adminEnv, runtime.repository)
+    const adminSession = await auth.login(adminData.email, adminEnv.BEATVAULT_ADMIN_PASSWORD)
+    expect(adminSession).toBeTruthy()
+    const adminHeaders = { cookie: `beatvault_session=${adminSession!.token}`, 'x-csrf-token': adminSession!.csrfToken, 'content-type': 'application/json' }
+    const evidenceStoryId = randomUUID()
+    const evidenceBytes = Buffer.from('private evidence payload for staff only')
+    const evidenceStorageKey = `social-stories/${owner.session.id}/${randomUUID()}`
+    const evidenceCreatedAt = new Date().toISOString()
+    const evidenceStory = { id: evidenceStoryId, authorId: owner.session.id, kind: 'photo' as const, body: '', audience: 'public' as const, media: { storageKey: evidenceStorageKey, mimeType: 'image/png' as const, sizeBytes: evidenceBytes.length, sha256: createHash('sha256').update(evidenceBytes).digest('hex') }, createdAt: evidenceCreatedAt, expiresAt: new Date(Date.parse(evidenceCreatedAt) + 24 * 60 * 60 * 1000).toISOString() }
+    await mkdir(dirname(artworkPath(config.uploadDirectory, evidenceStorageKey)), { recursive: true })
+    await writeFile(artworkPath(config.uploadDirectory, evidenceStorageKey), evidenceBytes)
+    await runtime.repository.createSocialStory(evidenceStory, 512 * 1024 * 1024)
+    const evidenceReportResponse = await fetch(`${origin}/api/stories/${evidenceStoryId}/reports`, { method: 'POST', headers: viewer.headers, body: JSON.stringify({ reason: 'copyright', details: 'Staff-only evidence check' }) })
+    expect(evidenceReportResponse.status).toBe(201)
+    const evidenceReport = (await evidenceReportResponse.json() as { data: { id: string } }).data
+    expect((await fetch(`${origin}/api/social-moderation/story-reports/${evidenceReport.id}/evidence`)).status).toBe(401)
+    const queued = await fetch(`${origin}/api/social-moderation/story-reports`, { headers: { cookie: adminHeaders.cookie } }).then(response => response.json()) as { data: { reports: Array<{ id: string; body: string; reporterId: string }>; nextCursor: string | null } }
+    const report = queued.data.reports.find(item => item.body === 'Reported story snapshot')
+    expect(report).toMatchObject({ reporterId: viewer.session.id })
+    expect(queued.data.reports.some(item => 'evidenceStorageKey' in item)).toBe(false)
+    const firstPage = await fetch(`${origin}/api/social-moderation/story-reports?limit=1`, { headers: { cookie: adminHeaders.cookie } }).then(response => response.json()) as { data: { reports: Array<{ id: string }>; nextCursor: string | null } }
+    expect(firstPage.data.reports).toHaveLength(1)
+    expect(firstPage.data.nextCursor).toBeTruthy()
+    const secondPage = await fetch(`${origin}/api/social-moderation/story-reports?limit=1&cursor=${encodeURIComponent(firstPage.data.nextCursor!)}`, { headers: { cookie: adminHeaders.cookie } }).then(response => response.json()) as { data: { reports: Array<{ id: string }>; nextCursor: string | null } }
+    expect(secondPage.data.reports).toHaveLength(1)
+    expect(secondPage.data.reports[0].id).not.toBe(firstPage.data.reports[0].id)
+    const evidenceQueueItem = queued.data.reports.find(item => item.id === evidenceReport.id) as typeof queued.data.reports[number] & { evidenceUrl?: string; evidenceAvailable?: boolean }
+    expect(evidenceQueueItem).toMatchObject({ evidenceAvailable: true, evidenceUrl: expect.stringContaining('/evidence') })
+    expect((await fetch(`${origin}${evidenceQueueItem.evidenceUrl}`, { headers: { cookie: viewer.headers.cookie } })).status).toBe(403)
+    expect((await fetch(`${origin}${evidenceQueueItem.evidenceUrl}`, { method: 'HEAD', headers: { cookie: adminHeaders.cookie } })).status).toBe(200)
+    const authorizedEvidence = await fetch(`${origin}${evidenceQueueItem.evidenceUrl}`, { headers: { cookie: adminHeaders.cookie } })
+    expect(authorizedEvidence.status).toBe(200)
+    expect(Buffer.from(await authorizedEvidence.arrayBuffer())).toEqual(evidenceBytes)
+    expect((await fetch(`${origin}/api/social-moderation/story-reports/${randomUUID()}/evidence`, { headers: { cookie: adminHeaders.cookie } })).status).toBe(404)
+    expect((await fetch(`${origin}/api/stories/${evidenceStoryId}`, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
+    expect((await fetch(`${origin}/api/stories/${story.id}`, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
+    const afterExpiry = await fetch(`${origin}/api/social-moderation/story-reports`, { headers: { cookie: adminHeaders.cookie } }).then(response => response.json()) as { data: { reports: Array<{ id: string; body: string }> } }
+    expect(afterExpiry.data.reports.find(item => item.id === report!.id)?.body).toBe('Reported story snapshot')
+    expect((await fetch(`${origin}/api/social-moderation/story-reports/${report!.id}`, { method: 'PATCH', headers: adminHeaders, body: JSON.stringify({ status: 'reviewed' }) })).status).toBe(200)
+    expect(audit.entries.some(entry => entry.metadata.resource === 'social-story-report-review' && entry.actorId === adminSession!.id)).toBe(true)
+    const blockedStoryResponse = await fetch(`${origin}/api/stories`, { method: 'POST', headers: owner.headers, body: JSON.stringify({ body: 'Hidden by account block', audience: 'public' }) })
+    const blockedStory = (await blockedStoryResponse.json() as { data: { id: string } }).data
+
+    expect((await fetch(`${origin}/api/blocks`, { method: 'POST', headers: { cookie: owner.headers.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ targetId: viewer.session.id }) })).status).toBe(403)
+    const blockAndFollow = await Promise.all([
+      fetch(`${origin}/api/blocks`, { method: 'POST', headers: owner.headers, body: JSON.stringify({ targetId: viewer.session.id }) }),
+      fetch(`${origin}/api/follows/${encodeURIComponent(owner.session.id)}`, { method: 'PUT', headers: viewer.headers, body: '{}' }),
+    ])
+    expect(blockAndFollow.map(response => response.status)).toEqual(expect.arrayContaining([200]))
+    expect((await fetch(`${origin}/api/blocks`, { headers: { cookie: owner.headers.cookie } }).then(response => response.json()) as { data: { blockedAccountIds: string[] } }).data.blockedAccountIds).toContain(viewer.session.id)
+    expect((await fetch(`${origin}/api/posts/${post.id}`, { headers: { cookie: viewer.headers.cookie } })).status).toBe(404)
+    expect((await fetch(`${origin}/api/feed`, { headers: { cookie: viewer.headers.cookie } }).then(response => response.json()) as { data: { posts: Array<{ id: string }> } }).data.posts.some(item => item.id === post.id)).toBe(false)
+    expect((await fetch(`${origin}/api/stories`, { headers: { cookie: viewer.headers.cookie } }).then(response => response.json()) as { data: { stories: Array<{ id: string }> } }).data.stories.some(item => item.id === blockedStory.id)).toBe(false)
+    expect((await fetch(`${origin}/api/profiles/${owner.session.id}`, { headers: { cookie: viewer.headers.cookie } })).status).toBe(404)
+    for (const method of ['GET', 'HEAD'] as const) {
+      expect((await fetch(`${origin}/api/profiles/${owner.session.id}/images/avatar`, { method, headers: { cookie: viewer.headers.cookie } })).status).toBe(404)
+      expect((await fetch(`${origin}/api/profiles/${owner.session.id}/images/avatar/thumbnail`, { method, headers: { cookie: viewer.headers.cookie } })).status).toBe(404)
+    }
+    expect((await fetch(`${origin}/api/account/social-state`, { headers: { cookie: viewer.headers.cookie } }).then(response => response.json()) as { data: { followedAccountIds: string[] } }).data.followedAccountIds).not.toContain(owner.session.id)
+    expect((await fetch(`${origin}/api/friends`, { headers: { cookie: viewer.headers.cookie } }).then(response => response.json()) as { data: { incoming: unknown[]; outgoing: unknown[]; friends: unknown[] } }).data).toMatchObject({ incoming: [], outgoing: [], friends: [] })
+    expect((await fetch(`${origin}/api/friend-requests`, { method: 'POST', headers: viewer.headers, body: JSON.stringify({ targetId: owner.session.id }) })).status).toBe(404)
+    expect((await fetch(`${origin}/api/chat/conversations/${owner.session.id}/messages`, { headers: { cookie: viewer.headers.cookie } })).status).toBe(404)
+    expect((await fetch(`${origin}/api/blocks/${viewer.session.id}`, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
+    expect((await fetch(`${origin}/api/posts/${post.id}`, { headers: { cookie: viewer.headers.cookie } })).status).toBe(200)
+    await runtime.close()
+    await unlink(artworkPath(config.uploadDirectory, avatarKey)).catch(() => undefined)
+    await unlink(artworkPath(config.uploadDirectory, avatarThumbKey)).catch(() => undefined)
+  }, 20000)
+  it('publishes standalone stories with server expiry, audience checks, and owner-only deletion', async () => {
+    const password = 'Social-story-test-password'
+    const makeUser = async (prefix: string) => {
+      const email = `${prefix}-${randomUUID()}@test.local`
+      await auth.register(email, password)
+      const session = await auth.login(email, password)
+      expect(session).toBeTruthy()
+      return { session: session!, headers: { cookie: `beatvault_session=${session!.token}`, 'x-csrf-token': session!.csrfToken, 'content-type': 'application/json' } }
+    }
+    const owner = await makeUser('story-owner')
+    const stranger = await makeUser('story-stranger')
+    const runtime = createRepository()
+    await runtime.repository.saveProfile({ ...emptyProfile(owner.session.id), displayName: 'Story Owner', publicProfile: true })
+
+    expect((await fetch(`${origin}/api/stories`)).status).toBe(401)
+    expect((await fetch(`${origin}/api/stories`, { method: 'POST', headers: { cookie: owner.headers.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ body: 'No CSRF', audience: 'private' }) })).status).toBe(403)
+    const privateResponse = await fetch(`${origin}/api/stories`, { method: 'POST', headers: owner.headers, body: JSON.stringify({ body: 'A private moment', audience: 'private' }) })
+    expect(privateResponse.status).toBe(201)
+    const privateStory = (await privateResponse.json() as { data: { id: string; createdAt: string; expiresAt: string } }).data
+    expect(Date.parse(privateStory.expiresAt) - Date.parse(privateStory.createdAt)).toBe(24 * 60 * 60 * 1000)
+    const outsiderStories = await fetch(`${origin}/api/stories`, { headers: { cookie: stranger.headers.cookie } }).then(response => response.json()) as { data: { stories: Array<{ id: string }> } }
+    expect(outsiderStories.data.stories.some(story => story.id === privateStory.id)).toBe(false)
+
+    const coverBytes = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover.jpg'))
+    const boundary = `story-${randomUUID()}`
+    const multipart = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="body"\r\n\r\nA standalone artwork story\r\n--${boundary}\r\nContent-Disposition: form-data; name="audience"\r\n\r\npublic\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="story.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`),
+      coverBytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ])
+    const photoResponse = await fetch(`${origin}/api/stories`, { method: 'POST', headers: { cookie: owner.headers.cookie, 'x-csrf-token': owner.session.csrfToken, 'x-social-post-kind': 'photo', 'content-type': `multipart/form-data; boundary=${boundary}` }, body: multipart })
+    expect(photoResponse.status, await photoResponse.clone().text()).toBe(201)
+    const photoStory = (await photoResponse.json() as { data: { id: string; media: { url: string } } }).data
+    expect((await fetch(`${origin}${photoStory.media.url}`, { headers: { cookie: stranger.headers.cookie } })).status).toBe(200)
+    const feed = await fetch(`${origin}/api/feed`).then(response => response.json()) as { data: { posts: Array<{ body: string }> } }
+    expect(feed.data.posts.some(post => post.body === 'A standalone artwork story')).toBe(false)
+    expect((await fetch(`${origin}/api/stories/${photoStory.id}`, { method: 'DELETE', headers: stranger.headers })).status).toBe(404)
+    expect((await fetch(`${origin}/api/stories/${photoStory.id}`, { method: 'DELETE', headers: owner.headers })).status).toBe(200)
+    expect((await fetch(`${origin}${photoStory.media.url}`, { headers: { cookie: owner.headers.cookie } })).status).toBe(404)
+    await runtime.close()
+  })
+
+  it.skipIf(!availableH264Encoder)('serves only normalized metadata-free video bytes through the public story API', async () => {
+    const password = 'Social-video-api-test-password'
+    const email = `social-video-${randomUUID()}@test.local`
+    await auth.register(email, password)
+    const session = await auth.login(email, password)
+    expect(session).toBeTruthy()
+    const headers = { cookie: `beatvault_session=${session!.token}`, 'x-csrf-token': session!.csrfToken }
+    const runtime = createRepository()
+    await runtime.repository.saveProfile({ ...emptyProfile(session!.id), displayName: 'Public Video Creator', publicProfile: true })
+    await mkdir(config.uploadDirectory, { recursive: true })
+    const source = join(config.uploadDirectory, `social-api-video-${randomUUID()}.mp4`)
+    const generated = spawnSync(config.ffmpegPath, [
+      '-nostdin', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=320x240:d=1',
+      '-metadata', 'location=19.4N99.1W', '-metadata', 'creation_time=2026-01-01T00:00:00Z', '-movflags', '+use_metadata_tags',
+      '-c:v', availableH264Encoder!, '-b:v', '600k', '-y', source,
+    ], { encoding: 'utf8', windowsHide: true })
+    expect(generated.status, generated.stderr).toBe(0)
+    const sourceBytes = await readFile(source)
+    const boundary = `social-story-${randomUUID()}`
+    const prefix = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="body"\r\n\r\nA public sanitized video story\r\n--${boundary}\r\nContent-Disposition: form-data; name="audience"\r\n\r\npublic\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="video.mp4"\r\nContent-Type: video/mp4\r\n\r\n`)
+    const payload = Buffer.concat([prefix, sourceBytes, Buffer.from(`\r\n--${boundary}--\r\n`)])
+    const created = await fetch(`${origin}/api/stories`, { method: 'POST', headers: { ...headers, 'x-social-post-kind': 'video', 'content-type': `multipart/form-data; boundary=${boundary}` }, body: payload })
+    expect(created.status, await created.clone().text()).toBe(201)
+    const story = (await created.json() as { data: { id: string; media: { url: string; mimeType: string; sizeBytes: number } } }).data
+    expect((await fetch(`${origin}${story.media.url}`)).status).toBe(401)
+    const viewerEmail = `social-video-viewer-${randomUUID()}@test.local`
+    await auth.register(viewerEmail, password)
+    const viewer = await auth.login(viewerEmail, password)
+    expect(viewer).toBeTruthy()
+    const served = await fetch(`${origin}${story.media.url}`, { headers: { cookie: `beatvault_session=${viewer!.token}` } })
+    expect(served.status).toBe(200)
+    expect(served.headers.get('content-type')).toBe('video/mp4')
+    const servedBytes = Buffer.from(await served.arrayBuffer())
+    expect(servedBytes.equals(sourceBytes)).toBe(false)
+    expect(servedBytes.length).toBe(story.media.sizeBytes)
+    const probe = spawnSync(config.ffprobePath, ['-v', 'error', '-show_entries', 'format_tags:stream_tags:stream_side_data', '-of', 'json', 'pipe:0'], { input: servedBytes, encoding: 'utf8', windowsHide: true })
+    expect(probe.status, probe.stderr).toBe(0)
+    expect(probe.stdout.toLowerCase()).not.toMatch(/location|creation_time|gps|camera|device|timecode/)
+    await fetch(`${origin}/api/stories/${story.id}`, { method: 'DELETE', headers: { ...headers, 'content-type': 'application/json' } })
+  })
   it('stores Beat artwork privately, accounts for its quota, and hides pending artwork from outsiders', async () => {
     const email = `artwork-${randomUUID()}@test.local`
     const password = 'Artwork-upload-password'
@@ -238,7 +427,7 @@ describe('local API routes', () => {
     expect(uploaded.status, await uploaded.clone().text()).toBe(201)
     const asset = (await uploaded.json() as { data: { id: string } }).data
 
-    const artwork = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover.jpg'))
+    const artwork = await sharp(await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover-qa.jpg'))).withMetadata({ orientation: 6 }).jpeg({ quality: 92 }).toBuffer()
     const artworkBody = new Uint8Array(artwork)
     const rejectedMime = await fetch(`${origin}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { ...ownerHeaders, 'content-type': 'image/png' }, body: artworkBody })
     expect(rejectedMime.status).toBe(400)
@@ -246,13 +435,13 @@ describe('local API routes', () => {
     expect(rejectedCorruptArtwork.status).toBe(400)
     const artworkUpload = await fetch(`${origin}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { ...ownerHeaders, 'content-type': 'image/jpeg' }, body: artworkBody })
     expect(artworkUpload.status, await artworkUpload.clone().text()).toBe(201)
-    const savedArtwork = (await artworkUpload.json() as { data: { thumbnailAvailable: boolean; thumbnailSizeBytes: number } }).data
+    const savedArtwork = (await artworkUpload.json() as { data: { sizeBytes: number; thumbnailAvailable: boolean; thumbnailSizeBytes: number } }).data
     if (savedArtwork.thumbnailAvailable) expect(savedArtwork.thumbnailSizeBytes).toBeGreaterThan(0)
     expect((await fetch(`${origin}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { cookie: ownerHeaders.cookie, 'content-type': 'image/jpeg' }, body: artworkBody })).status).toBe(403)
     expect((await fetch(`${origin}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { cookie: `beatvault_session=${outsider!.token}`, 'x-csrf-token': outsider!.csrfToken, 'content-type': 'image/jpeg' }, body: artworkBody })).status).toBe(404)
     expect((await fetch(`${origin}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { ...ownerHeaders, 'content-type': 'image/jpeg' }, body: artworkBody })).status).toBe(201)
     const usage = await fetch(`${origin}/api/account/storage`, { headers: { cookie: ownerHeaders.cookie } }).then(response => response.json()) as { data: { usedBytes: number } }
-    expect(usage.data.usedBytes).toBe(audio.length + artwork.length + savedArtwork.thumbnailSizeBytes)
+    expect(usage.data.usedBytes).toBe(audio.length + savedArtwork.sizeBytes + savedArtwork.thumbnailSizeBytes)
     const entryResponse = await fetch(`${origin}/api/catalog`, { method: 'POST', headers: { ...ownerHeaders, 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Artwork test beat', type: 'Beat', tagIds: ['qa'], assetId: asset.id }) })
     expect(entryResponse.status).toBe(201)
     const entry = (await entryResponse.json() as { data: { contentId: string } }).data
@@ -261,13 +450,20 @@ describe('local API routes', () => {
     expect(artworkUrl).toBe(`/api/catalog/${entry.contentId}/artwork${savedArtwork.thumbnailAvailable ? '/thumbnail' : ''}`)
     const originalArtwork = await fetch(`${origin}/api/catalog/${entry.contentId}/artwork`, { headers: { cookie: ownerHeaders.cookie } })
     expect(originalArtwork.status).toBe(200)
-    expect(Buffer.from(await originalArtwork.arrayBuffer()).equals(artwork)).toBe(true)
+    const servedArtwork = Buffer.from(await originalArtwork.arrayBuffer())
+    expect(servedArtwork.length).toBe(savedArtwork.sizeBytes)
+    const servedMetadata = await sharp(servedArtwork).metadata()
+    expect(servedMetadata).toMatchObject({ format: 'jpeg', width: 640, height: 640 })
+    expect(servedMetadata.exif).toBeUndefined()
+    expect(servedMetadata.xmp).toBeUndefined()
+    expect(servedMetadata.orientation).toBeUndefined()
     if (savedArtwork.thumbnailAvailable) {
       const thumbnail = await fetch(`${origin}${artworkUrl}`, { headers: { cookie: ownerHeaders.cookie } })
       expect(thumbnail.status).toBe(200)
       expect(thumbnail.headers.get('content-type')).toBe('image/webp')
       expect(Number(thumbnail.headers.get('content-length'))).toBe(savedArtwork.thumbnailSizeBytes)
-      expect(savedArtwork.thumbnailSizeBytes).toBeLessThan(artwork.length / 2)
+      expect(savedArtwork.thumbnailSizeBytes).toBeLessThanOrEqual(512 * 1024)
+      expect(await sharp(Buffer.from(await thumbnail.arrayBuffer())).metadata()).toMatchObject({ format: 'webp', width: 640, height: 640 })
     }
     expect((await fetch(`${origin}/api/catalog/${entry.contentId}/artwork`, { headers: { cookie: `beatvault_session=${outsider!.token}` } })).status).toBe(404)
     expect((await fetch(`${origin}/api/catalog/${entry.contentId}/artwork`)).status).toBe(404)
@@ -282,14 +478,14 @@ describe('local API routes', () => {
     expect(afterDelete.data.usedBytes).toBe(0)
     expect((await fetch(`${origin}/api/catalog/${entry.contentId}/artwork`, { headers: { cookie: ownerHeaders.cookie } })).status).toBe(404)
   })
-  it('keeps Stripe Connect unavailable until test credentials and webhooks are configured', async () => {
-    expect((await fetch(`${origin}/api/connect/account`)).status).toBe(401)
+  it('keeps Mercado Pago unavailable until test credentials and webhooks are configured', async () => {
+    expect((await fetch(`${origin}/api/payments/mercadopago/seller`)).status).toBe(401)
     const session = await auth.login('demo@beatvault.local', 'local-demo-password')
     expect(session).toBeTruthy()
-    const status = await fetch(`${origin}/api/connect/account`, { headers: { cookie: `beatvault_session=${session!.token}` } })
+    const status = await fetch(`${origin}/api/payments/mercadopago/seller`, { headers: { cookie: `beatvault_session=${session!.token}` } })
     expect(status.status).toBe(200)
-    expect(await status.json()).toMatchObject({ data: { enabled: false, connected: false, payoutsEnabled: false } })
-    expect((await fetch(`${origin}/api/webhooks/stripe`, { method: 'POST', body: '{}' })).status).toBe(503)
+    expect(await status.json()).toMatchObject({ data: { enabled: false, connected: false } })
+    expect((await fetch(`${origin}/api/webhooks/mercadopago`, { method: 'POST', body: '{}' })).status).toBe(503)
     expect((await fetch(`${origin}/api/orders`)).status).toBe(401)
     expect((await fetch(`${origin}/api/checkout/beats/${randomUUID()}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ offerId: 'license' }) })).status).toBe(401)
   })
@@ -559,7 +755,10 @@ describe('local API routes', () => {
     const adminSession = await auth.login(adminData.email, 'A-strong-admin-password')
     expect(adminSession).toBeTruthy()
     const approved = await fetch(`${origin}/api/admin/catalog-review/${content.contentId}`, { method: 'POST', headers: { cookie: `beatvault_session=${adminSession!.token}`, 'x-csrf-token': adminSession!.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ decision: 'approve' }) })
-    expect(approved.status).toBe(200)
+    expect(approved.status).toBe(409) // Current moderation requires processed audio for One-shots too.
+    const socialFixture = createRepository()
+    await socialFixture.repository.reviewCatalog(content.contentId, 'published')
+    await socialFixture.close()
     const marketplace = await fetch(`${origin}/api/marketplace?q=${encodeURIComponent('Social Owner')}&tag=qa&type=sample`).then(value => value.json()) as { data: { entries: Array<{ contentId: string; creatorName: string; assetId?: string; audio?: unknown }>; total: number } }
     expect(marketplace.data).toMatchObject({ total: 1, entries: [expect.objectContaining({ contentId: content.contentId, creatorName: 'Social Owner' })] })
     expect(marketplace.data.entries[0]).not.toHaveProperty('assetId')

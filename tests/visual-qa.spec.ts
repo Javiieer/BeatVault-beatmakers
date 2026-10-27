@@ -86,7 +86,7 @@ test("plans and admin routes expose their critical mock boundaries", async ({ pa
 test("primary navigation contains the selected creator workflows", async ({ page }) => {
   await openFreshPage(page, "/dashboard");
   const links = page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link");
-  await expect(links).toHaveText(["Home", "Friends", "Messages", "My uploads", "Library", "Beats", "Marketplace", "Upload", "Plans"]);
+  await expect(links).toHaveText(["Home", "Friends", "Messages", "My uploads", "Marketplace", "Upload", "Plans"]);
 });
 
 test("friends shows a clear retry state while the local API is offline", async ({ page }) => {
@@ -167,20 +167,23 @@ test("theme preferences change dark, light and custom RGB colors and persist", a
   await expect(page.locator(".theme-picker")).toHaveCount(0);
 });
 
-test("library keeps navigation available and fits the mobile viewport", async ({ page }) => {
+test("legacy library opens the unified Marketplace and fits the mobile viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openFreshPage(page, "/library");
-  await expect(page.getByRole("link", { name: "Library" })).toHaveAttribute("aria-current", "page");
-  await expect(page.getByRole("link", { name: /Subir sonidos/ })).toHaveAttribute("href", "#/upload");
+  await expect(page).toHaveURL(/#\/marketplace\?tab=library/);
+  await expect(page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('link', { name: 'Marketplace' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('button', { name: 'My library', exact: true })).toHaveAttribute('aria-current', 'page');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test("library exposes typed catalog sections without extra top-level routes", async ({ page }) => {
+test("Marketplace combines its sections without duplicate top-level discovery links", async ({ page }) => {
   await openFreshPage(page, "/library");
-  const sections = page.getByRole("navigation", { name: "Colecciones de biblioteca" });
-  await expect(sections.getByRole("link", { name: "Beats" })).toHaveAttribute("href", "#/library?section=beats");
-  await sections.getByRole("link", { name: "Packs" }).click();
-  await expect(page).toHaveURL(/#\/library\?section=sound-packs/);
-  await expect(page.getByRole("strong").filter({ hasText: "FL Studio Demo Pack" })).toBeVisible();
-  await expect(page.getByText(/Contents: FL 808 Kick/)).toBeVisible();
+  const sections = page.getByRole('navigation', { name: 'Marketplace sections' });
+  await expect(sections.getByRole('button', { name: 'Explore', exact: true })).toBeVisible();
+  await sections.getByRole('button', { name: 'My purchases', exact: true }).click();
+  await expect(page).toHaveURL(/tab=purchases/);
+  await expect(page.getByRole('heading', { name: 'Sign in to access your purchases' })).toBeVisible();
+  const primary = page.getByRole('navigation', { name: 'Primary navigation' });
+  await expect(primary.getByRole('link', { name: 'Library', exact: true })).toHaveCount(0);
+  await expect(primary.getByRole('link', { name: 'Beats', exact: true })).toHaveCount(0);
 });

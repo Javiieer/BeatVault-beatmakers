@@ -10,6 +10,8 @@ import { BeatSaleListingForm } from './BeatSaleListingForm';
 import type { ApiResult } from '../domains/core/contracts';
 import type { BeatListingInput, BeatListingRecord } from '../domains/marketplace/sellerListings';
 import { tx } from '../i18n';
+import { MercadoPagoConnectPanel } from './MercadoPagoConnectPanel';
+import { getQuery } from '../app/routing';
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;
@@ -52,17 +54,20 @@ export function UploadCard({ asset, onPlay, onEdit, onArchive, onRetryPreview, o
   </article>;
 }
 
-export function Studio({ uploads, onPlay, onUpdate, onRetryPreview, onLoadBeatListings, onSaveBeatListing, scope, loadError }: {
+export function Studio({ uploads, onPlay, onUpdate, onDelete, onRetryPreview, onLoadBeatListings, onSaveBeatListing, scope, loadError, loading = false, onReload }: {
   scope?: string;
   loadError?: string;
+  loading?: boolean;
+  onReload?: () => Promise<void>;
   uploads: CatalogAsset[];
   onPlay: (asset: AudioAsset) => void;
   onUpdate: (asset: CatalogAsset) => Promise<{ error?: string }>;
+  onDelete?: (asset: CatalogAsset) => Promise<{ error?: string }>;
   onRetryPreview?: (asset: CatalogAsset) => Promise<{ asset?: CatalogAsset; error?: string }>;
   onLoadBeatListings?: () => Promise<ApiResult<BeatListingRecord[]>>;
   onSaveBeatListing?: (contentId: string, input: BeatListingInput) => Promise<ApiResult<BeatListingRecord>>;
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => getQuery(window.location.hash).get('search') || '');
   const [type, setType] = useState("all");
   const [status, setStatus] = useState("all");
   const [editing, setEditing] = useState<CatalogAsset>();
@@ -74,10 +79,12 @@ export function Studio({ uploads, onPlay, onUpdate, onRetryPreview, onLoadBeatLi
   const [beatListings, setBeatListings] = useState<BeatListingRecord[]>([]);
   const [listingError, setListingError] = useState('');
   const [saleEditing, setSaleEditing] = useState<CatalogAsset>();
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const draft = readUploadDraft(scope);
   const hasDraft = Boolean(draft.title || draft.file);
   const editingOpen = Boolean(editing);
+  useEffect(() => { setConfirmDelete(false); }, [editing?.id]);
   useEffect(() => { if (editingOpen) dialogRef.current?.showModal(); }, [editingOpen]);
   useEffect(() => {
     if (scope === 'demo') return;
@@ -123,6 +130,16 @@ export function Studio({ uploads, onPlay, onUpdate, onRetryPreview, onLoadBeatLi
     } catch { setError("No se pudo generar el preview. Verifica FFmpeg e inténtalo de nuevo."); }
     finally { setRetryingId(undefined); }
   };
+  const removeCatalogEntry = async () => {
+    if (!editing || !onDelete || busy) return;
+    setBusy(true); setError('');
+    try {
+      const result = await onDelete(editing);
+      if (result.error) setError(result.error);
+      else { setEditing(undefined); setConfirmDelete(false); }
+    } catch { setError('No se pudo eliminar la publicación. Intenta de nuevo.'); }
+    finally { setBusy(false); }
+  };
   const saveBeatListing = async (contentId: string, input: BeatListingInput): Promise<ApiResult<BeatListingRecord>> => {
     if (!onSaveBeatListing) return { ok: false, error: { code: 'NOT_AVAILABLE', message: 'Inicia sesión para preparar una ficha comercial.' } }
     const result = await onSaveBeatListing(contentId, input)
@@ -137,16 +154,17 @@ export function Studio({ uploads, onPlay, onUpdate, onRetryPreview, onLoadBeatLi
       {storageUsage?.limitBytes !== null && storageUsage && <div className="creator-storage-meter" role="progressbar" aria-label="Almacenamiento usado" aria-valuenow={Math.min(100, Math.round(storageUsage.usedBytes / storageUsage.limitBytes * 100))} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${Math.min(100, storageUsage.usedBytes / storageUsage.limitBytes * 100)}%` }} /></div>}
     </section>}
     {hasDraft && <div className="creator-draft-strip"><div><span className="eyebrow">Borrador sin enviar</span><strong>{draft.title || draft.file}</strong></div><a className="button ghost" href="#/upload"><Pencil size={16} /> Continuar</a></div>}
-    {onSaveBeatListing && <div className="beat-listing-status-banner"><BadgeDollarSign size={18} /><span><strong>{tx('seller.preparationBanner')}</strong> {tx('seller.preparationNote')}</span></div>}
+    {onSaveBeatListing && <><div className="beat-listing-status-banner"><BadgeDollarSign size={18} /><span><strong>{tx('seller.preparationBanner')}</strong> {tx('seller.preparationNote')}</span></div><MercadoPagoConnectPanel /></>}
     <div className="creator-upload-toolbar">
       <label className="search" htmlFor="uploads-search"><Search size={17} /><span className="sr-only">Buscar mis subidas</span><input id="uploads-search" placeholder="Buscar por nombre o tag" value={query} onChange={event => setQuery(event.target.value)} /></label>
       <div className="filter-chips" aria-label="Tipo de subida">{["all", ...creatorTypes].map(value => <button key={value} type="button" aria-pressed={type === value} className={type === value ? "active" : ""} onClick={() => setType(value)}>{value === "all" ? "Todos" : value === "Beat" ? "Beats" : "One-shots"}</button>)}</div>
       <label className="library-sort" htmlFor="uploads-status"><span>Estado</span><select id="uploads-status" value={status} onChange={event => setStatus(event.target.value)}><option value="all">Todos los estados</option>{Object.entries(uploadStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
     </div>
     {(error || loadError || listingError) && !editing && !saleEditing && <p className="upload-error" role="alert">{error || loadError || listingError}</p>}
-    <p className="muted" role="status">{filtered.length} resultados</p>
+    {loadError && onReload && <button type="button" className="button ghost" disabled={loading} onClick={() => void onReload()}>Reintentar carga de subidas</button>}
+    <p className="muted" role="status">{loading ? 'Cargando tus subidas…' : `${filtered.length} resultados`}</p>
     {filtered.length ? <div className="creator-upload-grid">{filtered.map(asset => <UploadCard key={asset.id} asset={asset} listing={beatListings.find(item => item.contentId === asset.id)} onPlay={onPlay} busy={busy} retrying={retryingId === asset.id} onRetryPreview={onRetryPreview ? () => void retryPreview(asset) : undefined} onPrepareSale={onSaveBeatListing && creatorType(asset.type) === 'Beat' ? () => setSaleEditing(asset) : undefined} onEdit={() => { setError(""); setEditing({ ...asset }); }} onArchive={() => void update({ ...asset, publicationStatus: asset.publicationStatus === "archived" ? "draft" : "archived" })} />)}</div> :
-      <section className="empty-state creator-upload-empty"><Music2 size={28} /><h2>{uploads.length ? "No hay coincidencias" : "Todavia no tienes subidas"}</h2>{uploads.length ? <button className="button ghost" onClick={() => { setQuery(""); setType("all"); setStatus("all"); }}>Limpiar filtros</button> : <a className="button" href="#/upload"><ArrowUpFromLine size={17} /> Subir mi primer audio</a>}</section>}
+      loading ? null : loadError ? <section className="empty-state creator-upload-empty"><h2>No se pudieron cargar tus subidas</h2><p>Vuelve a consultar el servidor para ver tus archivos.</p></section> : <section className="empty-state creator-upload-empty"><Music2 size={28} /><h2>{uploads.length ? "No hay coincidencias" : "Todavia no tienes subidas"}</h2>{uploads.length ? <button className="button ghost" onClick={() => { setQuery(""); setType("all"); setStatus("all"); }}>Limpiar filtros</button> : <a className="button" href="#/upload"><ArrowUpFromLine size={17} /> Subir mi primer audio</a>}</section>}
     {editing && <dialog ref={dialogRef} className="creator-upload-dialog" aria-labelledby="creator-upload-edit-title" onCancel={event => { if (busy) event.preventDefault(); else setEditing(undefined); }} onClose={() => setEditing(undefined)}>
       <form onSubmit={event => { event.preventDefault(); if (editing.name.trim()) void update({ ...editing, name: editing.name.trim() }); }}>
         <div className="modal-heading"><h2 id="creator-upload-edit-title">Editar subida</h2><button type="button" className="icon-button" aria-label="Cerrar editor" disabled={busy} onClick={() => setEditing(undefined)}><X size={18} /></button></div>
@@ -155,6 +173,9 @@ export function Studio({ uploads, onPlay, onUpdate, onRetryPreview, onLoadBeatLi
         <label className="short-upload-field">Tags<input defaultValue={editing.tags.map(tag => tag.label).join(", ")} onChange={event => setEditing({ ...editing, tags: event.target.value.split(",").map(label => ({ label: label.trim() })).filter(tag => tag.label) })} /></label>
         <label className="short-upload-field">Estado<select value={editing.publicationStatus} onChange={event => setEditing({ ...editing, publicationStatus: event.target.value as CatalogStatus })}>{Object.entries(uploadStatusLabels).map(([value, label]) => <option key={value} value={value} disabled={value === "published" || value === "rejected"}>{label}</option>)}</select></label>
         {error && <p className="upload-error" role="alert">{error}</p>}
+        {onDelete && <div className="creator-delete-entry">
+          {confirmDelete ? <><p>¿Eliminar esta publicación del catálogo? El audio original se conserva en el almacenamiento privado.</p><button type="button" className="button ghost" disabled={busy} onClick={() => setConfirmDelete(false)}>Conservar publicación</button><button type="button" className="button" disabled={busy} onClick={() => void removeCatalogEntry()}>Confirmar eliminación</button></> : <button type="button" className="button ghost" disabled={busy} onClick={() => setConfirmDelete(true)}>Eliminar publicación</button>}
+        </div>}
         <div className="modal-actions"><button type="button" className="button ghost" disabled={busy} onClick={() => setEditing(undefined)}>Cancelar</button><button className="button" disabled={busy || !editing.name.trim()}><Check size={16} /> {busy ? "Guardando..." : "Guardar"}</button></div>
       </form>
     </dialog>}

@@ -24,7 +24,7 @@ export type ServerConfig = {
   database: { url: string | undefined; maxConnections: number; idleTimeoutMs: number; connectionTimeoutMs: number }
   demo: { enabled: boolean; email: string; password: string | undefined }
   devAuthTokens: boolean
-  stripe: { secretKey: string | undefined; webhookSecret: string | undefined; publicUrl: string; enabled: boolean; paymentsEnabled: boolean; commissionBps: number; processingRateBps?: number; processingFixedMinor: number }
+  mercadoPago: { clientId?: string; clientSecret?: string; webhookSecret?: string; tokenEncryptionKey?: string; publicUrl: string; enabled: boolean; paymentsEnabled: boolean; marketplaceFeeBps?: number; usdMxnRate?: number }
 }
 
 const bool = (value: string | undefined, fallback: boolean): boolean => value === undefined ? fallback : value.toLowerCase() === 'true'
@@ -50,18 +50,21 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServerConfig =
   const password = env.BEATVAULT_DEMO_PASSWORD
   if (demoEnabled && password !== undefined && password.length < 12) throw new Error('BEATVAULT_DEMO_PASSWORD debe contener al menos 12 caracteres.')
   const databaseUrl = env.DATABASE_URL || env.BEATVAULT_DATABASE_URL
-  const stripeSecretKey = env.STRIPE_SECRET_KEY?.trim() || undefined
-  const stripeWebhookSecret = env.STRIPE_WEBHOOK_SECRET?.trim() || undefined
-  const stripeProcessingRateBps = env.STRIPE_PROCESSING_RATE_BPS === undefined || env.STRIPE_PROCESSING_RATE_BPS === '' ? undefined : Number(env.STRIPE_PROCESSING_RATE_BPS)
-  const stripeProcessingFixedMinor = env.STRIPE_PROCESSING_FIXED_MINOR === undefined || env.STRIPE_PROCESSING_FIXED_MINOR === '' ? 0 : Number(env.STRIPE_PROCESSING_FIXED_MINOR)
-  const stripeCommissionBps = env.STRIPE_PLATFORM_COMMISSION_BPS === undefined || env.STRIPE_PLATFORM_COMMISSION_BPS === '' ? 500 : Number(env.STRIPE_PLATFORM_COMMISSION_BPS)
-  if (stripeSecretKey && !stripeSecretKey.startsWith('sk_test_') && !stripeSecretKey.startsWith('rk_test_')) throw new Error('La primera integración de Stripe solo acepta claves de prueba sk_test_ o rk_test_.')
-  if (stripeWebhookSecret && !stripeWebhookSecret.startsWith('whsec_')) throw new Error('STRIPE_WEBHOOK_SECRET debe ser un secreto de firma whsec_.')
-  if (Boolean(stripeSecretKey) !== Boolean(stripeWebhookSecret)) throw new Error('Stripe Connect requiere STRIPE_SECRET_KEY de prueba y STRIPE_WEBHOOK_SECRET configurados juntos.')
-  if (!Number.isSafeInteger(stripeCommissionBps) || stripeCommissionBps < 0 || stripeCommissionBps >= 10_000) throw new Error('STRIPE_PLATFORM_COMMISSION_BPS debe ser un entero de 0 a 9999.')
-  if (stripeProcessingRateBps !== undefined && (!Number.isSafeInteger(stripeProcessingRateBps) || stripeProcessingRateBps < 0 || stripeProcessingRateBps >= 10_000)) throw new Error('STRIPE_PROCESSING_RATE_BPS debe ser un entero de 0 a 9999.')
-  if (!Number.isSafeInteger(stripeProcessingFixedMinor) || stripeProcessingFixedMinor < 0) throw new Error('STRIPE_PROCESSING_FIXED_MINOR debe ser un entero no negativo.')
-  if (environment === 'production' && stripeSecretKey) throw new Error('Stripe Connect permanece en modo de pruebas y no puede configurarse en producción.')
+  const mercadoPagoClientId = env.MERCADOPAGO_CLIENT_ID?.trim() || undefined
+  const mercadoPagoClientSecret = env.MERCADOPAGO_CLIENT_SECRET?.trim() || undefined
+  const mercadoPagoWebhookSecret = env.MERCADOPAGO_WEBHOOK_SECRET?.trim() || undefined
+  const mercadoPagoTokenEncryptionKey = env.BEATVAULT_MP_TOKEN_ENCRYPTION_KEY?.trim() || undefined
+  const mercadoPagoRateValue = env.BEATVAULT_MP_USD_MXN_RATE?.trim() || undefined
+  const mercadoPagoFeeValue = env.BEATVAULT_MP_MARKETPLACE_FEE_BPS?.trim() || undefined
+  const mercadoPagoUsdMxnRate = mercadoPagoRateValue === undefined ? undefined : Number(mercadoPagoRateValue)
+  const mercadoPagoMarketplaceFeeBps = mercadoPagoFeeValue === undefined ? undefined : Number(mercadoPagoFeeValue)
+  const mpCredentials = [mercadoPagoClientId, mercadoPagoClientSecret, mercadoPagoWebhookSecret, mercadoPagoTokenEncryptionKey]
+  if (mpCredentials.some(Boolean) && mpCredentials.some(value => !value)) throw new Error('Configura juntos MERCADOPAGO_CLIENT_ID, MERCADOPAGO_CLIENT_SECRET, MERCADOPAGO_WEBHOOK_SECRET y BEATVAULT_MP_TOKEN_ENCRYPTION_KEY.')
+  if (mercadoPagoTokenEncryptionKey && (Buffer.from(mercadoPagoTokenEncryptionKey, 'base64').length !== 32 || Buffer.from(mercadoPagoTokenEncryptionKey, 'base64').toString('base64').replace(/=+$/, '') !== mercadoPagoTokenEncryptionKey.replace(/=+$/, ''))) throw new Error('BEATVAULT_MP_TOKEN_ENCRYPTION_KEY debe ser base64 válido de 32 bytes.')
+  if (mercadoPagoWebhookSecret && mercadoPagoWebhookSecret.length < 32) throw new Error('MERCADOPAGO_WEBHOOK_SECRET debe tener al menos 32 caracteres.')
+  if (mercadoPagoMarketplaceFeeBps !== undefined && (!Number.isSafeInteger(mercadoPagoMarketplaceFeeBps) || mercadoPagoMarketplaceFeeBps < 0 || mercadoPagoMarketplaceFeeBps >= 10_000)) throw new Error('BEATVAULT_MP_MARKETPLACE_FEE_BPS debe ser un entero de 0 a 9999.')
+  if (mercadoPagoUsdMxnRate !== undefined && (!Number.isFinite(mercadoPagoUsdMxnRate) || mercadoPagoUsdMxnRate < 5 || mercadoPagoUsdMxnRate > 100 || !/^(?:[5-9]|[1-9]\d|100)(?:\.\d{1,6})?$/.test(mercadoPagoRateValue!))) throw new Error('BEATVAULT_MP_USD_MXN_RATE debe ser una tasa decimal entre 5 y 100 con hasta 6 decimales.')
+  if (environment === 'production' && (mercadoPagoClientId || mercadoPagoClientSecret)) throw new Error('Mercado Pago Marketplace permanece en modo local/de pruebas y no puede habilitarse en producción.')
   const publicUrl = env.BEATVAULT_PUBLIC_URL || (environment === 'production' ? origins[0] : 'http://localhost:5188')
   if (environment === 'production') {
     const httpsOrigins = origins.every(origin => {
@@ -78,6 +81,8 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServerConfig =
     const parsed = new URL(publicUrl)
     if (parsed.origin !== publicUrl.replace(/\/$/, '') || (environment === 'production' && parsed.protocol !== 'https:')) throw new Error()
   } catch { throw new Error('BEATVAULT_PUBLIC_URL debe ser una URL de origen válida y usar HTTPS en producción.') }
+  const publicUrlParsed = new URL(publicUrl)
+  const mercadoPagoPublicCallbackReady = publicUrlParsed.protocol === 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(publicUrlParsed.hostname) && !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(publicUrlParsed.hostname)
   return {
     environment, host: env.BEATVAULT_HOST || '127.0.0.1', port: positive('BEATVAULT_PORT', env.BEATVAULT_PORT, 4174),
     corsOrigins: origins, trustProxyHeaders, cookie: { secure, sameSite: sameSite as CookieSameSite },
@@ -100,7 +105,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServerConfig =
     database: { url: databaseUrl, maxConnections: positive('BEATVAULT_DB_MAX_CONNECTIONS', env.BEATVAULT_DB_MAX_CONNECTIONS, 10), idleTimeoutMs: positive('BEATVAULT_DB_IDLE_TIMEOUT_MS', env.BEATVAULT_DB_IDLE_TIMEOUT_MS, 10000), connectionTimeoutMs: positive('BEATVAULT_DB_CONNECTION_TIMEOUT_MS', env.BEATVAULT_DB_CONNECTION_TIMEOUT_MS, 5000) },
     demo: { enabled: demoEnabled, email: (env.BEATVAULT_DEMO_EMAIL || 'demo@beatvault.local').trim().toLowerCase(), password },
     devAuthTokens: environment !== 'production' && bool(env.BEATVAULT_DEV_AUTH_TOKENS, false),
-    stripe: { secretKey: stripeSecretKey, webhookSecret: stripeWebhookSecret, publicUrl: publicUrl.replace(/\/$/, ''), enabled: Boolean(stripeSecretKey && stripeWebhookSecret), paymentsEnabled: Boolean(stripeSecretKey && stripeWebhookSecret && stripeProcessingRateBps !== undefined), commissionBps: stripeCommissionBps, processingRateBps: stripeProcessingRateBps, processingFixedMinor: stripeProcessingFixedMinor }
+    mercadoPago: { clientId: mercadoPagoClientId, clientSecret: mercadoPagoClientSecret, webhookSecret: mercadoPagoWebhookSecret, tokenEncryptionKey: mercadoPagoTokenEncryptionKey, publicUrl: publicUrl.replace(/\/$/, ''), enabled: Boolean(mercadoPagoClientId && mercadoPagoClientSecret && mercadoPagoWebhookSecret && mercadoPagoTokenEncryptionKey && mercadoPagoPublicCallbackReady), paymentsEnabled: Boolean(mercadoPagoClientId && mercadoPagoClientSecret && mercadoPagoWebhookSecret && mercadoPagoTokenEncryptionKey && mercadoPagoMarketplaceFeeBps !== undefined && mercadoPagoUsdMxnRate !== undefined && mercadoPagoPublicCallbackReady), marketplaceFeeBps: mercadoPagoMarketplaceFeeBps, usdMxnRate: mercadoPagoUsdMxnRate }
   }
 }
 

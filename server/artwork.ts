@@ -4,6 +4,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { inflateSync } from 'node:zlib'
 import { config } from './config'
+import { normalizeImageUpload } from './image-upload'
 
 export const maxArtworkBytes = 10 * 1024 * 1024
 export const artworkThumbnailMaxBytes = 512 * 1024
@@ -16,6 +17,12 @@ const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
 
 export type ArtworkFormat = { mimeType: 'image/jpeg' | 'image/png'; extension: 'jpg' | 'png'; width: number; height: number }
 export type ArtworkRecord = ArtworkFormat & { assetId: string; ownerId: string; storageKey: string; sizeBytes: number; thumbnailStorageKey?: string; thumbnailSizeBytes?: number; updatedAt: string }
+
+export async function normalizeArtworkUpload(bytes: Buffer, mimeType: string | undefined): Promise<{ bytes: Buffer; format: ArtworkFormat }> {
+  const normalized = await normalizeImageUpload(bytes, mimeType, { maxBytes: maxArtworkBytes, minSide: minArtworkSide, maxSide: maxArtworkSide, square: true })
+  const format: ArtworkFormat = { mimeType: normalized.mimeType, extension: normalized.mimeType === 'image/png' ? 'png' : 'jpg', width: normalized.width, height: normalized.height }
+  return { bytes: normalized.bytes, format }
+}
 
 function jpegDimensions(bytes: Buffer): { width: number; height: number } | undefined {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined

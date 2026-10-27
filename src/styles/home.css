@@ -57,6 +57,10 @@
 .home-report-form label { display: grid; flex: 1 1 150px; gap: 5px; color: var(--text-muted); font-size: 11px; }
 .home-report-form .button { min-height: 36px; }
 .home-feed-status { margin: 8px 0; color: var(--text-muted); font-size: 12px; }
+.home-new-posts { display: inline-flex; align-items: center; justify-self: center; gap: 8px; min-height: 36px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: 18px; background: var(--primary-soft); color: var(--text); font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; }
+.home-new-posts:hover { border-color: var(--primary); color: var(--primary); }
+.home-new-posts:disabled { cursor: wait; opacity: .7; }
+.home-new-posts .is-spinning { animation: home-composer-spin 1s linear infinite; }
 .home-load-more { display: flex; justify-content: center; width: 100%; margin: 10px 0 20px; }
 .home-composer-error { margin: 8px 0 0; color: var(--danger); font-size: 10px; line-height: 1.45; }
 .home-composer-preview { position: relative; margin: 12px 0 0 46px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elevated); }

@@ -122,5 +122,6 @@ export function validateBeatListingInput(value: unknown): BeatListingInput {
     offers,
   }
   if (!isBeatListingInput(input)) throw new ValidationError('listing', 'Revisa los campos, porcentajes individuales, créditos, samples y formatos de las ofertas preliminares.')
+  if (input.offers.some(offer => offer.deliverables.includes('stems'))) throw new ValidationError('listing', 'Los stems quedan fuera de esta versión. Selecciona MP3 o WAV.')
   return input
 }

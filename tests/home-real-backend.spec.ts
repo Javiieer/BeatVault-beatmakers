@@ -61,6 +61,9 @@ test('Home public posts, private visibility and social interactions persist on t
   let first: Account | undefined;
   let publicBody = '';
   let privateBody = '';
+  let liveBody = '';
+  let storyBody: string;
+  let storyId = '';
 
   try {
     first = await createAccount(firstApi, 'author');
@@ -108,10 +111,12 @@ test('Home public posts, private visibility and social interactions persist on t
     const privatePostId = ((await privateResponse.json()).data as { id: string }).id;
     await expect(authorPage.locator('.home-post').filter({ hasText: privateBody })).toContainText('Solo yo');
 
+    const feedEventResponse = viewerPage.waitForResponse(response => response.url().endsWith('/api/feed/events') && response.status() === 200);
     await viewerPage.goto('/#/home');
+    await feedEventResponse;
     const composerTools = await viewerPage.locator('.home-composer-tools').boundingBox();
     const composerActions = await viewerPage.locator('.home-composer-submit-row').boundingBox();
-    const audienceControl = await viewerPage.locator('.home-audience-control').boundingBox();
+    const audienceControl = await viewerPage.locator('.home-composer .home-audience-control').boundingBox();
     const publishButton = await viewerPage.getByRole('button', { name: 'Publicar', exact: true }).boundingBox();
     expect(composerTools && composerActions && audienceControl && publishButton).toBeTruthy();
     expect(composerTools!.y + composerTools!.height).toBeLessThanOrEqual(composerActions!.y);
@@ -119,6 +124,41 @@ test('Home public posts, private visibility and social interactions persist on t
     const viewerPublicPost = viewerPage.locator('.home-post').filter({ hasText: publicBody });
     await expect(viewerPublicPost).toBeVisible({ timeout: 15_000 });
     await expect(viewerPage.getByText(privateBody, { exact: false })).toHaveCount(0);
+
+    liveBody = 'A new public post arrives live';
+    await authorPage.getByRole('button', { name: 'Privacidad de la publicación: Solo yo' }).click();
+    await authorPage.getByRole('button', { name: 'Público' }).click();
+    await authorPage.getByLabel('¿Qué estás creando hoy?').fill(liveBody);
+    const livePostResponse = authorPage.waitForResponse(response => response.url().endsWith('/api/posts') && response.request().method() === 'POST');
+    await authorPage.getByRole('button', { name: 'Publicar', exact: true }).click();
+    expect((await livePostResponse).status()).toBe(201);
+    const newPostsPrompt = viewerPage.getByRole('button', { name: 'Hay publicaciones nuevas · Ver ahora' });
+    await expect(newPostsPrompt).toBeVisible({ timeout: 10_000 });
+    await newPostsPrompt.click();
+    await expect(viewerPage.locator('.home-post').filter({ hasText: liveBody })).toBeVisible();
+
+    storyBody = 'A vertical story from the studio';
+    await authorPage.getByRole('button', { name: 'Crear historia' }).click();
+    const storyDialog = authorPage.getByRole('dialog', { name: 'Crear historia' });
+    const storyFileChooser = authorPage.waitForEvent('filechooser');
+    await storyDialog.getByRole('button', { name: 'Foto' }).click();
+    await (await storyFileChooser).setFiles('server/fixtures/beat-upload-cover.jpg');
+    await storyDialog.getByLabel('Texto de la historia').fill(storyBody);
+    await storyDialog.getByRole('button', { name: 'Privacidad de la historia: Solo yo' }).click();
+    await storyDialog.getByRole('button', { name: 'Público' }).click();
+    const storyResponse = authorPage.waitForResponse(response => response.url().endsWith('/api/stories') && response.request().method() === 'POST');
+    await storyDialog.getByRole('button', { name: 'Compartir historia' }).click();
+    const createdStoryResponse = await storyResponse;
+    expect(createdStoryResponse.status()).toBe(201);
+    storyId = ((await createdStoryResponse.json()).data as { id: string }).id;
+    await expect(authorPage.getByRole('button', { name: 'Ver historia de Home QA author' })).toBeVisible();
+    const viewerStory = viewerPage.getByRole('button', { name: 'Ver historia de Home QA author' });
+    await expect(viewerStory).toBeVisible({ timeout: 10_000 });
+    await viewerStory.click();
+    await expect(viewerPage.getByRole('dialog', { name: 'Historias' })).toContainText(storyBody);
+    await expect(viewerPage.locator('.home-post').filter({ hasText: storyBody })).toHaveCount(0);
+    await viewerPage.screenshot({ path: 'artifacts/user-preview/home-mobile-story-viewer.png', fullPage: true });
+    await viewerPage.getByRole('button', { name: 'Cerrar historias' }).click();
 
     const outsiderFeed = await secondApi.get('/api/feed');
     expect(outsiderFeed.status()).toBe(200);
@@ -190,10 +230,11 @@ test('Home public posts, private visibility and social interactions persist on t
     await expect(authorPage.locator('.producer-post').filter({ hasText: privateBody })).toBeVisible();
   } finally {
     if (first) {
+      if (storyId) await firstApi.delete(`/api/stories/${storyId}`, { headers: { 'x-csrf-token': first.csrf } }).catch(() => undefined);
       const ownPosts = await firstApi.get(`/api/profiles/${first.id}/posts`).catch(() => undefined);
       if (ownPosts?.ok()) {
         const posts = ((await ownPosts.json()).data as { posts: Array<{ id: string; body: string }> }).posts;
-        for (const post of posts.filter(item => item.body === publicBody || item.body === privateBody)) {
+        for (const post of posts.filter(item => item.body === publicBody || item.body === privateBody || item.body === liveBody)) {
           await firstApi.delete(`/api/posts/${post.id}`, { headers: { 'x-csrf-token': first.csrf } }).catch(() => undefined);
         }
       }

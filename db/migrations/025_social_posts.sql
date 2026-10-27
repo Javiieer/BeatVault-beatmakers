@@ -35,16 +35,20 @@ CREATE TABLE IF NOT EXISTS social_post_reports (
 CREATE INDEX IF NOT EXISTS social_post_reports_queue_idx ON social_post_reports (created_at DESC) WHERE status = 'open';
 
 CREATE OR REPLACE FUNCTION enforce_social_post_media_quota() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE owner_key TEXT;
-DECLARE used_bytes BIGINT;
+DECLARE
+  owner_key TEXT;
+  used_bytes BIGINT;
 BEGIN
-  owner_key := COALESCE(NEW.author_id, OLD.author_id);
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+  owner_key := NEW.author_id;
   PERFORM pg_advisory_xact_lock(hashtext(owner_key));
-  SELECT COALESCE(SUM(media_size_bytes), 0) INTO used_bytes FROM social_posts WHERE author_id = owner_key AND id <> COALESCE(NEW.id, OLD.id);
-  IF TG_OP <> 'DELETE' AND COALESCE(NEW.media_size_bytes, 0) + used_bytes > 536870912 THEN
+  SELECT COALESCE(SUM(media_size_bytes), 0) INTO used_bytes FROM social_posts WHERE author_id = owner_key AND id <> NEW.id;
+  IF COALESCE(NEW.media_size_bytes, 0) + used_bytes > 536870912 THEN
     RAISE EXCEPTION 'SOCIAL_MEDIA_QUOTA_EXCEEDED' USING ERRCODE = '23514';
   END IF;
-  RETURN COALESCE(NEW, OLD);
+  RETURN NEW;
 END;
 $$;
 DROP TRIGGER IF EXISTS social_posts_media_quota ON social_posts;

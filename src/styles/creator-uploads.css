@@ -89,3 +89,9 @@
 .seller-evidence-item a { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 .seller-admin-review-status { margin: 7px 0 0; color: var(--success); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .seller-admin-review-status.stale { color: var(--amber); }
+.creator-delete-entry { display: flex; flex-wrap: wrap; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
+.creator-delete-entry p { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 13px; }
+.creator-upload-fields .dropzone.is-dragging { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, var(--card)); }
+.creator-upload-fields .dropzone:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.upload-queue .check { flex-wrap: wrap; }
+.upload-queue .check input { min-width: 0; width: min(100%, 14rem); max-width: 100%; }

@@ -86,7 +86,7 @@ export class StripeConnectService {
       }
     } else if (eventType === 'v2.core.account.closed' || eventType === 'account.application.deauthorized') {
       const object = event.data.object as { id?: string }
-      const stripeAccountId = object.id || event.account || undefined
+      const stripeAccountId = eventType === 'account.application.deauthorized' ? event.account || undefined : object.id || event.account || undefined
       const record = stripeAccountId ? await this.repository.findStripeConnectAccountByStripeId(stripeAccountId) : undefined
       if (record) await this.repository.saveStripeConnectAccount({ ...record, chargesEnabled: false, payoutsEnabled: false, detailsSubmitted: false, deauthorized: true, updatedAt: new Date().toISOString() })
     } else return 'ignored'

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { PostgresRepository, type SqlClient } from './postgres'
 import { emptyProfile } from '../src/domains/profile'
 import type { NotificationRecord } from './notifications'
@@ -39,7 +40,7 @@ describe('PostgresRepository', () => {
     expect(query).toHaveBeenCalledWith(expect.stringContaining('ON CONFLICT (content_id)'), [record.contentId, record.ownerId, JSON.stringify(record), record.createdAt])
     expect(await repo.findBeatListingDraft(record.contentId, record.ownerId)).toEqual(record)
     expect(query).toHaveBeenLastCalledWith(expect.stringContaining('WHERE content_id = $1 AND owner_id = $2'), [record.contentId, record.ownerId])
-    query.mockResolvedValueOnce({ rows: [] })
+    query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] })
     await expect(repo.saveBeatListingDraft(record)).rejects.toThrow('LISTING_NOT_FOUND')
   })
   it('stores profile metadata separately and uses the account column as identity', async () => {
@@ -127,6 +128,40 @@ describe('PostgresRepository', () => {
     query.mockResolvedValueOnce({ rows: [{ id: report.id, post_id: row.id, reporter_id: report.reporterId, reason: report.reason, details: report.details, status: 'reviewed', created_at: createdAt, reviewed_at: createdAt, reviewed_by: 'staff' }] })
     expect(await repo.reviewSocialPostReport(report.id, 'reviewed', 'staff')).toMatchObject({ status: 'reviewed', reviewedBy: 'staff' })
     expect(query).toHaveBeenLastCalledWith(expect.stringContaining("status = 'open'"), ['reviewed', 'staff', report.id])
+  })
+  it('rolls back a report decision when its audit insert fails', async () => {
+    const createdAt = '2026-10-14T10:00:00.000Z'
+    const reportId = '057d8889-83a8-42c2-89d6-da4a613ae674'
+    const calls: string[] = []
+    const connection = {
+      query: vi.fn(async (sql: string) => {
+        calls.push(sql)
+        if (sql.startsWith('UPDATE social_post_reports')) return { rows: [{ id: reportId, post_id: 'd276ad36-9d07-4d17-97e6-075ab8a81a0e', reporter_id: 'reporter', reason: 'spam', details: 'spam', status: 'reviewed', created_at: createdAt, reviewed_at: createdAt, reviewed_by: 'staff' }] }
+        if (sql.startsWith('INSERT INTO audit_events')) throw new Error('AUDIT_DISK_FAILURE')
+        return { rows: [] }
+      }),
+      release: vi.fn(),
+    }
+    const pool = { query: vi.fn(), connect: async () => connection }
+    const repo = new PostgresRepository(pool as unknown as SqlClient)
+    const event = { id: randomUUID(), timestamp: createdAt, action: 'update' as const, requestId: randomUUID(), actorId: 'staff', success: true, metadata: { resource: 'social-post-report-review', reportId, decision: 'reviewed' } }
+    await expect(repo.reviewSocialPostReportWithAudit(reportId, 'reviewed', 'staff', event)).rejects.toThrow('AUDIT_DISK_FAILURE')
+    expect(calls).toContain('BEGIN')
+    expect(calls.some(sql => sql.startsWith('UPDATE social_post_reports'))).toBe(true)
+    expect(calls.some(sql => sql.startsWith('INSERT INTO audit_events'))).toBe(true)
+    expect(calls).toContain('ROLLBACK')
+    expect(calls).not.toContain('COMMIT')
+    expect(connection.release).toHaveBeenCalledOnce()
+  })
+  it('rolls back a block mutation when its audit insert fails', async () => {
+    const calls: string[] = []
+    const connection = { query: vi.fn(async (sql: string) => { calls.push(sql); if (sql.startsWith('INSERT INTO audit_events')) throw new Error('AUDIT_DISK_FAILURE'); return { rows: [] } }), release: vi.fn() }
+    const repo = new PostgresRepository({ query: vi.fn(), connect: async () => connection } as unknown as SqlClient)
+    const event = { id: randomUUID(), timestamp: new Date().toISOString(), action: 'create' as const, requestId: randomUUID(), actorId: 'blocker', targetId: 'blocked', success: true, metadata: { resource: 'social-account-block' } }
+    await expect(repo.createSocialAccountBlockWithAudit({ blockerId: 'blocker', blockedId: 'blocked', createdAt: event.timestamp }, event)).rejects.toThrow('AUDIT_DISK_FAILURE')
+    expect(calls.some(sql => sql.startsWith('INSERT INTO social_account_blocks'))).toBe(true)
+    expect(calls).toContain('ROLLBACK')
+    expect(calls).not.toContain('COMMIT')
   })
   it('persists social post comments and atomically toggles a unique account reaction', async () => {
     const postId = 'd276ad36-9d07-4d17-97e6-075ab8a81a0e'

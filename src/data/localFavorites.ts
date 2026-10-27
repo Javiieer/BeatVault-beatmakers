@@ -1,9 +1,11 @@
+import { scopedKey } from './storageScope';
+
 const favoritesKey = "beatvault:library-favorites";
 
-export function readFavoriteIds() {
+export function readFavoriteIds(scope?: string) {
   try {
     if (typeof localStorage === "undefined") return null;
-    const raw = localStorage.getItem(favoritesKey);
+    const raw = localStorage.getItem(scopedKey(favoritesKey, scope));
     if (raw === null) return null;
     const value: unknown = JSON.parse(raw);
     return new Set(
@@ -16,10 +18,10 @@ export function readFavoriteIds() {
   }
 }
 
-export function writeFavoriteIds(ids: Set<string>) {
+export function writeFavoriteIds(ids: Set<string>, scope?: string) {
   try {
     if (typeof localStorage === "undefined") return false;
-    localStorage.setItem(favoritesKey, JSON.stringify([...ids]));
+    localStorage.setItem(scopedKey(favoritesKey, scope), JSON.stringify([...ids]));
     return true;
   } catch {
     /* Favorites remain available for this session. */

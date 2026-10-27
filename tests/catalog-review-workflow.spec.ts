@@ -113,7 +113,7 @@ test('processed Beats move through CM approval, CM rejection and independent adm
     await managerPage.setViewportSize({ width: 1440, height: 900 })
     await managerPage.goto('/#/community-review')
     await expect(managerPage.getByRole('heading', { name: 'Marketplace review' })).toBeVisible()
-    await expect(managerPage.getByRole('heading', { name: 'Beat upload approvals' })).toBeVisible()
+    await expect(managerPage.getByRole('heading', { name: 'Beat and One-shot approvals' })).toBeVisible()
 
     const managerRow = managerPage.locator('.upload-review-row').filter({ hasText: approvedByManager.title })
     await expect(managerRow).toBeVisible()
@@ -127,7 +127,7 @@ test('processed Beats move through CM approval, CM rejection and independent adm
     const rejectRow = managerPage.locator('.upload-review-row').filter({ hasText: rejectedByManager.title })
     await expect(rejectRow).toBeVisible()
     await rejectRow.getByLabel('Review note').fill('Please remove clipping from the master.')
-    await rejectRow.getByRole('button', { name: 'Reject Beat' }).click()
+    await rejectRow.getByRole('button', { name: 'Reject audio' }).click()
     await expect(rejectRow).toHaveCount(0)
 
     const managerDecision = await managerApi.post(`/api/staff/catalog-review/${approvedByManager.contentId}`, {

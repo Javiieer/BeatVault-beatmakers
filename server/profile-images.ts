@@ -6,11 +6,17 @@ import type { ProfileImageFocalPoint, ProfileImageKind, ProfileImageRecord } fro
 import { artworkPath, validateProfileImage } from './artwork'
 import { config } from './config'
 import { HttpInputError } from './http'
+import { normalizeImageUpload } from './image-upload'
 
 export const profileImageMaxBytes = 8 * 1024 * 1024
 export const profileImageMaxAccountBytes = 15 * 1024 * 1024
 const profileImageMaxThumbnailBytes = 700 * 1024
 const profileImageMaxDecodeMs = 20_000
+
+export async function normalizeProfileImageUpload(bytes: Buffer, mimeType: string | undefined) {
+  const normalized = await normalizeImageUpload(bytes, mimeType, { maxBytes: profileImageMaxBytes, minSide: 256, maxSide: 8000 })
+  return { bytes: normalized.bytes, mimeType: normalized.mimeType }
+}
 
 export function validateProfileImageUpload(bytes: Buffer, mimeType: string | undefined) {
   if (bytes.length === 0 || bytes.length > profileImageMaxBytes) throw new HttpInputError(413, 'PROFILE_IMAGE_TOO_LARGE', 'La imagen debe pesar como maximo 8 MB.')

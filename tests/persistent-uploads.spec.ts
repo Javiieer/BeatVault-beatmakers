@@ -34,13 +34,18 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await page.getByLabel('Tags', { exact: true }).fill('trap, private');
     await page.locator('#upload-artwork').setInputFiles({ name: 'cover.jpg', mimeType: 'image/jpeg', buffer: artwork });
     // Lose the response after the server commits: retry must not duplicate the file or record.
+    let recordCommitted!: () => void;
+    const committedCatalog = new Promise<void>(resolve => { recordCommitted = resolve; });
     await page.route('**/api/catalog', async route => {
       if (route.request().method() !== 'POST') return route.continue();
       const response = await route.fetch();
       expect(response.status()).toBe(201);
+      recordCommitted();
       await route.abort('connectionreset');
     });
+    const lostCatalogResponse = page.waitForEvent('requestfailed', request => new URL(request.url()).pathname === '/api/catalog' && request.method() === 'POST');
     await page.getByRole('button', { name: 'Enviar a revision' }).click();
+    await Promise.all([lostCatalogResponse, committedCatalog]);
     await expect(page.getByRole('alert')).toContainText('no se guardo');
     await page.unroute('**/api/catalog');
     await page.reload();

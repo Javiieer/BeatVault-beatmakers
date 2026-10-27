@@ -27,7 +27,7 @@ describe('CatalogUploadReview', () => {
 
   it('lets a Community Manager reject a Beat with a review note', async () => {
     render(<CatalogUploadReview />)
-    const reject = await screen.findByRole('button', { name: 'Reject Beat' })
+    const reject = await screen.findByRole('button', { name: 'Reject audio' })
     fireEvent.change(screen.getByLabelText('Review note'), { target: { value: 'The preview contains clipping.' } })
     fireEvent.click(reject)
     await waitFor(() => expect(mocks.decide).toHaveBeenCalledWith('beat-1', 'reject', 'The preview contains clipping.'))

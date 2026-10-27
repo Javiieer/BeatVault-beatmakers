@@ -77,6 +77,9 @@ const query = (limit: number, cursor?: string) => {
 export const readSocialFeed = (limit = 30, cursor?: string) =>
   authClient.request(`/api/feed?${query(limit, cursor)}`, { method: 'GET' }, isPage);
 
+export const readSocialPost = (postId: string) =>
+  authClient.request(`/api/posts/${encodeURIComponent(postId)}`, { method: 'GET' }, isPost);
+
 export const readSocialAccountState = () => authClient.request('/api/account/social-state', { method: 'GET' }, isSocialAccountState);
 export const setSocialFollow = (accountId: string, following: boolean) => authClient.request(`/api/follows/${encodeURIComponent(accountId)}`, { method: following ? 'PUT' : 'DELETE', body: JSON.stringify({}) }, isFollowing);
 export const setSocialPostBookmark = (postId: string, bookmarked: boolean) => authClient.request(`/api/posts/${encodeURIComponent(postId)}/bookmark`, { method: bookmarked ? 'PUT' : 'DELETE', body: JSON.stringify({}) }, isBookmarked);
@@ -90,7 +93,7 @@ export const createSocialPost = (input: { kind: SocialPostKind; body: string; au
   form.append('file', input.file, input.file.name);
   form.append('body', input.body);
   form.append('audience', input.audience);
-  return authClient.request('/api/posts', { method: 'POST', body: form, headers: { 'X-Social-Post-Kind': input.kind } }, isPost);
+  return authClient.request('/api/posts', { method: 'POST', body: form, headers: { 'X-Social-Post-Kind': input.kind } }, isPost, 120000);
 };
 
 export const deleteSocialPost = (postId: string) => authClient.request(`/api/posts/${encodeURIComponent(postId)}`, { method: 'DELETE', body: JSON.stringify({}) }, isDeleted);

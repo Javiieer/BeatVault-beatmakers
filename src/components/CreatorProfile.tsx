@@ -16,8 +16,11 @@ import { Globe2, Bell, Shield, UserRound, Palette, Languages } from 'lucide-reac
 import { toRgb } from '../app/theme';
 import { tx } from '../i18n';
 import { exchangeRate, type ExchangeRates } from '../domains/marketplace/currency';
-import { createBeatCheckout } from '../data/beatPurchases';
+import { useBeatCheckout } from '../data/useBeatCheckout';
+import { clearProfileDraft, readProfileDraft, writeProfileDraft } from '../data/profileDraft';
+import { imageUploadAccept, imageUploadMime } from '../domains/media/imageFormats';
 import { createSocialPostComment, deleteSocialPost, readProfileSocialPosts, readSocialPostInteractions, reportSocialPost, toggleSocialPostReaction, type SocialPostInteraction, type SocialPostReportReason } from '../data/socialPostRepository';
+import { readBlockedAccountIds, setAccountBlocked } from '../data/socialStoryRepository';
 
 const artwork = (id: string) => uploadCovers.find(cover => cover.id === id)?.url || uploadCovers[2].url;
 type CreatorPost = { id: string; kind: 'status' | 'photo' | 'video'; text: string; createdAt: string; mediaUrl?: string; mediaName?: string; localOnly?: boolean; audience?: string; visibility?: string; socialPostId?: string };
@@ -82,10 +85,15 @@ function ProfilePostInteractions({ postId }: { postId: string }) {
     {error && <p className="producer-post-social-error" role="alert">{error}</p>}
   </section>;
 }
-function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; user: AuthUser; onSaved: (profile: CreatorProfile) => void }) {
+function ProfileEditor({ profile, onSaved }: { profile: CreatorProfile; onSaved: (profile: CreatorProfile) => void }) {
   const initial: ProfileInput = useMemo(() => ({ displayName: profile.displayName, bio: profile.bio, location: profile.location, website: profile.website, instagram: profile.instagram, genres: profile.genres, coverId: profile.coverId, avatarId: profile.avatarId, avatarFocalPoint: profile.avatarFocalPoint || defaultAvatarFocalPoint, coverFocalPoint: profile.coverFocalPoint || defaultCoverFocalPoint, publicProfile: profile.publicProfile }), [profile]);
-  const [draft, setDraft] = useState<ProfileInput>(initial);
-  const [genres, setGenres] = useState(initial.genres.join(', '));
+  const recovered = useMemo(() => readProfileDraft(profile.accountId), [profile.accountId]);
+  const restored = recovered?.baseline === JSON.stringify(initial) ? recovered.draft : initial;
+  const [draft, setDraft] = useState<ProfileInput>(restored);
+  const [genres, setGenres] = useState(restored.genres.join(', '));
+  const [draftNotice, setDraftNotice] = useState(Boolean(recovered));
+  const [draftStorageError, setDraftStorageError] = useState(false);
+  const preserveDraftOnRefresh = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
@@ -95,30 +103,57 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
   const [coverPreview, setCoverPreview] = useState('');
   const [imageBusy, setImageBusy] = useState<'' | 'avatar' | 'cover'>('');
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
+  const hasUnsavedChanges = dirty || Boolean(avatarFile || coverFile);
+  const profileChecklist = [
+    { label: 'Foto de perfil', complete: draft.avatarId !== 'initials' },
+    { label: 'Biografía', complete: Boolean(draft.bio.trim()) },
+    { label: 'Géneros', complete: draft.genres.length > 0 },
+    { label: 'Ubicación', complete: Boolean(draft.location.trim()) },
+    { label: 'Enlace externo', complete: Boolean(draft.website.trim() || draft.instagram.trim()) },
+  ];
+  const completedProfileItems = profileChecklist.filter(item => item.complete).length;
   useEffect(() => {
-    setDraft(initial);
-    setGenres(initial.genres.join(', '));
-  }, [initial]);
+    if (preserveDraftOnRefresh.current) {
+      preserveDraftOnRefresh.current = false;
+      setDraft(current => ({ ...current, avatarId: initial.avatarId, coverId: initial.coverId, avatarFocalPoint: initial.avatarFocalPoint, coverFocalPoint: initial.coverFocalPoint }));
+    } else {
+      const next = recovered?.baseline === JSON.stringify(initial) ? recovered.draft : initial;
+      setDraft(next); setGenres(next.genres.join(', '));
+    }
+  }, [initial, recovered]);
+  useEffect(() => {
+    if (hasUnsavedChanges) setDraftStorageError(!writeProfileDraft(profile.accountId, initial, draft, Boolean(avatarFile || coverFile)));
+  }, [draft, initial, hasUnsavedChanges, avatarFile, coverFile, profile.accountId]);
+  useEffect(() => { if (dirty) setSavedMessage(''); }, [dirty]);
   useEffect(() => () => { if (avatarPreview) URL.revokeObjectURL(avatarPreview); if (coverPreview) URL.revokeObjectURL(coverPreview); }, [avatarPreview, coverPreview]);
   useEffect(() => {
-    if (!dirty) return;
+    if (!hasUnsavedChanges) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [dirty]);
-  const cancel = () => { if (!dirty || window.confirm('Descartar los cambios del perfil?')) window.location.hash = '#/profile'; };
+  }, [hasUnsavedChanges]);
+  useEffect(() => {
+    if (!draftStorageError || !hasUnsavedChanges) return;
+    const protect = (event: MouseEvent) => {
+      const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+      if (link && !window.confirm('No se pudo conservar el borrador. ¿Descartar los cambios y salir?')) { event.preventDefault(); event.stopPropagation(); }
+    };
+    document.addEventListener('click', protect, true);
+    return () => document.removeEventListener('click', protect, true);
+  }, [draftStorageError, hasUnsavedChanges]);
+  const cancel = () => { if (!hasUnsavedChanges || window.confirm('Descartar los cambios del perfil?')) { clearProfileDraft(profile.accountId); window.location.hash = '#/profile'; } };
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); if (busy) return;
     setBusy(true); setError('');
     try {
       const result = await saveProfile(draft);
-      if (result.ok) { onSaved(result.data); setSavedMessage('Perfil actualizado.'); }
+      if (result.ok) { clearProfileDraft(profile.accountId); setDraftNotice(false); onSaved(result.data); setSavedMessage('Perfil actualizado.'); }
       else setError(result.error.message);
     } finally { setBusy(false); }
   };
   const chooseImage = (kind: 'avatar' | 'cover', file?: File) => {
     if (!file) return;
-    if (!['image/jpeg', 'image/png'].includes(file.type) || file.size > 8 * 1024 * 1024) { setError('Elige un archivo JPG o PNG de hasta 8 MB.'); return; }
+    if (!imageUploadMime(file) || file.size > 8 * 1024 * 1024) { setError('Elige un archivo JPG, PNG, WebP o AVIF de hasta 8 MB.'); return; }
     setError(''); setSavedMessage('');
     const preview = URL.createObjectURL(file);
     if (kind === 'avatar') { if (avatarPreview) URL.revokeObjectURL(avatarPreview); setAvatarFile(file); setAvatarPreview(preview); }
@@ -132,6 +167,7 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
     const result = await uploadProfileImage(kind, file, focalPoint);
     setImageBusy('');
     if (!result.ok) { setError(result.error.message); return; }
+    preserveDraftOnRefresh.current = dirty;
     onSaved(result.data);
     setDraft(current => ({ ...current, ...(kind === 'avatar' ? { avatarId: 'custom' as const, avatarFocalPoint: focalPoint } : { coverId: 'custom' as const, coverFocalPoint: focalPoint }) }));
     if (kind === 'avatar') { setAvatarFile(undefined); setAvatarPreview(''); }
@@ -141,6 +177,8 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
   const avatarCropSrc = avatarPreview || (draft.avatarId === 'custom' ? profile.avatarUrl : undefined);
   const coverCropSrc = coverPreview || (draft.coverId === 'custom' ? profile.coverUrl : undefined);
   return <div className="producer-settings">
+    {draftNotice && <div className="settings-info profile-draft-recovery" role="status"><span>{recovered?.baseline === JSON.stringify(initial) ? 'Se recuperó tu borrador de perfil de esta sesión.' : 'Hay un borrador anterior; el perfil del servidor cambió.'} {recovered?.pendingImages && 'Vuelve a seleccionar las imágenes pendientes; sus archivos no se guardan en el navegador.'}</span>{recovered?.baseline !== JSON.stringify(initial) && recovered && <button type="button" onClick={() => { setDraft(recovered.draft); setGenres(recovered.draft.genres.join(', ')); }}>Recuperar borrador</button>}<button type="button" onClick={() => { clearProfileDraft(profile.accountId); setDraft(initial); setGenres(initial.genres.join(', ')); setDraftNotice(false); }}>Descartar borrador</button></div>}
+    {draftStorageError && <p role="alert">El navegador no permite conservar el borrador. Guarda los cambios antes de navegar.</p>}
     <header className="producer-settings-heading"><div><p className="eyebrow">Mi cuenta</p><h1>Editar perfil</h1></div><button className="button ghost" onClick={cancel} disabled={busy}><ArrowLeft size={16} />Volver al perfil</button></header>
     <div className="producer-settings-layout">
       <form onSubmit={event => void save(event)}>
@@ -153,19 +191,35 @@ function ProfileEditor({ profile, user, onSaved }: { profile: CreatorProfile; us
           <section><h2>Imagen del perfil</h2><fieldset className="producer-image-picker"><legend>Avatar</legend>
             <button type="button" className="producer-initials-option" aria-label="Avatar con iniciales" aria-pressed={draft.avatarId === 'initials'} onClick={() => { setAvatarFile(undefined); setAvatarPreview(''); setDraft({ ...draft, avatarId: 'initials', avatarFocalPoint: defaultAvatarFocalPoint }); }}>Aa</button>
             {uploadCovers.map(cover => <button key={cover.id} type="button" aria-label={`Avatar ${cover.name}`} aria-pressed={draft.avatarId === cover.id} onClick={() => { setAvatarFile(undefined); setAvatarPreview(''); setDraft({ ...draft, avatarId: cover.id, avatarFocalPoint: defaultAvatarFocalPoint }); }}><img src={cover.url} alt="" /></button>)}
-          </fieldset><div className="profile-image-upload"><label>Subir foto de perfil<input aria-label="Subir foto de perfil" type="file" accept="image/jpeg,image/png" onChange={event => chooseImage('avatar', event.currentTarget.files?.[0])} /><small>JPG o PNG, minimo 256 x 256 px, maximo 8 MB.</small></label><button type="button" className="button ghost" disabled={!avatarFile || Boolean(imageBusy)} onClick={() => void uploadImage('avatar')}><Upload size={15} />{imageBusy === 'avatar' ? 'Procesando...' : 'Guardar foto'}</button></div>
+          </fieldset><div className="profile-image-upload"><label>Subir foto de perfil<input aria-label="Subir foto de perfil" type="file" accept={imageUploadAccept} onChange={event => chooseImage('avatar', event.currentTarget.files?.[0])} /><small>JPG, PNG, WebP o AVIF, minimo 256 x 256 px, maximo 8 MB.</small></label><button type="button" className="button ghost" disabled={!avatarFile || Boolean(imageBusy)} onClick={() => void uploadImage('avatar')}><Upload size={15} />{imageBusy === 'avatar' ? 'Procesando...' : 'Guardar foto'}</button></div>
           {avatarCropSrc && <ImageCropEditor kind="avatar" src={avatarCropSrc} focalPoint={draft.avatarFocalPoint || defaultAvatarFocalPoint} disabled={Boolean(imageBusy)} onChange={avatarFocalPoint => setDraft(current => ({ ...current, avatarFocalPoint }))} />}
           <fieldset className="producer-image-picker producer-cover-picker"><legend>Portada</legend>{profileCovers.map(cover => <button type="button" key={cover.id} aria-label={`Portada ${cover.name}`} aria-pressed={draft.coverId === cover.id} onClick={() => { setCoverFile(undefined); setCoverPreview(''); setDraft({ ...draft, coverId: cover.id, coverFocalPoint: defaultCoverFocalPoint }); }}><img src={cover.url} alt="" /></button>)}</fieldset>
-          <div className="profile-image-upload"><label>Subir portada personalizada<input aria-label="Subir portada personalizada" type="file" accept="image/jpeg,image/png" onChange={event => chooseImage('cover', event.currentTarget.files?.[0])} /><small>JPG o PNG, minimo 256 x 256 px, maximo 8 MB. Se adapta al espacio de portada.</small></label><button type="button" className="button ghost" disabled={!coverFile || Boolean(imageBusy)} onClick={() => void uploadImage('cover')}><Upload size={15} />{imageBusy === 'cover' ? 'Procesando...' : 'Guardar portada'}</button></div>
+          <div className="profile-image-upload"><label>Subir portada personalizada<input aria-label="Subir portada personalizada" type="file" accept={imageUploadAccept} onChange={event => chooseImage('cover', event.currentTarget.files?.[0])} /><small>JPG, PNG, WebP o AVIF, minimo 256 x 256 px, maximo 8 MB. Se adapta al espacio de portada.</small></label><button type="button" className="button ghost" disabled={!coverFile || Boolean(imageBusy)} onClick={() => void uploadImage('cover')}><Upload size={15} />{imageBusy === 'cover' ? 'Procesando...' : 'Guardar portada'}</button></div>
           {coverCropSrc && <ImageCropEditor kind="cover" src={coverCropSrc} focalPoint={draft.coverFocalPoint || defaultCoverFocalPoint} disabled={Boolean(imageBusy)} onChange={coverFocalPoint => setDraft(current => ({ ...current, coverFocalPoint }))} />}</section>
           <section><h2>Enlaces</h2><div className="producer-form-grid"><label>Sitio web<input type="url" maxLength={200} placeholder="https://" value={draft.website} onChange={e => setDraft({ ...draft, website: e.target.value })} /></label><label>Instagram<input maxLength={31} placeholder="@usuario" value={draft.instagram} onChange={e => setDraft({ ...draft, instagram: e.target.value })} /></label></div></section>
           <section><h2>Visibilidad</h2><label className="producer-visibility"><input type="checkbox" checked={draft.publicProfile} onChange={e => setDraft({ ...draft, publicProfile: e.target.checked })} />Perfil publico</label></section>
           {error && <p role="alert" className="form-error">{error}</p>}
-          {savedMessage && <p role="status" className="settings-notice"><Check size={15} />{savedMessage}</p>}
-          <div className="producer-save"><button type="button" className="button ghost" onClick={cancel}>Cancelar</button><button className="button" disabled={!draft.displayName.trim()}><Check size={16} />{busy ? 'Guardando...' : 'Guardar cambios'}</button></div>
+          {savedMessage && <p role="status" aria-live="polite" className="settings-notice"><Check size={15} />{savedMessage}</p>}
+          <div className="producer-save"><button type="button" className="button ghost" onClick={cancel}>Cancelar</button><button className="button" disabled={!draft.displayName.trim() || !dirty}><Check size={16} />{busy ? 'Guardando...' : 'Guardar cambios'}</button></div>
         </fieldset>
       </form>
-      <aside className="producer-settings-preview"><p className="eyebrow">Vista previa</p><img className="producer-preview-cover" src={coverPreview || (draft.coverId === 'custom' ? profile.coverUrl || profileCoverUrl(profile.coverId as 'lo-fi') : profileCoverUrl(draft.coverId))} alt="Portada seleccionada" style={{ objectPosition: `${(draft.coverFocalPoint || defaultCoverFocalPoint).x}% ${(draft.coverFocalPoint || defaultCoverFocalPoint).y}%` }} /><Avatar profile={{ ...draft, accountId: profile.accountId, avatarUrl: avatarPreview || (draft.avatarId === 'custom' ? profile.avatarUrl : undefined) }} /><h2>{draft.displayName || 'Tu nombre'}</h2><p>{draft.bio || 'Sin biografia'}</p><dl className="producer-private-account"><dt>Correo de acceso</dt><dd>{user.email}</dd><dt>Permisos</dt><dd>{user.role === 'admin' ? 'Administrador' : user.role === 'community_manager' ? 'Community manager' : 'Creador'}</dd></dl></aside>
+      <aside className="producer-settings-preview" aria-label="Vista previa del perfil">
+        <div className="producer-preview-heading"><p className="eyebrow">Vista previa en vivo</p><span className={`producer-preview-visibility ${draft.publicProfile ? 'is-public' : 'is-private'}`}>{draft.publicProfile ? <Globe2 size={14} /> : <LockKeyhole size={14} />}{draft.publicProfile ? 'Público' : 'Privado'}</span></div>
+        <div className="producer-preview-card">
+          <img className="producer-preview-cover" src={coverPreview || (draft.coverId === 'custom' ? profile.coverUrl || profileCoverUrl(profile.coverId as 'lo-fi') : profileCoverUrl(draft.coverId))} alt="" style={{ objectPosition: `${(draft.coverFocalPoint || defaultCoverFocalPoint).x}% ${(draft.coverFocalPoint || defaultCoverFocalPoint).y}%` }} />
+          <div className="producer-preview-body">
+            <div className="producer-preview-identity"><Avatar profile={{ ...draft, accountId: profile.accountId, avatarUrl: avatarPreview || (draft.avatarId === 'custom' ? profile.avatarUrl : undefined) }} /><div><h2>{draft.displayName || 'Tu nombre'}</h2>{draft.location && <span><MapPin size={13} />{draft.location}</span>}</div></div>
+            <p className="producer-preview-bio">{draft.bio || 'Tu biografía aparecerá aquí.'}</p>
+            {draft.genres.length > 0 && <div className="producer-preview-genres" aria-label="Géneros del perfil">{draft.genres.map(genre => <span key={genre}>{genre}</span>)}</div>}
+            {(draft.website || draft.instagram) && <div className="producer-preview-links">{draft.website && <span><ExternalLink size={13} />{draft.website}</span>}{draft.instagram && <span><AtSign size={13} />{draft.instagram.replace(/^@/, '')}</span>}</div>}
+          </div>
+        </div>
+        <section className="profile-completion" aria-label="Completitud del perfil">
+          <div className="profile-completion-heading"><strong>Datos del perfil</strong><span className="profile-completion-count">{completedProfileItems}/{profileChecklist.length}</span></div>
+          <progress max={profileChecklist.length} value={completedProfileItems} aria-label={`${completedProfileItems} de ${profileChecklist.length} datos del perfil completos`} />
+          <ul>{profileChecklist.map(item => <li key={item.label} className={item.complete ? 'is-complete' : ''}><span aria-hidden="true">{item.complete ? <Check size={13} /> : '•'}</span>{item.label}</li>)}</ul>
+        </section>
+      </aside>
     </div>
   </div>;
 }
@@ -220,10 +274,10 @@ function SettingsCenter({ profile, user, onProfileSaved }: { profile: CreatorPro
       <nav className="settings-nav" aria-label="Secciones de ajustes">{sections.map(([id, label, Icon]) => <button key={id} type="button" className={section === id ? 'active' : ''} aria-current={section === id ? 'page' : undefined} onClick={() => { setSection(id); setNotice(''); setError(''); }}><Icon size={17} />{label}</button>)}</nav>
       <section className="settings-panel" aria-labelledby="settings-section-title">
         <header><h2 id="settings-section-title">{title}</h2>{notice && <p role="status" className="settings-notice"><Check size={15} />{notice}</p>}{error && <p role="alert" className="form-error">{error}</p>}</header>
-        {section === 'profile' && <ProfileEditor profile={profile} user={user} onSaved={onProfileSaved} />}
-        {section === 'privacy' && <div className="settings-options"><p>Controla qué partes de tu cuenta pueden descubrir otros productores.</p><label className="settings-toggle"><span><strong>Perfil público</strong><small>Permite que aparezcas en el directorio y que otros vean tu perfil.</small></span><input type="checkbox" checked={profile.publicProfile} onChange={async event => { const updated = { displayName: profile.displayName, bio: profile.bio, location: profile.location, website: profile.website, instagram: profile.instagram, genres: profile.genres, coverId: profile.coverId, avatarId: profile.avatarId, avatarFocalPoint: profile.avatarFocalPoint, coverFocalPoint: profile.coverFocalPoint, publicProfile: event.target.checked }; const result = await saveProfile(updated); if (result.ok) { onProfileSaved(result.data); setNotice('Privacidad actualizada.'); } else setError(result.error.message); }} /></label><div className="settings-info"><Shield size={17} /><span>Tus publicaciones personales se guardan localmente en este dispositivo y no se muestran a otros usuarios.</span></div></div>}
+        {section === 'profile' && <ProfileEditor profile={profile} onSaved={onProfileSaved} />}
+        {section === 'privacy' && <div className="settings-options"><p>Controla qué partes de tu cuenta pueden descubrir otros productores.</p><label className="settings-toggle"><span><strong>Perfil público</strong><small>Permite que aparezcas en el directorio y que otros vean tu perfil.</small></span><input type="checkbox" checked={profile.publicProfile} onChange={async event => { const updated = { displayName: profile.displayName, bio: profile.bio, location: profile.location, website: profile.website, instagram: profile.instagram, genres: profile.genres, coverId: profile.coverId, avatarId: profile.avatarId, avatarFocalPoint: profile.avatarFocalPoint, coverFocalPoint: profile.coverFocalPoint, publicProfile: event.target.checked }; const result = await saveProfile(updated); if (result.ok) { onProfileSaved(result.data); setNotice('Privacidad actualizada.'); } else setError(result.error.message); }} /></label><div className="settings-info"><Shield size={17} /><span>Tus publicaciones e historias se guardan en el servidor local de BeatVault. Revisa la audiencia elegida: Público, Amigos o Solo yo. La privacidad del perfil también limita su visibilidad.</span></div></div>}
         {section === 'preferences' && <div className="settings-options"><label className="settings-control"><span><Palette size={17} />Tema visual</span><select aria-label="Tema visual" value={settings.theme} onChange={event => updateSettings({ ...settings, theme: event.target.value as UserSettings['theme'] })}><option value="dark">Oscuro</option><option value="light">Claro</option><option value="custom">RGB personalizado</option></select></label>{settings.theme === 'custom' && <><fieldset className="custom-theme-colors"><legend className="sr-only">Colores del tema personalizado</legend>{([['background', 'Fondo'], ['card', 'Tarjetas'], ['button', 'Botones'], ['link', 'Enlaces']] as const).map(([key, label]) => <label key={key}><span>{label}</span><input aria-label={`Color ${label.toLocaleLowerCase()}`} type="color" value={settings.customTheme[key]} onChange={event => updateSettings({ ...settings, customTheme: { ...settings.customTheme, [key]: event.target.value } })} /><output>{toRgb(settings.customTheme[key])}</output></label>)}</fieldset><p className="settings-subtle">Elige cada color con el selector RGB. Los colores de texto y estados se ajustan automáticamente para conservar legibilidad.</p></>}<label className="settings-control"><span><Languages size={17} />{tx('settings.language')}</span><select aria-label={tx('settings.language')} value={settings.language} onChange={event => updateSettings({ ...settings, language: event.target.value as 'es' | 'en' })}><option value="es">Español</option><option value="en">English</option></select></label><p className="settings-subtle">{tx('settings.languageNote')}</p><label className="settings-control"><span><Globe2 size={17} />{tx('settings.currency')}</span><select aria-label={tx('settings.currency')} value={settings.currency} onChange={event => updateSettings({ ...settings, currency: event.target.value as UserSettings['currency'] })}><option value="USD">USD · {tx('settings.usd')}</option><option value="MXN">MXN · {tx('settings.mxn')}</option><option value="EUR">EUR · {tx('settings.eur')}</option></select></label><p className="settings-subtle">{tx('settings.currencyNote')}</p><p className="settings-subtle" role="status">{exchangeRates ? tx('settings.currencyRate', { rate: new Intl.NumberFormat(settings.language, { maximumFractionDigits: 4 }).format(exchangeRate('USD', settings.currency, exchangeRates)), currency: settings.currency, date: exchangeRates.date }) : tx('settings.currencyUnavailable')}</p><label className="settings-toggle"><span><strong>Reducir movimiento</strong><small>Reduce animaciones y transiciones de la interfaz.</small></span><input type="checkbox" checked={settings.reducedMotion} onChange={event => updateSettings({ ...settings, reducedMotion: event.target.checked })} /></label></div>}
-        {section === 'notifications' && <div className="settings-options"><p>Elige qué avisos emergentes quieres recibir en esta cuenta.</p>{([['messages', 'Mensajes', 'Avisos de nuevos mensajes directos.'], ['friendRequests', 'Solicitudes de amistad', 'Avisos de nuevas solicitudes.'], ['comments', 'Comentarios', 'Cuando alguien comenta en uno de tus beats publicados.'], ['reactions', 'Reacciones', 'Cuando alguien reacciona a uno de tus beats publicados.'], ['reviews', 'Revisión de subidas', 'Avisos sobre el estado de tus beats y one-shots.']] as const).map(([key, label, description]) => <label className="settings-toggle" key={key}><span><strong>{label}</strong><small>{description}</small></span><input type="checkbox" checked={settings.notifications[key]} onChange={event => updateSettings({ ...settings, notifications: { ...settings.notifications, [key]: event.target.checked } })} /></label>)}<div className="settings-info"><Bell size={17} /><span>Los avisos sociales se generan para interacciones en tus beats publicados y respetan estas opciones.</span></div></div>}
+        {section === 'notifications' && <div className="settings-options"><p>Elige qué avisos emergentes quieres recibir en esta cuenta.</p>{([['messages', 'Mensajes', 'Avisos de nuevos mensajes directos.'], ['friendRequests', 'Solicitudes de amistad', 'Avisos de nuevas solicitudes.'], ['comments', 'Comentarios', 'Cuando alguien comenta en tus publicaciones o beats publicados.'], ['reactions', 'Reacciones', 'Cuando alguien reacciona a tus publicaciones o beats publicados.'], ['reviews', 'Revisión de subidas', 'Avisos sobre el estado de tus beats y one-shots.']] as const).map(([key, label, description]) => <label className="settings-toggle" key={key}><span><strong>{label}</strong><small>{description}</small></span><input type="checkbox" checked={settings.notifications[key]} onChange={event => updateSettings({ ...settings, notifications: { ...settings.notifications, [key]: event.target.checked } })} /></label>)}<div className="settings-info"><Bell size={17} /><span>Estas opciones filtran los avisos de esta interfaz y se guardan en este dispositivo. No activan correos ni notificaciones del sistema.</span></div></div>}
         {section === 'account' && <div className="settings-options"><p className="settings-subtle">ID de cuenta: <code>{user.id}</code> · Rol: {user.role === 'admin' ? 'Administración' : user.role === 'community_manager' ? 'Community manager' : 'Creador'}</p><form className="settings-form" onSubmit={event => void changeEmail(event)}><h3>Correo de acceso</h3><label>Nuevo correo<input type="email" required maxLength={254} autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} /></label><label>Confirma tu contraseña<input type="password" required autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} /></label><button className="button" disabled={busy || email.trim().toLowerCase() === user.email.toLowerCase()}>Actualizar correo</button><small>En local se actualiza de inmediato. En producción se exigirá confirmación del nuevo correo.</small></form></div>}
         {section === 'security' && <div className="settings-options"><form className="settings-form" onSubmit={event => void changePassword(event)}><h3>Cambiar contraseña</h3><label>Contraseña actual<input type="password" required autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} /></label><label>Nueva contraseña<input type="password" required minLength={12} maxLength={128} autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} /><small>Usa al menos 12 caracteres.</small></label><button className="button" disabled={busy || newPassword.length < 12}>Actualizar contraseña</button></form><div className="settings-info"><LockKeyhole size={17} /><span>Al cambiarla, las demás sesiones de tu cuenta se invalidan. Conservas esta sesión.</span></div><a href="#/forgot-password">¿Olvidaste tu contraseña?</a></div>}
       </section>
@@ -241,9 +295,7 @@ export function CreatorProfilePage({ user, uploads, uploadsLoading = false, onPl
   const [saleBeats, setSaleBeats] = useState<CatalogAsset[]>([]);
   const [saleLoading, setSaleLoading] = useState(false);
   const [saleError, setSaleError] = useState('');
-  const [activeOffer, setActiveOffer] = useState<string>();
-  const [purchaseError, setPurchaseError] = useState('');
-  const checkoutKeys = useRef(new Map<string, string>());
+  const { activeOffer, purchaseError, buyBeat: buyOffer } = useBeatCheckout(user?.id);
   const [publicView, setPublicView] = useState(Boolean(targetId));
   const [tab, setTab] = useState(user && (!targetId || targetId === user.id) ? 'posts' : 'projects');
   const [profilePosts, setProfilePosts] = useState<CreatorPost[]>([]);
@@ -257,6 +309,8 @@ export function CreatorProfilePage({ user, uploads, uploadsLoading = false, onPl
   const [layout, setLayout] = useState('grid');
   const [selected, setSelected] = useState<CatalogAsset>();
   const [shareMessage, setShareMessage] = useState('');
+  const [blockedByMe, setBlockedByMe] = useState(false);
+  const [blockBusy, setBlockBusy] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     let cancelled = false;
@@ -270,6 +324,12 @@ export function CreatorProfilePage({ user, uploads, uploadsLoading = false, onPl
     void load();
     return () => { cancelled = true; };
   }, [user, targetId]);
+  useEffect(() => {
+    if (!user || !profile || profile.accountId === user.id) { setBlockedByMe(false); return; }
+    let cancelled = false;
+    void readBlockedAccountIds().then(result => { if (!cancelled && result.ok) setBlockedByMe(result.data.blockedAccountIds.includes(profile.accountId)); });
+    return () => { cancelled = true; };
+  }, [profile?.accountId, user?.id]);
   useEffect(() => {
     if (uploads) return;
     let cancelled = false;
@@ -344,18 +404,15 @@ export function CreatorProfilePage({ user, uploads, uploadsLoading = false, onPl
     try { await navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}#/profile?id=${encodeURIComponent(profile.accountId)}`); setShareMessage('Enlace copiado'); }
     catch { setShareMessage('No se pudo copiar el enlace'); }
   };
-  const buyOffer = async (contentId: string, offerId: string) => {
-    const key = `${contentId}:${offerId}`;
-    const idempotencyKey = checkoutKeys.current.get(key) || window.crypto.randomUUID();
-    checkoutKeys.current.set(key, idempotencyKey);
-    setActiveOffer(key); setPurchaseError('');
-    const result = await createBeatCheckout(contentId, offerId, idempotencyKey);
-    if (result.ok) { checkoutKeys.current.delete(key); window.location.assign(result.data.url); }
-    else {
-      if (result.error.code !== 'NETWORK_ERROR' && result.error.code !== 'TIMEOUT') checkoutKeys.current.delete(key);
-      setPurchaseError(result.error.message);
-    }
-    setActiveOffer(undefined);
+  const toggleBlock = async () => {
+    if (!profile || !user || blockBusy) return;
+    if (!blockedByMe && !window.confirm(`¿Bloquear a ${profile.displayName}? No podrá ver tu contenido ni interactuar contigo.`)) return;
+    setBlockBusy(true); setShareMessage('');
+    try {
+      const result = await setAccountBlocked(profile.accountId, !blockedByMe);
+      if (result.ok) { setBlockedByMe(!blockedByMe); setShareMessage(blockedByMe ? 'Cuenta desbloqueada.' : 'Cuenta bloqueada.'); }
+      else setShareMessage(result.error.message);
+    } finally { setBlockBusy(false); }
   };
   const loadMoreProfilePosts = async () => {
     if (!profile || !postsCursor || postsPageBusy) return;
@@ -377,7 +434,7 @@ export function CreatorProfilePage({ user, uploads, uploadsLoading = false, onPl
     <section className="producer-identity-band">
       <Avatar profile={profile} />
       <div className="producer-name"><p className="eyebrow">BeatVault Creator</p><h1>{profile.displayName}</h1>{profile.packageBadges?.length ? <div className="package-badges" aria-label="Paquetes adquiridos">{profile.packageBadges.map(packageId => <span key={packageId} className={`package-badge ${packageId}`} title={`Paquete ${packageId} adquirido`}>{packageId === 'creator' ? 'Creator' : 'Studio'}</span>)}</div> : null}<div className="producer-meta">{profile.location && <span><MapPin size={14} />{profile.location}</span>}{isOwner && !profile.publicProfile && <span><LockKeyhole size={14} />Perfil privado</span>}</div></div>
-      <div className="producer-profile-actions">{isOwner && <><a className="button ghost" href="#/settings"><Pencil size={16} />Editar perfil</a><button className="button ghost" aria-pressed={publicView} onClick={() => { setPublicView(value => !value); setSelected(undefined); }}>{publicView ? 'Mi vista' : 'Vista publica'}</button></>}{profile.publicProfile && <button className="button ghost" onClick={() => void share()}><Share2 size={16} />Compartir</button>}</div>
+      <div className="producer-profile-actions">{isOwner && <><a className="button ghost" href="#/settings"><Pencil size={16} />Editar perfil</a><button className="button ghost" aria-pressed={publicView} onClick={() => { setPublicView(value => !value); setSelected(undefined); }}>{publicView ? 'Mi vista' : 'Vista publica'}</button></>}{profile.publicProfile && <button className="button ghost" onClick={() => void share()}><Share2 size={16} />Compartir</button>}{user && !isOwner && <button className="button ghost" type="button" disabled={blockBusy} onClick={() => void toggleBlock()}>{blockBusy ? 'Guardando…' : blockedByMe ? 'Desbloquear cuenta' : 'Bloquear cuenta'}</button>}</div>
     </section>
     <div className="producer-summary"><div><p className="producer-bio">{profile.bio || 'Sin biografia'}</p><div className="producer-genres">{profile.genres.map(genre => <span key={genre}>{genre}</span>)}</div></div>{!isPrivateFriend && <div className="producer-count"><strong>{uploadsLoading ? '…' : projects.length}</strong><span>proyectos</span></div>}</div>
     {shareMessage && <p role="status">{shareMessage}</p>}{error && <p role="alert" className="form-error">{error}</p>}
@@ -412,6 +469,6 @@ export function CreatorProfilePage({ user, uploads, uploadsLoading = false, onPl
           {showPrivate && <button className="producer-project-play" aria-label={`Escuchar ${asset.name}`} title={asset.previewUrl ? 'Escuchar' : 'Audio no disponible'} disabled={!asset.previewUrl} onClick={() => onPlay(asset)}><Play size={18} /></button>}
         </article>)}</div> : <div className="producer-message"><Music2 size={28} /><h2>{showPrivate ? 'Tu siguiente proyecto empieza aqui' : 'Sin proyectos publicados'}</h2>{showPrivate && <a className="button" href="#/upload"><Upload size={16} />Subir audio</a>}</div>}
       </section>}
-    {selected && <dialog ref={dialog} className="producer-project-dialog" aria-labelledby="producer-detail-title" onCancel={() => setSelected(undefined)} onClose={() => setSelected(undefined)}><button className="producer-dialog-close" aria-label="Cerrar proyecto" onClick={() => setSelected(undefined)}><X size={20} /></button><img src={selected.cover || artwork('808')} alt="" /><div><span className="eyebrow">{creatorType(selected.type)}</span><h2 id="producer-detail-title">{selected.name}</h2><p>{selected.tags.map(tag => `#${tag.label}`).join(' ')}</p>{showPrivate && <><p>{selected.metadata.format} · {selected.metadata.size}</p><button className="button" disabled={!selected.previewUrl} onClick={() => onPlay(selected)}><Play size={16} />Escuchar</button><a className="button ghost" href="#/studio">Gestionar subida</a></>}</div></dialog>}
+    {selected && <dialog ref={dialog} className="producer-project-dialog" aria-labelledby="producer-detail-title" onCancel={() => setSelected(undefined)} onClose={() => setSelected(undefined)}><button className="producer-dialog-close" aria-label="Cerrar proyecto" onClick={() => setSelected(undefined)}><X size={20} /></button><img src={selected.cover || artwork('808')} alt="" /><div><span className="eyebrow">{creatorType(selected.type)}</span><h2 id="producer-detail-title">{selected.name}</h2><p>{selected.tags.map(tag => `#${tag.label}`).join(' ')}</p>{!showPrivate && <a className="button" href={`#/beat-detail?id=${encodeURIComponent(selected.id)}`}><Play size={16} />Escuchar preview y ver detalle</a>}{showPrivate && <><p>{selected.metadata.format} · {selected.metadata.size}</p><button className="button" disabled={!selected.previewUrl} onClick={() => onPlay(selected)}><Play size={16} />Escuchar</button><a className="button ghost" href="#/studio">Gestionar subida</a></>}</div></dialog>}
   </div>;
 }

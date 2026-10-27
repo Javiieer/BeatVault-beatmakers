@@ -19,7 +19,7 @@ export const previewArtifactPath = (uploadDirectory: string, storageKey: string)
 
 function runFfmpeg(source: string, destination: string): Promise<void> {
   const args = [
-    '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', source,
+    '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-protocol_whitelist', 'file', '-i', source,
     '-map', '0:a:0', '-vn', '-sn', '-dn', '-map_metadata', '-1',
     '-t', String(config.previewDurationSeconds), '-ac', '2', '-ar', '44100',
     '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', '-fs', String(maxPreviewBytes), '-f', 'ipod', destination,

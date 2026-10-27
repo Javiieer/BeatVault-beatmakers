@@ -59,4 +59,15 @@ describe('Stripe Connect Accounts v2', () => {
     await expect(service.handleWebhook(Buffer.from('{"object":"v2.core.event"}'), 'sig_test', 'whsec_test')).resolves.toBe('duplicate')
     expect(repo.saveStripeConnectAccount).toHaveBeenCalledOnce()
   })
+
+  it('marks the connected account deauthorized from event.account, not the application object id', async () => {
+    const repo = repository()
+    const event = { id: 'evt_deauthorized', type: 'account.application.deauthorized', livemode: false, account: 'acct_test_1', data: { object: { id: 'ca_test_application' } } } as unknown as Stripe.Event
+    const stripe = stripeGateway({ create: vi.fn(), retrieve: vi.fn() }, { create: vi.fn() }, vi.fn(() => event))
+    const service = new StripeConnectService(stripe, repo as unknown as ServerRepository, 'http://localhost:5188')
+
+    await expect(service.handleWebhook(Buffer.from('{}'), 'sig_test', 'whsec_test')).resolves.toBe('processed')
+    expect(repo.findStripeConnectAccountByStripeId).toHaveBeenCalledWith('acct_test_1')
+    expect(repo.saveStripeConnectAccount).toHaveBeenCalledWith(expect.objectContaining({ stripeAccountId: 'acct_test_1', deauthorized: true, payoutsEnabled: false }))
+  })
 })

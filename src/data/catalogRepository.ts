@@ -11,11 +11,14 @@ export type MarketplaceFilters = { query?: string; type?: 'beat' | 'sample'; tag
 export type MarketplacePage = { assets: CatalogAsset[]; total: number; nextCursor?: string; source: CatalogSource; error?: string };
 
 const statuses = ["draft", "pending-review", "published", "archived", "rejected"] as const;
+const contentTypes = ['sample', 'beat', 'loop', 'vocal', 'midi', 'preset', 'pack', 'stem', 'template'];
 const isPurchaseOffer = (value: unknown): boolean => {
   if (!value || typeof value !== 'object') return false
   const offer = value as Record<string, unknown>
   return typeof offer.id === 'string' && typeof offer.label === 'string' && Number.isSafeInteger(offer.amountMinor) &&
-    Number(offer.amountMinor) >= 100 && offer.currency === 'USD' && Array.isArray(offer.deliverables) && offer.deliverables.every(item => typeof item === 'string')
+    Number(offer.amountMinor) >= 100 && offer.currency === 'USD' && Array.isArray(offer.deliverables) && offer.deliverables.every(item => typeof item === 'string') &&
+    (offer.available === undefined || typeof offer.available === 'boolean') &&
+    (offer.unavailableReason === undefined || typeof offer.unavailableReason === 'string' && offer.unavailableReason.length <= 300)
 }
 const isCatalogEntry = (value: unknown): value is CatalogEntry => {
   if (!value || typeof value !== "object") return false;
@@ -32,6 +35,7 @@ const isCatalogEntry = (value: unknown): value is CatalogEntry => {
   }
   if (item.purchaseOffers !== undefined && (!Array.isArray(item.purchaseOffers) || !item.purchaseOffers.every(isPurchaseOffer))) return false;
   return typeof item.contentId === "string" && typeof item.title === "string" &&
+    typeof item.type === 'string' && contentTypes.includes(item.type) &&
     typeof item.creatorId === "string" && Array.isArray(item.tagIds) &&
     item.tagIds.every((tag) => typeof tag === "string") && Array.isArray(item.previewIds) &&
     item.previewIds.every((preview) => typeof preview === "string") &&
@@ -76,12 +80,20 @@ export class CatalogRepository {
     return JSON.stringify({ title: asset.name, type: asset.type, tagIds: asset.tags.map(tag => tag.label), publicationStatus: asset.publicationStatus, assetId: asset.assetId, coverId: asset.coverId || uploadCovers.find(cover => cover.url === asset.cover)?.id });
   }
   async list(): Promise<CatalogResult> {
-    const result = await this.api.request("/api/catalog", { method: "GET" }, isCatalogPage);
+    const result = await this.api.request("/api/catalog", { method: "GET" }, isCatalogPage, 15000);
     const local = this.read();
     if (!result.ok) return { assets: this.authenticated ? [] : local, source: "fallback", error: result.error.message };
     const remote = result.data.entries.map(entry => fromEntry(entry, local.find(asset => asset.id === entry.contentId)));
     if (this.authenticated) this.write(remote.filter(asset => asset.ownerId === this.scope));
     return { assets: this.authenticated ? remote : mergeCatalogAssets(remote, local), source: "api" };
+  }
+  async publishedDetail(id: string): Promise<{ asset?: CatalogAsset; error?: string; notFound?: boolean }> {
+    if (!id || id.length > 100) return { notFound: true };
+    const result = await this.api.request(`/api/catalog/${encodeURIComponent(id)}`, { method: 'GET' }, isCatalogEntry, 8000);
+    if (!result.ok) return ['NOT_FOUND', 'CATALOG_NOT_FOUND'].includes(result.error.code) ? { notFound: true } : { error: result.error.message };
+    if (result.data.contentId !== id || result.data.publicationStatus !== 'published') return { notFound: true };
+    // Public detail never hydrates from an owner's draft or a stale browser cache.
+    return { asset: fromEntry(result.data) };
   }
   async marketplacePage(filters: MarketplaceFilters = {}): Promise<MarketplacePage> {
     const params = new URLSearchParams();
@@ -91,7 +103,7 @@ export class CatalogRepository {
     if (filters.creatorId) params.set('creatorId', filters.creatorId);
     if (filters.cursor) params.set('cursor', filters.cursor);
     params.set('limit', String(filters.limit ?? 24));
-    const result = await this.api.request(`/api/marketplace?${params}`, { method: 'GET' }, isCatalogPage);
+    const result = await this.api.request(`/api/marketplace?${params}`, { method: 'GET' }, isCatalogPage, 8000);
     if (result.ok) return { assets: result.data.entries.map(entry => fromEntry(entry)), total: result.data.total, nextCursor: result.data.nextCursor, source: 'api' };
     if (this.authenticated || (result.error.code !== 'NETWORK_ERROR' && result.error.code !== 'TIMEOUT')) {
       return { assets: [], total: 0, source: 'api', error: result.error.message };

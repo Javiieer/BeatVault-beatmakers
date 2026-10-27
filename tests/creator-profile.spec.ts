@@ -27,6 +27,12 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
       expect(response.status()).toBe(201);
     }
     await page.getByRole('link', { name: 'Editar perfil', exact: true }).click();
+    const activeSettingsItem = page.locator('.settings-nav button.active');
+    await expect(activeSettingsItem).toHaveAttribute('aria-current', 'page');
+    await expect.poll(() => activeSettingsItem.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+    const livePreview = page.getByRole('complementary', { name: 'Vista previa del perfil' });
+    await expect(livePreview).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Guardar cambios' })).toBeDisabled();
     const profileJpeg = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover-qa.jpg'));
     await page.getByLabel('Subir foto de perfil').setInputFiles({ name: 'avatar.jpg', mimeType: 'image/jpeg', buffer: profileJpeg });
     await expect(page.getByLabel('Encuadre horizontal del avatar')).toBeVisible();
@@ -57,6 +63,10 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await page.getByLabel('Sitio web', { exact: true }).fill('https://example.com');
     await page.getByLabel('Instagram', { exact: true }).fill('@northside.audio');
     await page.getByRole('checkbox', { name: 'Perfil publico' }).check();
+    await expect(livePreview.getByRole('heading', { name: 'Northside Audio', exact: true })).toBeVisible();
+    await expect(livePreview.getByText('5/5', { exact: true })).toBeVisible();
+    await expect(livePreview.getByText('Ciudad de Mexico')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Guardar cambios' })).toBeEnabled();
     await page.route('**/api/profile', async route => {
       if (route.request().method() !== 'PUT') return route.continue();
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'FAILED', message: 'No se guardaron los cambios.' } }) });
@@ -67,8 +77,9 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await page.unroute('**/api/profile');
     await expect.poll(() => page.locator('.producer-settings img').evaluateAll(images => images.every(img => (img as HTMLImageElement).naturalWidth > 0))).toBe(true);
     await page.locator('.producer-settings img').evaluateAll(images => Promise.all(images.map(img => (img as HTMLImageElement).decode())));
-    await page.screenshot({ path: `artifacts/visual-qa/${viewport.name}-profile-editor.png`, fullPage: true });
     await page.getByRole('button', { name: 'Guardar cambios' }).click();
+    await expect(page.locator('.producer-fields .settings-notice')).toContainText('Perfil actualizado');
+    await page.screenshot({ path: `artifacts/visual-qa/${viewport.name}-profile-editor.png`, fullPage: true });
     await expect(page).toHaveURL(/#\/settings$/);
     await page.goto('/#/profile');
     await expect(page).toHaveURL(/#\/profile$/);
@@ -80,6 +91,14 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Northside Audio', exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Proyectos' }).click();
+    const activeProfileTab = page.getByRole('tab', { name: 'Proyectos' });
+    await expect(activeProfileTab).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(() => activeProfileTab.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+    if (viewport.name === 'mobile') {
+      const profileTabs = page.getByRole('tablist', { name: 'Contenido del perfil' });
+      await expect(profileTabs).toHaveCSS('overflow-x', 'auto');
+      await expect.poll(() => profileTabs.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    }
     await expect(page.locator('.producer-project')).toHaveCount(2);
     await expect.poll(() => page.locator('.producer-profile img').evaluateAll(images => images.every(img => (img as HTMLImageElement).naturalWidth > 0))).toBe(true);
     await page.locator('.producer-profile img').evaluateAll(images => Promise.all(images.map(img => (img as HTMLImageElement).decode())));

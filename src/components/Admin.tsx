@@ -6,6 +6,7 @@ import { marketplaceBaseCurrency } from '../domains/marketplace/currency'
 import { promotionScopes, type PromotionInput, type PromotionScope } from '../domains/marketplace/promotions'
 import { AdminMarketplaceReview } from './AdminMarketplaceReview'
 import { readSocialModerationPosts, readSocialModerationReports, reviewSocialPost, reviewSocialPostReport, type SocialPostReportView, type SocialPostView } from '../data/socialPostRepository'
+import { readSocialStoryReports, reviewSocialStoryReport, type SocialStoryReportView } from '../data/socialStoryRepository'
 import '../styles/social-moderation.css'
 
 const promotionLabels: Record<PromotionScope, string> = { all: 'Todo el marketplace', beat: 'Beats', loop: 'Loops', 'one-shot': 'One-shots', 'sample-pack': 'Sample packs' }
@@ -30,18 +31,27 @@ export function Admin({ onReviewed }: { onReviewed?: () => Promise<void> }) {
   const [error, setError] = useState('')
   const [socialPosts, setSocialPosts] = useState<SocialPostView[]>([])
   const [socialReports, setSocialReports] = useState<SocialPostReportView[]>([])
+  const [socialStoryReports, setSocialStoryReports] = useState<SocialStoryReportView[]>([])
+  const [socialStoryReportCursor, setSocialStoryReportCursor] = useState<string | null>(null)
   const [socialError, setSocialError] = useState('')
   const [socialNotes, setSocialNotes] = useState<Record<string, string>>({})
   const reload = useCallback(async () => setResult(await defaultAdminRepository.load()), [])
   useEffect(() => { void reload() }, [reload])
   const reloadSocialModeration = useCallback(async () => {
-    const [postsResult, reportsResult] = await Promise.all([readSocialModerationPosts(), readSocialModerationReports()])
+    const [postsResult, reportsResult, storyReportsResult] = await Promise.all([readSocialModerationPosts(), readSocialModerationReports(), readSocialStoryReports()])
     const errors: string[] = []
     if (postsResult.ok) setSocialPosts(postsResult.data.posts); else errors.push(postsResult.error.message)
     if (reportsResult.ok) setSocialReports(reportsResult.data.reports); else errors.push(reportsResult.error.message)
+    if (storyReportsResult.ok) { setSocialStoryReports(storyReportsResult.data.reports); setSocialStoryReportCursor(storyReportsResult.data.nextCursor) } else errors.push(storyReportsResult.error.message)
     setSocialError(errors.join(' '))
   }, [])
   useEffect(() => { void reloadSocialModeration() }, [reloadSocialModeration])
+  const loadMoreSocialStoryReports = async () => {
+    if (!socialStoryReportCursor) return
+    const result = await readSocialStoryReports(socialStoryReportCursor)
+    if (result.ok) { setSocialStoryReports(current => [...current, ...result.data.reports]); setSocialStoryReportCursor(result.data.nextCursor) }
+    else setSocialError(result.error.message)
+  }
   const decideSocialPost = async (postId: string, status: 'published' | 'rejected' | 'removed') => {
     if (busyId) return
     if (status === 'removed' && !window.confirm('¿Retirar esta publicación? Dejará de ser visible para todos.')) return
@@ -57,6 +67,14 @@ export function Admin({ onReviewed }: { onReviewed?: () => Promise<void> }) {
     const result = await reviewSocialPostReport(reportId, status)
     if (result.ok) await reloadSocialModeration()
     else setSocialError(result.error.message)
+    setBusyId('')
+  }
+  const decideSocialStoryReport = async (reportId: string, status: 'reviewed' | 'dismissed') => {
+    if (busyId) return
+    setBusyId(reportId); setSocialError('')
+    const outcome = await reviewSocialStoryReport(reportId, status)
+    if (outcome.ok) await reloadSocialModeration()
+    else setSocialError(outcome.error.message)
     setBusyId('')
   }
   const review = async (contentId: string, decision: 'approve' | 'reject') => {
@@ -163,14 +181,14 @@ export function Admin({ onReviewed }: { onReviewed?: () => Promise<void> }) {
       {data?.source === 'api' && data.promotions.length === 0 && <p className="empty-state">Todavía no hay descuentos configurados.</p>}
     </section>
     <section className="panel admin-review"><div className="section-heading"><div><p className="eyebrow">Publicación</p><h2>Cola de revisión</h2></div><small>{data?.source === 'api' ? `${data.catalog.length} pendientes` : 'Sin conexión'}</small></div>
-      <div className="admin-guard"><ShieldCheck size={18} /><span>Un Community Manager o un administrador puede aprobar y publicar un Beat. Basta una decisión; el audio necesita preview procesado. Los demás tipos conservan la revisión administrativa actual.</span></div>
+      <div className="admin-guard"><ShieldCheck size={18} /><span>Un Community Manager o un administrador puede revisar Beats y One-shots. Basta una aprobación para publicar; ambos necesitan un preview procesado y no puedes revisar tus propias subidas.</span></div>
       {error && <p className="upload-error" role="alert">{error}</p>}
       {data?.source === 'api' && data.catalog.length === 0 && <p className="empty-state">No hay Beats ni One-shots pendientes de revisión.</p>}
       {data?.source === 'api' && data.catalog.map(item => <article className="admin-review-row" key={item.contentId}>
         <div className="admin-row"><div><strong>{item.title}</strong><span>{item.type} · Creador {item.creatorId}</span></div><span className="badge pending">En revisión</span></div>
-        {item.type.toLowerCase() === 'beat' && item.previewAvailable && item.previewUrl && <div className="admin-review-audio"><audio controls preload="none" src={item.previewUrl} aria-label={`Preview for ${item.title}`}>Audio preview unavailable.</audio></div>}
-        {item.type.toLowerCase() === 'beat' && !item.previewAvailable && <p className="admin-preview-unavailable" role="status">Processed audio preview unavailable; approval is disabled.</p>}
-        <div className="admin-review-actions"><label className="short-upload-field">{`Motivo si se rechaza ${item.title}`}<input maxLength={160} value={reason[item.contentId] || ''} onChange={event => setReason(current => ({ ...current, [item.contentId]: event.target.value }))} placeholder="Describe qué debe corregirse" /></label><div><button className="button ghost" type="button" disabled={Boolean(busyId) || !reason[item.contentId]?.trim()} onClick={() => void review(item.contentId, 'reject')}><ThumbsDown size={16} /> Rechazar</button><button className="button" type="button" disabled={Boolean(busyId) || (item.type.toLowerCase() === 'beat' && !item.previewAvailable)} onClick={() => void review(item.contentId, 'approve')}><ThumbsUp size={16} /> {busyId === item.contentId ? 'Guardando…' : 'Aprobar'}</button></div></div>
+        {['beat', 'sample', 'one-shot'].includes(item.type.toLowerCase()) && item.previewAvailable && item.previewUrl && <div className="admin-review-audio"><audio controls preload="none" src={item.previewUrl} aria-label={`Preview for ${item.title}`}>Audio preview unavailable.</audio></div>}
+        {['beat', 'sample', 'one-shot'].includes(item.type.toLowerCase()) && !item.previewAvailable && <p className="admin-preview-unavailable" role="status">Processed audio preview unavailable; approval is disabled.</p>}
+        <div className="admin-review-actions"><label className="short-upload-field">{`Motivo si se rechaza ${item.title}`}<input maxLength={160} value={reason[item.contentId] || ''} onChange={event => setReason(current => ({ ...current, [item.contentId]: event.target.value }))} placeholder="Describe qué debe corregirse" /></label><div><button className="button ghost" type="button" disabled={Boolean(busyId) || !reason[item.contentId]?.trim()} onClick={() => void review(item.contentId, 'reject')}><ThumbsDown size={16} /> Rechazar</button><button className="button" type="button" disabled={Boolean(busyId) || (['beat', 'sample', 'one-shot'].includes(item.type.toLowerCase()) && !item.previewAvailable)} onClick={() => void review(item.contentId, 'approve')}><ThumbsUp size={16} /> {busyId === item.contentId ? 'Guardando…' : 'Aprobar'}</button></div></div>
       </article>)}
     </section>
     <section className="panel admin-review" aria-label="Moderación de publicaciones sociales">
@@ -200,13 +218,28 @@ export function Admin({ onReviewed }: { onReviewed?: () => Promise<void> }) {
             <div className="admin-review-actions admin-social-actions"><div><button className="button" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialReport(report.id, 'reviewed')}>{busyId === report.id ? 'Guardando…' : 'Marcar revisado'}</button><button className="button ghost" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialReport(report.id, 'dismissed')}>Descartar reporte</button>{report.post && <button className="button ghost" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialPost(report.post!.id, 'removed')}>Retirar publicación</button>}</div></div>
           </article>)}
         </section>
+        <section aria-labelledby="social-story-report-queue-title">
+          <div className="section-heading"><h3 id="social-story-report-queue-title">Reportes de Stories</h3><small>{socialStoryReports.length}</small></div>
+          {socialStoryReports.length === 0 && !socialError && <p className="empty-state">No hay reportes de Stories abiertos.</p>}
+          {socialStoryReports.map(report => <article className="admin-review-row admin-social-item" key={report.id}>
+            <div className="admin-row"><div><strong>{report.reason} · Story de {report.authorId}</strong><span>Reportante: {report.reporterId} · {new Date(report.createdAt).toLocaleString('es-MX')}</span></div><span className="badge reported">Abierto</span></div>
+            <p className="admin-social-copy">{report.body || 'Story sin texto'} · {report.audience === 'public' ? 'Público' : report.audience === 'friends' ? 'Amigos' : 'Solo autor'} · creada {new Date(report.storyCreatedAt).toLocaleString('es-MX')} · expiraba {new Date(report.storyExpiresAt).toLocaleString('es-MX')}</p>
+            {report.details && <p className="admin-social-copy">Detalles del reporte: {report.details}</p>}
+            {report.evidenceAvailable && report.evidenceUrl && (report.kind === 'video' ? <video className="admin-social-media" src={report.evidenceUrl} controls preload="metadata" aria-label="Evidencia privada del Story reportado" /> : <img className="admin-social-media" src={report.evidenceUrl} alt="Evidencia privada del Story reportado" loading="lazy" />)}
+            {report.evidenceExpiredAt && <p className="admin-social-copy" role="status">La evidencia multimedia se eliminó por el límite de retención del día 90 ({new Date(report.evidenceExpiredAt).toLocaleString('es-MX')}); el reporte permanece abierto.</p>}
+            {report.mediaSha256 && <small>SHA-256 del medio: {report.mediaSha256}</small>}
+            <p className="description">La identidad del reportante solo aparece en esta cola de personal autorizado.</p>
+            <div className="admin-review-actions admin-social-actions"><div><button className="button" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialStoryReport(report.id, 'reviewed')}>{busyId === report.id ? 'Guardando…' : 'Marcar revisado'}</button><button className="button ghost" type="button" disabled={Boolean(busyId)} onClick={() => void decideSocialStoryReport(report.id, 'dismissed')}>Descartar reporte</button></div></div>
+          </article>)}
+          {socialStoryReportCursor && <button className="button ghost" type="button" onClick={() => void loadMoreSocialStoryReports()}>Cargar más reportes</button>}
+        </section>
       </div>
     </section>
     <section className="panel admin-review"><div className="section-heading"><div><p className="eyebrow">Pagos</p><h2>Órdenes, reembolsos y disputas</h2></div><small>{data?.source === 'api' ? `${data.beatOrders.length} órdenes` : 'Sin conexión'}</small></div>
       <p className="description">Los reembolsos son totales y se confirman únicamente al recibir el webhook de Stripe. Las disputas requieren revisión y respuesta manual en Stripe.</p>
       {data?.source === 'api' && data.beatOrders.length === 0 && <p className="empty-state">Todavía no hay compras.</p>}
       {data?.source === 'api' && data.beatOrders.map(order => <article className="admin-review-row" key={order.id}>
-        <div className="admin-row"><div><strong>{order.title} · {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(order.amountMinor / 100)}</strong><span>{order.offerId} · comprador {order.buyerId} · vendedor {order.sellerId} · {new Date(order.createdAt).toLocaleString()}</span>{order.disputeId && <span role="alert">Disputa {order.disputeId} · motivo: {order.disputeReason || 'sin especificar'}. Requiere atención en Stripe.</span>}</div><span className={`badge ${order.status === 'paid' ? 'active' : order.status === 'disputed' ? 'pending' : 'violet'}`}>{order.status}</span></div>
+        <div className="admin-row"><div><strong>{order.title} · {new Intl.NumberFormat('es-MX', { style: 'currency', currency: order.currency.toUpperCase() }).format(order.amountMinor / 100)}</strong><span>{order.offerId} · comprador {order.buyerId} · vendedor {order.sellerId} · {new Date(order.createdAt).toLocaleString()}</span>{order.disputeId && <span role="alert">Disputa {order.disputeId} · motivo: {order.disputeReason || 'sin especificar'}. Requiere atención en Mercado Pago.</span>}</div><span className={`badge ${order.status === 'paid' ? 'active' : order.status === 'disputed' ? 'pending' : 'violet'}`}>{order.status}</span></div>
         {order.status === 'paid' && <div className="admin-review-actions"><span>Solo procede con solicitud válida del comprador y conserva la documentación de soporte.</span><button className="button ghost" type="button" disabled={Boolean(busyId)} onClick={() => void refundOrder(order.id)}>{busyId === order.id ? 'Solicitando…' : 'Reembolsar total'}</button></div>}
       </article>)}
     </section>

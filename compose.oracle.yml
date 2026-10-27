@@ -12,7 +12,7 @@ services:
       - pg_data:/var/lib/postgresql/data
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U beatvault -d beatvault"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U beatvault -d beatvault"]
       interval: 10s
       timeout: 5s
       retries: 6

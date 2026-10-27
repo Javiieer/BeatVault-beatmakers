@@ -7,6 +7,7 @@ import { auth, server } from './index';
 import { emptyProfile } from '../src/domains/profile';
 import { validateProfile } from './profile';
 import { LocalRepository } from './store';
+import sharp from 'sharp';
 
 describe('creator profile privacy and persistence', () => {
   let base = '';
@@ -64,7 +65,7 @@ describe('creator profile privacy and persistence', () => {
     expect((await call(`/api/profiles/${ownerId}`)).status).toBe(404);
   });
   it('uploads optimized profile images and serves them only to profile visitors after opt-in', async () => {
-    const bytes = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover.jpg'));
+    const bytes = await sharp(await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover-qa.jpg'))).withMetadata({ orientation: 6 }).jpeg().toBuffer();
     const privateImage = `/api/profile/images/avatar`;
     expect((await call(privateImage, { method: 'POST', headers: { 'content-type': 'image/jpeg' }, body: new Uint8Array(bytes) })).status).toBe(401);
     expect((await call(privateImage, { method: 'POST', headers: { ...owner, 'x-csrf-token': '', 'content-type': 'image/jpeg' }, body: new Uint8Array(bytes) })).status).toBe(403);
@@ -100,7 +101,11 @@ describe('creator profile privacy and persistence', () => {
     expect(publicProfile).toMatchObject({ avatarFocalPoint: { x: 24, y: 68 }, coverFocalPoint: { x: 74, y: 36 } });
     expect(publicProfile).not.toHaveProperty('avatarImage');
     expect((await call(publicProfile.avatarUrl)).status).toBe(200);
-    expect((await call(publicProfile.avatarUrl.replace('/thumbnail', ''))).headers.get('content-type')).toBe('image/jpeg');
+    const publicOriginal = await call(publicProfile.avatarUrl.replace('/thumbnail', ''));
+    expect(publicOriginal.headers.get('content-type')).toBe('image/jpeg');
+    const normalizedMetadata = await sharp(Buffer.from(await publicOriginal.arrayBuffer())).metadata();
+    expect(normalizedMetadata.exif).toBeUndefined();
+    expect(normalizedMetadata.orientation).toBeUndefined();
 
     const friendEmail = `profile-friend-${randomUUID()}@test.local`;
     const friendAccount = await auth.register(friendEmail, 'temporary-test-password');
@@ -134,6 +139,25 @@ describe('creator profile privacy and persistence', () => {
     await call('/api/profile', { method: 'PUT', headers: owner, body: JSON.stringify(data) });
     expect((await call(publicProfile.avatarUrl)).status).toBe(404);
     expect((await new LocalRepository().findProfile(ownerId))?.avatarImage).toBeUndefined();
+  });
+  it('normalizes actual WebP and AVIF profile uploads while keeping their proportions', async () => {
+    const email = `profile-formats-${randomUUID()}@test.local`;
+    await auth.register(email, 'temporary-test-password');
+    const session = await auth.login(email, 'temporary-test-password');
+    expect(session).toBeTruthy();
+    const formatOwner = { cookie: `beatvault_session=${session!.token}`, 'x-csrf-token': session!.csrfToken };
+    for (const format of ['webp', 'avif'] as const) {
+      const bytes = await sharp({ create: { width: 960, height: 640, channels: 3, background: '#336699' } })[format]().toBuffer();
+      const result = await call('/api/profile/images/cover', { method: 'POST', headers: { ...formatOwner, 'content-type': `image/${format}` }, body: new Uint8Array(bytes) });
+      expect(result.status, await result.clone().text()).toBe(200);
+      const profile = (await result.json()).data;
+      const original = await call(profile.coverUrl.replace('/thumbnail', ''), { headers: formatOwner });
+      expect(original.status).toBe(200);
+      const metadata = await sharp(Buffer.from(await original.arrayBuffer())).metadata();
+      expect(metadata).toMatchObject({ format: 'jpeg', width: 960, height: 640 });
+      expect(metadata.exif).toBeUndefined();
+      expect(metadata.xmp).toBeUndefined();
+    }
   });
   it('validates lengths, genres and boolean visibility', () => {
     expect(_id).toBe('');

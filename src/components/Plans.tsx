@@ -67,6 +67,11 @@ export function Plans() {
     </header>
 
     {error && <p className="admin-guard" role="status">{error}</p>}
+    {planData?.commerce && <section className="panel" aria-label={tx('plans.effectivePolicy')}>
+      <h2>{tx('plans.effectivePolicy')}</h2>
+      <p>{tx(planData.commerce.mode === 'test' ? 'plans.testCheckout' : 'plans.disabledCheckout')}</p>
+      <p>{tx('plans.effectiveCommission', { fee: new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(planData.commerce.platformCommissionBps / 100) })}</p>
+    </section>}
 
     <section className="panel current-plan">
       <div>

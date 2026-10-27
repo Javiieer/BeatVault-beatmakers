@@ -11,6 +11,11 @@ const validInput: BeatListingInput = {
 }
 
 describe('seller beat listing drafts', () => {
+  it('keeps legacy stem records readable but excludes them from current sales', () => {
+    const legacy = { ...validInput, offers: [{ ...validInput.offers[0], deliverables: ['stems'] }] }
+    expect(isBeatListingInput(legacy)).toBe(true)
+    expect(isBeatListingReady(legacy)).toBe(false)
+  })
   it('accepts separate composition/master splits and USD-only non-binding offer drafts', () => {
     expect(isBeatListingInput(validInput)).toBe(true)
     expect(isBeatListingReady(validInput)).toBe(true)

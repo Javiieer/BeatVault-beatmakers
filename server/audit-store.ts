@@ -10,9 +10,14 @@ const valid = (value: unknown): value is AuditEvent => {
   return typeof item.id === 'string' && typeof item.timestamp === 'string' && typeof item.action === 'string' && typeof item.requestId === 'string' && typeof item.success === 'boolean' && !!item.metadata && typeof item.metadata === 'object'
 }
 export class JsonAuditStore implements AuditStore {
-  constructor(private readonly store: Pick<JsonStore, 'read' | 'write'> = new JsonStore(`${config.dataDirectory}/audit.json`)) {}
+  constructor(private readonly store: Pick<JsonStore, 'read' | 'write'> & Partial<Pick<JsonStore, 'update'>> = new JsonStore(`${config.dataDirectory}/audit.json`)) {}
   async list(): Promise<AuditEvent[]> { const cutoff = Date.now() - config.audit.retentionDays * 86400000; const events = await this.store.read<AuditEvent[]>([], valid); return events.filter(item => Date.parse(item.timestamp) >= cutoff).slice(-config.audit.maxEntries) }
-  async append(event: AuditEvent): Promise<void> { const events = (await this.list()).concat(event).slice(-config.audit.maxEntries); await this.store.write(events) }
+  async append(event: AuditEvent): Promise<void> {
+    if (this.store.update) {
+      const cutoff = Date.now() - config.audit.retentionDays * 86400000
+      await this.store.update<AuditEvent[], void>([], valid, items => ({ value: items.filter(item => Date.parse(item.timestamp) >= cutoff && item.id !== event.id).concat(event).slice(-config.audit.maxEntries), result: undefined }))
+    } else { const events = (await this.list()).filter(item => item.id !== event.id).concat(event).slice(-config.audit.maxEntries); await this.store.write(events) }
+  }
 }
 export class PostgresAuditStore implements AuditStore {
   constructor(private readonly db: SqlClient) {}

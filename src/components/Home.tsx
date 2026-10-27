@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { Bookmark, Check, CirclePlus, Flag, Heart, Image as ImageIcon, Maximize2, MessageCircle, Music2, Play, Send, Trash2, Video, X } from "lucide-react";
+import { Bookmark, Check, CirclePlus, Flag, Heart, Image as ImageIcon, Maximize2, MessageCircle, Music2, Play, RefreshCw, Send, Trash2, Video, X } from "lucide-react";
+import { apiUrl } from "../api/client";
 import type { AudioAsset } from "../types";
 import type { CatalogAsset } from "../data/localCatalog";
 import { creatorType } from "../data/creatorUploads";
@@ -10,7 +11,9 @@ import type { CatalogSocial } from "../domains/social";
 import { defaultAvatarFocalPoint, type ProfileImageFocalPoint } from "../domains/profile";
 import { HomeComposer } from "./HomeComposer";
 import { HomeStories } from "./HomeStories";
-import { createSocialPostComment, deleteSocialPost, readProfileSocialPosts, readSocialAccountState, readSocialFeed, readSocialPostInteractionsBatch, reportSocialPost, setSocialFollow, setSocialPostBookmark, toggleSocialPostReaction, type SocialAccountState, type SocialPostInteraction, type SocialPostReportReason, type SocialPostView } from "../data/socialPostRepository";
+import { HomeStoryComposer } from "./HomeStoryComposer";
+import { deleteSocialStory, readSocialStories, reportSocialStory, type SocialStoryReportReason, type SocialStoryView } from "../data/socialStoryRepository";
+import { createSocialPostComment, deleteSocialPost, readProfileSocialPosts, readSocialAccountState, readSocialFeed, readSocialPost, readSocialPostInteractionsBatch, reportSocialPost, setSocialFollow, setSocialPostBookmark, toggleSocialPostReaction, type SocialAccountState, type SocialPostInteraction, type SocialPostReportReason, type SocialPostView } from "../data/socialPostRepository";
 import orchestraCover from "../../assets/demo/dark-orchestra.png";
 import loFiCover from "../../assets/demo/chill-lo-fi.png";
 import hard808Cover from "../../assets/demo/hard-808s.png";
@@ -216,6 +219,15 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
   const [mediaUrls, setMediaUrls] = useState<Map<string, string>>(new Map());
   const [postStorageError, setPostStorageError] = useState(false);
   const [serverPosts, setServerPosts] = useState<SocialPostView[]>([]);
+  const [postTarget, setPostTarget] = useState(() => new URLSearchParams(window.location.hash.split('?')[1]).get('post') || '');
+  const [targetRetry, setTargetRetry] = useState(0);
+  const [targetState, setTargetState] = useState<{ scope: string; id: string; post?: SocialPostView; loading?: boolean; error?: string }>({ scope, id: '' });
+  const deletedServerPosts = useRef(new Set<string>());
+  const [serverStories, setServerStories] = useState<SocialStoryView[]>([]);
+  const [storyComposerOpen, setStoryComposerOpen] = useState(false);
+  const [storiesLoading, setStoriesLoading] = useState(false);
+  const [storiesError, setStoriesError] = useState("");
+  const [newPostsAvailable, setNewPostsAvailable] = useState(false);
   const [serverLoading, setServerLoading] = useState(false);
   const [serverError, setServerError] = useState("");
   const [nextCursor, setNextCursor] = useState<string>();
@@ -225,6 +237,24 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
   const photoDialog = useRef<HTMLDialogElement>(null);
   const localScopeReady = localRelationshipScope === scope;
   const interactionScopeReady = socialInteractionScope === scope;
+  useEffect(() => {
+    const sync = () => setPostTarget(new URLSearchParams(window.location.hash.split('?')[1]).get('post') || '');
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+  useEffect(() => {
+    if (!postTarget || scope === 'demo') { setTargetState({ scope, id: '' }); return; }
+    if (!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(postTarget)) { setTargetState({ scope, id: postTarget, error: 'El enlace de la publicación no es válido.' }); return; }
+    let active = true;
+    setTargetState({ scope, id: postTarget, loading: true });
+    void readSocialPost(postTarget).then(result => {
+      if (!active) return;
+      if (result.ok && !deletedServerPosts.current.has(result.data.id)) setTargetState({ scope, id: postTarget, post: result.data });
+      else if (result.ok) setTargetState({ scope, id: postTarget, error: 'Esta publicación no está disponible o no tienes acceso.' });
+      else setTargetState({ scope, id: postTarget, error: result.error.code === 'NETWORK_ERROR' || result.error.code === 'TIMEOUT' ? 'No se pudo consultar esta publicación. Vuelve a intentarlo.' : 'Esta publicación no está disponible o no tienes acceso.' });
+    }).catch(() => { if (active) setTargetState({ scope, id: postTarget, error: 'No se pudo consultar esta publicación. Vuelve a intentarlo.' }); });
+    return () => { active = false; };
+  }, [scope, postTarget, targetRetry]);
 
   useEffect(() => { if (localRelationshipScope === scope) writeIdSet("beatvault:home-likes", scope, liked); }, [liked, scope, localRelationshipScope]);
   useEffect(() => { if (localRelationshipScope === scope) writeIdSet("beatvault:home-saves", scope, saved); }, [saved, scope, localRelationshipScope]);
@@ -249,24 +279,52 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     return () => { active = false; };
   }, [scope]);
   useEffect(() => {
-    if (scope === "demo") { setServerPosts([]); setServerError(""); setServerLoading(false); return; }
+    if (scope === "demo") { setServerPosts([]); setServerStories([]); setServerError(""); setServerLoading(false); setStoriesLoading(false); setStoriesError(""); return; }
     let active = true;
+    deletedServerPosts.current.clear();
     setServerLoading(true); setServerError("");
-    void Promise.all([readSocialFeed(), readProfileSocialPosts(scope)]).then(([feedResult, ownResult]) => {
+    setStoriesLoading(true); setStoriesError("");
+    setServerStories([]);
+    void Promise.all([readSocialFeed(), readProfileSocialPosts(scope), readSocialStories()]).then(([feedResult, ownResult, storiesResult]) => {
       if (!active) return;
       const feedPosts = feedResult.ok ? feedResult.data.posts : [];
       const ownPosts = ownResult.ok ? ownResult.data.posts : [];
       const unique = new Map<string, SocialPostView>();
       [...feedPosts, ...ownPosts].forEach(post => unique.set(post.id, post));
-      setServerPosts([...unique.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+      // A publication can finish while the initial read is still in flight.
+      setServerPosts(current => {
+        current.filter(post => post.author.id === scope).forEach(post => unique.set(post.id, post));
+        return [...unique.values()].filter(post => !deletedServerPosts.current.has(post.id)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      });
+      if (storiesResult.ok) setServerStories(storiesResult.data.stories);
+      else setStoriesError(storiesResult.error.message);
+      setStoriesLoading(false);
       if (feedResult.ok) setNextCursor(feedResult.data.nextCursor);
       if (ownResult.ok) setOwnNextCursor(ownResult.data.nextCursor);
       const feedError = feedResult.ok ? undefined : feedResult.error.message;
       const ownError = ownResult.ok ? undefined : ownResult.error.message;
-      if (feedError && ownError) setServerError(`${feedError} ${ownError}`);
-      else if (feedError || ownError) setServerError(`La sincronización está incompleta: ${feedError || ownError}`);
-    }).finally(() => { if (active) setServerLoading(false); });
+      const errors = [feedError, ownError].filter(Boolean);
+      if (errors.length) setServerError(`La sincronización está incompleta: ${errors.join(" ")}`);
+    }).catch(() => { if (active) { setStoriesError("No se pudieron cargar las historias."); setStoriesLoading(false); setServerError("No se pudieron sincronizar las publicaciones."); } })
+      .finally(() => { if (active) setServerLoading(false); });
     return () => { active = false; };
+  }, [scope]);
+  useEffect(() => {
+    if (scope === "demo" || typeof EventSource === "undefined") return;
+    const stream = new EventSource(apiUrl("/api/feed/events"), { withCredentials: true });
+    stream.onmessage = event => {
+      try {
+        const payload: unknown = JSON.parse(event.data);
+        if (!payload || typeof payload !== "object") return;
+        const type = (payload as { type?: unknown }).type;
+        if (type === "new-posts") setNewPostsAvailable(true);
+        if (type === "new-stories") void readSocialStories().then(result => {
+          if (result.ok) { setServerStories(result.data.stories); setStoriesError(""); }
+          else setStoriesError(result.error.message);
+        }).catch(() => setStoriesError("No se pudieron actualizar las historias."));
+      } catch { /* Ignore malformed or unrelated events. */ }
+    };
+    return () => stream.close();
   }, [scope]);
   useEffect(() => {
     if (scope === "demo") { setAccountSocialState({ followedAccountIds: [], bookmarkedPostIds: [] }); setAccountSocialOwner(""); setAccountSocialLoading(false); setAccountSocialError(""); return; }
@@ -305,7 +363,8 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
       id: `local-${post.id}`, kind: post.kind, creator: "Tú", handle: "Tu publicación", profileHref: "#/profile", time: new Date(post.createdAt).toLocaleString(), avatar: hard808Cover,
       text: post.text, tags: [], likes: 0, comments: 0, mediaUrl: mediaUrls.get(post.id), localOnly: true,
     }));
-    const accountPosts: FeedPost[] = serverPosts.map(post => ({
+    const targetPost = targetState.scope === scope && targetState.id === postTarget ? targetState.post : undefined;
+    const accountPosts: FeedPost[] = [...new Map([...serverPosts, ...(targetPost ? [targetPost] : [])].map(post => [post.id, post])).values()].map(post => ({
       id: `social-${post.id}`, accountId: post.author.id, kind: post.kind, creator: post.author.displayName, handle: `@${post.author.id}`, profileHref: `#/profile?id=${encodeURIComponent(post.author.id)}`,
       time: new Date(post.createdAt).toLocaleString(), avatar: post.author.avatarUrl || hard808Cover, avatarFocalPoint: post.author.avatarFocalPoint, text: post.body, tags: [], likes: 0, comments: 0,
       ...(post.media ? { mediaUrl: post.media.url } : {}), socialPost: post,
@@ -320,23 +379,27 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     }; });
     const demoPosts = scope === "demo" && import.meta.env.DEV ? samplePosts : [];
     return [...createdPosts, ...accountPosts, ...ownPosts, ...demoPosts];
-  }, [uploads, localPosts, mediaUrls, scope, serverPosts]);
+  }, [uploads, localPosts, mediaUrls, scope, serverPosts, targetState, postTarget]);
   useEffect(() => {
     if (scope === "demo" || socialInteractionScope !== scope) return;
     let active = true;
-    const entries = posts.filter(post => post.asset).map(post => post.asset!);
-    void Promise.all(entries.map(async asset => {
-      const result = await readCatalogSocial(asset.id);
-      return result.ok ? [asset.id, result.data] as const : undefined;
-    })).then(results => {
-      if (active) setSocialByContentId(Object.fromEntries(results.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))));
-    });
+    const entries = [...new Map(posts.filter(post => post.asset && !socialByContentId[post.asset.id]).map(post => [post.asset!.id, post.asset!])).values()];
+    void (async () => {
+      for (let index = 0; index < entries.length && active; index += 2) {
+        const results = await Promise.all(entries.slice(index, index + 2).map(async asset => {
+          const result = await readCatalogSocial(asset.id);
+          return result.ok ? [asset.id, result.data] as const : undefined;
+        }));
+        const received = Object.fromEntries(results.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)));
+        if (active && Object.keys(received).length) setSocialByContentId(current => ({ ...current, ...received }));
+      }
+    })();
     return () => { active = false; };
-  }, [posts, scope, socialInteractionScope]);
+  }, [posts, scope, socialInteractionScope, socialByContentId]);
   useEffect(() => {
     if (scope === "demo" || socialInteractionScope !== scope) return;
     let active = true;
-    const remotePostIds = [...new Set(serverPosts.filter(post => post.visibility === "published" && !socialByPostId[post.id]).map(post => post.id))];
+    const remotePostIds = [...new Set(posts.flatMap(post => post.socialPost?.visibility === 'published' && !socialByPostId[post.socialPost.id] ? [post.socialPost.id] : []))];
     const batches: string[][] = [];
     for (let index = 0; index < remotePostIds.length; index += 30) batches.push(remotePostIds.slice(index, index + 30));
     if (!batches.length) return;
@@ -346,14 +409,13 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
       if (Object.keys(received).length) setSocialByPostId(current => ({ ...current, ...received }));
     });
     return () => { active = false; };
-  }, [scope, serverPosts, socialByPostId, socialInteractionScope]);
+  }, [scope, posts, socialByPostId, socialInteractionScope]);
   useEffect(() => {
-    const query = window.location.hash.split("?")[1];
-    const contentId = query ? new URLSearchParams(query).get("post") : null;
-    if (!contentId) return;
-    const timer = window.setTimeout(() => document.getElementById(`feed-post-own-${contentId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+    if (!postTarget) return;
+    setFilter('Para ti');
+    const timer = window.setTimeout(() => (document.getElementById(`feed-post-social-${postTarget}`) || document.getElementById(`feed-post-own-${postTarget}`))?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
     return () => window.clearTimeout(timer);
-  }, [posts]);
+  }, [posts, postTarget]);
   const addPostComment = async (post: FeedPost, text: string): Promise<boolean> => {
     if (post.socialPost && scope !== "demo") {
       const result = await createSocialPostComment(post.socialPost.id, text);
@@ -439,7 +501,11 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     if (!post.socialPost) return;
     if (!window.confirm("¿Eliminar esta publicación? Esta acción no se puede deshacer.")) return;
     const result = await deleteSocialPost(post.socialPost.id);
-    if (result.ok) setServerPosts(current => current.filter(item => item.id !== post.socialPost!.id));
+    if (result.ok) {
+      deletedServerPosts.current.add(post.socialPost.id);
+      setServerPosts(current => current.filter(item => item.id !== post.socialPost!.id));
+      setTargetState(current => current.id === post.socialPost!.id ? { scope, id: current.id, error: 'Esta publicación no está disponible o no tienes acceso.' } : current);
+    }
     else setServerError(result.error.message);
   };
   const submitReport = async (post: FeedPost, reason: SocialPostReportReason, details: string) => {
@@ -457,7 +523,7 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     const incoming = [...(feedResult?.ok ? feedResult.data.posts : []), ...(ownResult?.ok ? ownResult.data.posts : [])];
     if (incoming.length) setServerPosts(current => {
       const merged = new Map(current.map(post => [post.id, post]));
-      incoming.forEach(post => merged.set(post.id, post));
+      incoming.forEach(post => { if (!deletedServerPosts.current.has(post.id)) merged.set(post.id, post); });
       return [...merged.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     });
     if (feedResult?.ok) setNextCursor(feedResult.data.nextCursor);
@@ -466,11 +532,36 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     if (ownResult && !ownResult.ok) setServerError(ownResult.error.message);
     setFeedBusy(false);
   };
+  const refreshFeed = async () => {
+    if (scope === "demo" || feedBusy) return;
+    setFeedBusy(true);
+    const [feedResult, ownResult] = await Promise.all([readSocialFeed(), readProfileSocialPosts(scope)]);
+    const incoming = [...(feedResult.ok ? feedResult.data.posts : []), ...(ownResult.ok ? ownResult.data.posts : [])];
+    if (incoming.length) setServerPosts(current => {
+      const merged = new Map(current.map(post => [post.id, post]));
+      incoming.forEach(post => { if (!deletedServerPosts.current.has(post.id)) merged.set(post.id, post); });
+      return [...merged.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    });
+    if (feedResult.ok) { setNextCursor(feedResult.data.nextCursor); setNewPostsAvailable(false); }
+    if (ownResult.ok) setOwnNextCursor(ownResult.data.nextCursor);
+    const errors = [feedResult.ok ? "" : feedResult.error.message, ownResult.ok ? "" : ownResult.error.message].filter(Boolean);
+    setServerError(errors.length ? `No se pudieron actualizar todas las publicaciones: ${errors.join(" ")}` : "");
+    setFeedBusy(false);
+  };
+  const retryStories = async () => {
+    setStoriesLoading(true); setStoriesError("");
+    try {
+      const result = await readSocialStories();
+      if (result.ok) setServerStories(result.data.stories);
+      else setStoriesError(result.error.message);
+    } catch { setStoriesError("No se pudieron cargar las historias."); }
+    finally { setStoriesLoading(false); }
+  };
   const visiblePosts = posts.filter(post => filter === "Para ti" || (filter === "Siguiendo" && isPostFollowed(post)) || (filter === "Beats" && post.kind === "beat") || (filter === "Fotos" && post.kind === "photo") || (filter === "Videos" && post.kind === "video") || (filter === "Shorts" && post.kind === "short") || (filter === "Estados" && post.kind === "status"));
 
   const share = async (post: FeedPost) => {
     const url = new URL(window.location.href);
-    url.hash = post.href?.slice(1) || "/home";
+    url.hash = post.socialPost ? `/home?post=${encodeURIComponent(post.socialPost.id)}` : post.asset ? `/beat-detail?id=${encodeURIComponent(post.asset.id)}` : post.href?.slice(1) || "/home";
     const shareUrl = url.toString();
     try {
       if (navigator.share) await navigator.share({ title: `${post.creator} en BeatVault`, text: post.text, url: shareUrl });
@@ -479,14 +570,23 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
   };
 
   return <main className="home-page">
+    {postTarget && targetState.scope === scope && targetState.id === postTarget && targetState.loading && <p className="home-feedback" role="status">Buscando la publicación del enlace…</p>}
+    {postTarget && targetState.scope === scope && targetState.id === postTarget && targetState.error && !uploads.some(asset => asset.id === postTarget && asset.publicationStatus === 'published') && <div className="home-feedback" role="alert"><p>{targetState.error}</p><button type="button" className="button ghost" onClick={() => setTargetRetry(value => value + 1)}>Reintentar publicación</button>{/^[a-f0-9-]{36}$/i.test(postTarget) && <a href={`#/beat-detail?id=${encodeURIComponent(postTarget)}`}>Buscar como audio del catálogo</a>}</div>}
     {scope === "demo" && import.meta.env.DEV ? <section className="home-stories" aria-label="Estados de productores">
       <a className="home-story home-story-own" href="#/upload"><span><CirclePlus size={21} /><small>Tu estado</small></span></a>
       {stories.map(item => <button className="home-story" type="button" key={item.creator} onClick={() => setStory(item)}><span><img src={item.image} alt="" />{item.kind === "short" && <Video size={15} />}<small>{item.creator}</small></span></button>)}
       <a className="home-story home-story-more" href="#/shorts"><span><Video size={20} /><small>Ver Shorts</small></span></a>
-    </section> : scope !== "demo" ? <HomeStories posts={serverPosts} onCreate={() => {
-      const composer = document.querySelector<HTMLTextAreaElement>("#home-post-text");
-      composer?.scrollIntoView({ behavior: "smooth", block: "center" });
-      composer?.focus({ preventScroll: true });
+    </section> : scope !== "demo" ? <HomeStories stories={serverStories} viewerId={scope} loading={storiesLoading} error={storiesError} onRetry={() => void retryStories()} onCreate={() => setStoryComposerOpen(true)} onDelete={async story => {
+      try {
+        const result = await deleteSocialStory(story.id);
+        if (!result.ok) { setShareMessage(result.error.message); return false; }
+        setServerStories(current => current.filter(item => item.id !== story.id));
+        return true;
+      } catch { setShareMessage("No se pudo eliminar la historia. Inténtalo de nuevo."); return false; }
+    }} onReport={async (storyId, reason, details) => {
+      const result = await reportSocialStory(storyId, reason as SocialStoryReportReason, details);
+      if (!result.ok) { setShareMessage(result.error.message); return false; }
+      return true;
     }} /> : null}
     <div className="home-layout">
       <section className="home-feed" aria-label="Feed de BeatVault">
@@ -498,6 +598,7 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
         {serverError && <p className="home-composer-error" role="alert">No se pudieron sincronizar las publicaciones: {serverError}</p>}
         {scope !== "demo" && accountSocialLoading && accountSocialOwner !== scope && <p className="home-feed-status" role="status">Cargando tus seguidos y publicaciones guardadas…</p>}
         {scope !== "demo" && accountSocialError && <p className="home-composer-error" role="alert">No se pudieron sincronizar Seguir y Guardar: {accountSocialError}</p>}
+        {scope !== "demo" && newPostsAvailable && <button type="button" className="home-new-posts" disabled={feedBusy} onClick={() => void refreshFeed()}><RefreshCw size={15} className={feedBusy ? "is-spinning" : undefined} />{feedBusy ? "Actualizando publicaciones…" : "Hay publicaciones nuevas · Ver ahora"}</button>}
         <div className="home-feed-toolbar"><div className="home-feed-tabs" role="group" aria-label="Filtrar publicaciones">{["Para ti", "Siguiendo", "Beats", "Fotos", "Videos", "Shorts", "Estados"].map(item => <button type="button" key={item} className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}</button>)}</div><span>{visiblePosts.length} publicaciones</span></div>
         {shareMessage && <p className="home-feedback" role="status"><Check size={14} />{shareMessage}</p>}
         {visiblePosts.length === 0 && <div className="home-empty"><h2>Aún no sigues a productores</h2><p>Explora el feed y sigue perfiles para verlos aquí.</p><button className="button ghost" type="button" onClick={() => setFilter("Para ti")}>Volver a Para ti</button></div>}
@@ -522,6 +623,7 @@ export function Home({ uploads, onPlay, scope = "demo" }: { uploads: CatalogAsse
     <dialog ref={storyDialog} className="home-story-dialog" aria-labelledby="home-story-title" onClose={() => setStory(null)} onClick={event => { if (event.target === storyDialog.current) storyDialog.current?.close(); }}>
       {story && <><button className="home-story-close" type="button" aria-label="Cerrar estado" onClick={() => storyDialog.current?.close()}>×</button><img src={story.image} alt="" /><div><span className="eyebrow">{story.kind === "short" ? "SHORT · DEMO" : "ESTADO · DEMO"}</span><h2 id="home-story-title">{story.title}</h2><p>{story.creator} está compartiendo una idea desde su estudio.</p><a className="button" href={story.kind === "short" ? "#/shorts" : "#/beats"}>{story.kind === "short" ? "Ver Shorts" : "Explorar beats"}</a></div></>}
     </dialog>
+    {scope !== "demo" && <HomeStoryComposer open={storyComposerOpen} onClose={() => setStoryComposerOpen(false)} onPublish={newStory => { setStoriesError(""); setServerStories(current => [newStory, ...current.filter(item => item.id !== newStory.id)]); }} />}
     {photo && <PhotoViewer post={photo} comments={photo.socialPost ? (interactionScopeReady ? socialByPostId[photo.socialPost.id]?.comments || [] : []).map(comment => ({ id: comment.id, text: comment.body, createdAt: comment.createdAt, authorName: comment.authorName })) : localScopeReady ? comments[photo.id] || [] : []} dialogRef={photoDialog} onClose={() => { photoDialog.current?.close(); setPhoto(null); }} onComment={text => addPostComment(photo, text)} />}
   </main>;
 }

@@ -51,8 +51,8 @@ export async function receiveSellerEvidence(req: IncomingMessage, contentId: str
       parser.on('file', (field, stream, info) => {
         if (seen || field !== 'file') { stream.resume(); finish(new Error('EVIDENCE_FILE_REQUIRED')); return }
         seen = true
-        filename = safeName(info.filename)
-        declaredMime = info.mimeType.toLowerCase()
+        filename = safeName(typeof info.filename === 'string' ? info.filename : '')
+        declaredMime = typeof info.mimeType === 'string' ? info.mimeType.toLowerCase() : ''
         output = createWriteStream(temporary, { flags: 'wx' })
         stream.on('data', chunk => { sizeBytes += Buffer.byteLength(chunk) }).on('limit', () => finish(new Error('EVIDENCE_TOO_LARGE'))).on('error', error => finish(error))
         output.on('error', error => finish(error))

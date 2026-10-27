@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
 import { request as httpRequest } from 'node:http'
@@ -32,6 +32,11 @@ const managerId = `${fixturePrefix}_manager`
 const quotaId = `${fixturePrefix}_quota`
 const orderId = randomUUID()
 const webhookEventId = `${fixturePrefix}_stripe_event`
+const mercadoPagoOrderId = randomUUID()
+const mercadoPagoPaymentId = String(BigInt(`0x${randomUUID().replaceAll('-', '').slice(0, 15)}`))
+const mercadoPagoPreferenceId = `mpqa_${randomUUID().replaceAll('-', '')}`
+const mercadoPagoWebhookEventId = `${fixturePrefix}_mercadopago_event`
+const mercadoPagoReservationKey = `qa:${randomUUID()}`
 const password = 'Postgres-QA-Only-2026!'
 const emailFor = (kind: string) => `${fixturePrefix}-${kind}@beatvault.invalid`
 const uploadsDir = await mkdtemp(join(tmpdir(), 'beatvault-postgres-qa-'))
@@ -44,6 +49,7 @@ let apiPort = 0
 let socialPostId = ''
 let profileAvatarUrl = ''
 let profileCoverUrl = ''
+let socialSafetyTriggerName = ''
 const socialPostComment = 'PostgreSQL social profile comment'
 
 function wavFixture(dataBytes = 32000, marker = 0): Buffer {
@@ -119,17 +125,19 @@ async function stopApi(): Promise<void> {
 }
 
 function run(command: string, args: string[], input?: Buffer) {
-  return spawnSync(command, args, { input, windowsHide: true, maxBuffer: 128 * 1024 * 1024 })
+  return spawnSync(command, args, { input, windowsHide: true, maxBuffer: 128 * 1024 * 1024, env: { ...process.env, ...(process.env.BEATVAULT_TEST_PG_BIN ? { PGPASSWORD: decodeURIComponent(database.password) } : {}) } })
 }
 
 async function verifyBackupRestore(assetId: string, creatorContentId: string, expectedWav: Buffer, expectedArtwork: Buffer, expectedThumbnail: Buffer | undefined, socialId: string): Promise<void> {
   const container = process.env.BEATVAULT_TEST_DATABASE_CONTAINER
-  if (!container) {
-    console.log('SKIP: PostgreSQL/media restore drill (set BEATVAULT_TEST_DATABASE_CONTAINER to a labeled disposable PostgreSQL 16 container).')
+  const nativeBin = process.env.BEATVAULT_TEST_PG_BIN
+  if (!container && !nativeBin) {
+    console.log('SKIP: PostgreSQL/media restore drill (set a QA container or BEATVAULT_TEST_PG_BIN).')
     return
   }
   assert(databaseName.startsWith('beatvault_test_'), 'El ensayo de restauración solo acepta bases beatvault_test_*.')
 
+  if (container) {
   const inspected = run('docker', ['inspect', '--format', '{{json .Config.Labels}}|{{.Config.Image}}|{{json .NetworkSettings.Ports}}', container])
   assert(inspected.status === 0, `No se pudo inspeccionar el contenedor de QA: ${inspected.stderr.toString()}`)
   const [labelsText, image, bindingsText] = inspected.stdout.toString().trim().split('|')
@@ -140,6 +148,13 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
     ['127.0.0.1', '::1'].includes(binding.HostIp) && binding.HostPort === sourcePort)
   assert(labels?.['beatvault.qa'] === 'true' && image === 'postgres:16' && localBinding,
     'El ensayo requiere un contenedor etiquetado beatvault.qa=true, imagen postgres:16 y puerto publicado solo en loopback que coincida con la URL QA.')
+  } else {
+    const version = run(join(nativeBin!, 'pg_dump.exe'), ['--version'])
+    assert(version.status === 0 && /PostgreSQL\) 16\./.test(version.stdout.toString()), 'Native backup QA requires PostgreSQL 16 utilities.')
+  }
+  const pgTool = (tool: string, args: string[], input?: Buffer) => container
+    ? run('docker', ['exec', ...(input ? ['-i'] : []), container, tool, ...args], input)
+    : run(join(nativeBin!, `${tool}.exe`), ['-h', database.hostname, '-p', database.port || '5432', ...args], input)
 
   const restoreDb = `beatvault_test_restore_${randomUUID().replaceAll('-', '').slice(0, 12)}`
   const restoreUrl = new URL(databaseUrl)
@@ -153,7 +168,7 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
   let targetApiStarted = false
   try {
     await stopApi()
-    const dump = run('docker', ['exec', container, 'pg_dump', '-Fc', '--no-owner', '--no-acl', '-U', username, '-d', databaseName])
+    const dump = pgTool('pg_dump', ['-Fc', '--no-owner', '--no-acl', '-U', username, '-d', databaseName])
     assert(dump.status === 0 && dump.stdout.length > 0, `pg_dump falló: ${dump.stderr.toString()}`)
     await writeFile(dumpPath, dump.stdout)
 
@@ -175,9 +190,9 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
       }
     }
 
-    const created = run('docker', ['exec', container, 'createdb', '-U', username, restoreDb])
+    const created = pgTool('createdb', ['-U', username, restoreDb])
     assert(created.status === 0, `No se pudo crear la base temporal de restauración: ${created.stderr.toString()}`)
-    const restored = run('docker', ['exec', '-i', container, 'pg_restore', '--no-owner', '--no-acl', '-U', username, '-d', restoreDb], await readFile(dumpPath))
+    const restored = pgTool('pg_restore', ['--no-owner', '--no-acl', '-U', username, '-d', restoreDb], await readFile(dumpPath))
     assert(restored.status === 0, `pg_restore falló: ${restored.stderr.toString()}`)
 
     await mkdir(restoredMedia, { recursive: true })
@@ -214,6 +229,8 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
     const restoredCreatorState = (await request(restoredCreator, '/api/account/social-state').then(value => value.json()) as { data: { followedAccountIds: string[] } }).data
     const restoredOutsider = await login(emailFor('outsider'))
     const restoredOutsiderState = (await request(restoredOutsider, '/api/account/social-state').then(value => value.json()) as { data: { bookmarkedPostIds: string[] } }).data
+    const restoredFavorites = (await request(restoredOutsider, '/api/account/favorites').then(value => value.json()) as { data: { accountId: string; contentIds: string[] } }).data
+    assert(restoredFavorites.accountId === outsiderId && restoredFavorites.contentIds.includes(creatorContentId), 'Los favoritos de catálogo no sobrevivieron al backup/restore PostgreSQL.')
     assert(restoredCreatorState.followedAccountIds.includes(adminId) && restoredOutsiderState.bookmarkedPostIds.includes(socialId), 'Los seguimientos o guardados no sobrevivieron al backup/restore PostgreSQL.')
     if (profileAvatarUrl && profileCoverUrl) {
       for (const imageUrl of [profileAvatarUrl, profileCoverUrl]) {
@@ -237,7 +254,7 @@ async function verifyBackupRestore(assetId: string, creatorContentId: string, ex
   } finally {
     if (targetApiStarted || api) await stopApi()
     await restorePool?.end()
-    const dropped = run('docker', ['exec', container, 'dropdb', '--if-exists', '-U', username, restoreDb])
+    const dropped = pgTool('dropdb', ['--if-exists', '-U', username, restoreDb])
     if (dropped.status !== 0) console.error(`Restore QA cleanup warning; temporary database ${restoreDb} may need removal: ${dropped.stderr.toString()}`)
     await rm(backupDirectory, { recursive: true, force: true })
   }
@@ -291,6 +308,29 @@ async function rawUpload(session: Session, filename: string, mimeType: string, b
   })
 }
 
+async function rawStoryPhotoUpload(session: Session, filename: string, mimeType: string, bytes: Buffer, bodyText = '', audience = 'public'): Promise<{ status: number; body: { data?: { id: string; media?: { url: string; mimeType: string; sizeBytes: number } }; error?: { code?: string; message?: string } } }> {
+  const boundary = `beatvault-story-${randomUUID()}`
+  const form = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="body"\r\n\r\n${bodyText}\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="audience"\r\n\r\n${audience}\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`),
+    bytes,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ])
+  return new Promise((resolvePromise, reject) => {
+    const req = httpRequest(`${base()}/api/stories`, { method: 'POST', headers: { cookie: session.cookie, 'x-csrf-token': session.csrf, 'x-social-post-kind': 'photo', 'content-type': `multipart/form-data; boundary=${boundary}`, 'content-length': String(form.length) } }, response => {
+      const chunks: Buffer[] = []
+      response.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      response.on('end', () => {
+        try { resolvePromise({ status: response.statusCode ?? 0, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as { data?: { id: string; media?: { url: string; mimeType: string; sizeBytes: number } }; error?: { code?: string; message?: string } } }) }
+        catch (error) { reject(error) }
+      })
+    })
+    req.on('error', reject)
+    req.end(form)
+  })
+}
+
 async function waitForEvent(reader: ReadableStreamDefaultReader<Uint8Array>, timeoutMs = 5000): Promise<string> {
   let text = ''
   const deadline = Date.now() + timeoutMs
@@ -306,8 +346,9 @@ async function waitForEvent(reader: ReadableStreamDefaultReader<Uint8Array>, tim
   throw new Error('No llegó el evento SSE esperado.')
 }
 
-const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'auth_sessions', 'beat_orders', 'catalog_artwork', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_beat_listing_drafts', 'marketplace_beat_listing_evidence', 'marketplace_promotions', 'notifications', 'projects', 'social_account_follows', 'social_post_bookmarks', 'social_posts', 'social_post_comments', 'social_post_reactions', 'social_post_reports', 'stripe_connected_accounts', 'stripe_webhook_events']
+const tables = ['accounts', 'account_storage_quotas', 'account_storage_usage', 'audit_events', 'assets', 'auth_sessions', 'beat_orders', 'catalog_artwork', 'catalog_assets', 'catalog_activity', 'catalog_comments', 'catalog_reactions', 'creator_profiles', 'direct_messages', 'friendships', 'marketplace_beat_listing_drafts', 'marketplace_beat_listing_evidence', 'marketplace_promotions', 'notifications', 'projects', 'social_account_blocks', 'social_account_follows', 'social_post_bookmarks', 'social_posts', 'social_post_comments', 'social_post_reactions', 'social_post_reports', 'social_stories', 'social_story_reports', 'stripe_connected_accounts', 'stripe_webhook_events', 'mercadopago_seller_links', 'mercadopago_oauth_intents', 'mercadopago_order_payments', 'mercadopago_provider_payments', 'mercadopago_preference_reservations', 'provider_webhook_events']
 try {
+  tables.push('account_catalog_favorites', 'marketplace_listing_review_state')
   const schema = await pool.query<{ name: string; exists: boolean }>(
     'SELECT name, to_regclass($1 || \'.\' || name) IS NOT NULL AS exists FROM unnest($2::text[]) AS name',
     ['public', tables],
@@ -322,6 +363,15 @@ try {
   const packageSchema = await pool.query<{ exists: boolean }>("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'accounts' AND column_name = 'purchased_plan_ids') AS exists")
   assert(packageSchema.rows[0]?.exists, 'Falta el historial de paquetes verificados de la migracion 014_verified_package_history.sql.')
   assert(schema.rows.some(table => table.name === 'social_account_follows' && table.exists) && schema.rows.some(table => table.name === 'social_post_bookmarks' && table.exists), 'Faltan las tablas de relaciones sociales de la migracion 028_social_follows_bookmarks.sql.')
+  assert(schema.rows.some(table => table.name === 'social_stories' && table.exists), 'Falta la tabla de historias independientes de la migracion 029_social_stories.sql.')
+  const socialSafetyMigrations = await pool.query<{ version: string }>('SELECT version FROM beatvault_schema_migrations WHERE version = ANY($1::text[]) ORDER BY version', [['031_social_blocks_and_story_reports.sql', '032_story_report_evidence_times.sql', '033_social_safety_hardening.sql', '034_social_story_evidence_absolute_retention.sql']])
+  assert(socialSafetyMigrations.rows.length === 4, 'No están aplicadas y registradas las migraciones 031–034 de seguridad social.')
+  const marketplacePaymentMigration = await pool.query<{ version: string }>('SELECT version FROM beatvault_schema_migrations WHERE version=$1', ['035_mercadopago_marketplace.sql'])
+  assert(marketplacePaymentMigration.rows.length === 1, 'No está aplicada y registrada la migración 035 de Mercado Pago.')
+  const safetySchema = await pool.query<{ blocks: boolean; reports: boolean; evidenceExpiredAt: boolean; followGuard: boolean }>(`SELECT to_regclass('public.social_account_blocks') IS NOT NULL AS blocks, to_regclass('public.social_story_reports') IS NOT NULL AS reports,
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='social_story_reports' AND column_name='evidence_expired_at') AS "evidenceExpiredAt",
+    EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='social_account_follows_block_guard' AND NOT tgisinternal) AS "followGuard"`)
+  assert(safetySchema.rows[0]?.blocks && safetySchema.rows[0]?.reports && safetySchema.rows[0]?.evidenceExpiredAt && safetySchema.rows[0]?.followGuard, 'El esquema social no tiene columnas/trigger de las migraciones 031–034.')
 
   const hash = await hashPassword(password)
   for (const [id, kind, role] of [[creatorId, 'creator', 'creator'], [adminId, 'admin', 'admin'], [outsiderId, 'outsider', 'creator'], [quotaId, 'quota', 'creator']]) {
@@ -337,10 +387,79 @@ try {
   assert((await repo.findStripeConnectAccountByStripeId(connectedAccount.stripeAccountId))?.accountId === creatorId, 'No persistió la cuenta Stripe Connect.')
   assert(await repo.recordProcessedStripeEvent(webhookEventId, 'account.updated'), 'No registró el evento Stripe inicial.')
   assert(!(await repo.recordProcessedStripeEvent(webhookEventId, 'account.updated')) && await repo.hasProcessedStripeEvent(webhookEventId), 'La deduplicación de eventos Stripe no es idempotente.')
-  const testOrder = { id: orderId, buyerId: outsiderId, sellerId: creatorId, contentId: randomUUID(), offerId: 'wav', title: 'PostgreSQL QA beat', amountMinor: 2000, commissionMinor: 100, processingEstimateMinor: 94, applicationFeeMinor: 194, sellerNetMinor: 1806, currency: 'usd' as const, status: 'pending' as const, createdAt: new Date().toISOString() }
+  const testOrder = { id: orderId, buyerId: outsiderId, sellerId: creatorId, contentId: randomUUID(), offerId: 'wav', title: 'PostgreSQL QA beat', amountMinor: 2000, commissionMinor: 100, processingEstimateMinor: 94, applicationFeeMinor: 194, sellerNetMinor: 1806, currency: 'usd' as const, status: 'pending' as const, stripeDestinationAccountId: connectedAccount.stripeAccountId, stripeCheckoutBaseUrl: 'http://localhost:5188', createdAt: new Date().toISOString() }
   await repo.createBeatOrder(testOrder)
+  const persistedCheckoutSnapshot = await repo.findBeatOrder(orderId)
+  assert(persistedCheckoutSnapshot?.stripeDestinationAccountId === connectedAccount.stripeAccountId && persistedCheckoutSnapshot.stripeCheckoutBaseUrl === 'http://localhost:5188', 'No persistió el snapshot estable del checkout en PostgreSQL.')
   const paidOrder = await repo.updateBeatOrder(orderId, { status: 'paid', stripePaymentIntentId: `pi_${fixturePrefix}`, paidAt: new Date().toISOString() })
   assert(paidOrder?.status === 'paid' && (await repo.findBeatOrderByPaymentIntentId(`pi_${fixturePrefix}`))?.id === orderId, 'No persistió el estado pagado ni la búsqueda de la orden.')
+  const refundWins = await repo.transitionBeatOrder(orderId, ['paid'], { status: 'refunded' })
+  const stalePaymentWins = await repo.transitionBeatOrder(orderId, ['pending', 'failed'], { status: 'paid' })
+  assert(refundWins?.status === 'refunded' && !stalePaymentWins && (await repo.findBeatOrder(orderId))?.status === 'refunded', 'Una transición de pago obsoleta reabrió una orden reembolsada.')
+  const failedRetryOrder = { ...testOrder, id: randomUUID(), status: 'failed' as const, createdAt: new Date().toISOString() }
+  await repo.createBeatOrder(failedRetryOrder)
+  const refundBeforeRetry = await repo.transitionBeatOrder(failedRetryOrder.id, ['failed'], { status: 'refunded' })
+  const retryAfterRefund = await repo.transitionBeatOrder(failedRetryOrder.id, ['failed'], { status: 'pending' })
+  assert(refundBeforeRetry?.status === 'refunded' && !retryAfterRefund && (await repo.findBeatOrder(failedRetryOrder.id))?.status === 'refunded', 'El reintento failed→pending reabrió una orden ya reembolsada.')
+  await pool.query('DELETE FROM beat_orders WHERE id=$1', [failedRetryOrder.id])
+  const mercadoPagoRate = 17
+  const mercadoPagoAmountMinor = 34_000
+  const mercadoPagoFeeMinor = 3_400
+  const mercadoPagoSellerNetMinor = mercadoPagoAmountMinor - mercadoPagoFeeMinor
+  const mercadoPagoQuote = { sourceAmountMinor: 2_000, sourceCurrency: 'usd' as const, exchangeRateUsdMxn: mercadoPagoRate, amountMinor: mercadoPagoAmountMinor, currency: 'mxn' as const, commissionMinor: mercadoPagoFeeMinor, sellerNetMinor: mercadoPagoSellerNetMinor }
+  await repo.createBeatOrder({ ...testOrder, id: mercadoPagoOrderId, amountMinor: mercadoPagoAmountMinor, commissionMinor: mercadoPagoFeeMinor, processingEstimateMinor: 0, applicationFeeMinor: mercadoPagoFeeMinor, sellerNetMinor: mercadoPagoSellerNetMinor, currency: 'mxn', paymentProvider: 'mercadopago', stripeDestinationAccountId: undefined, stripeCheckoutBaseUrl: undefined, mercadoPagoClientId: '987654321', mercadoPagoMode: 'test', mercadoPagoPreferenceId, mercadoPagoQuote, createdAt: new Date().toISOString() })
+  const tokenCiphertext = `v1.${'A'.repeat(16)}.${'B'.repeat(22)}.${'C'.repeat(43)}`
+  const sellerLink = { accountId: creatorId, applicationId: '987654321', mode: 'test' as const, providerUserId: '123456789', encryptedAccessToken: tokenCiphertext, encryptedRefreshToken: tokenCiphertext, accessTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(), version: 1, status: 'connected' as const, updatedAt: new Date().toISOString() }
+  assert(await repo.saveSellerLink(sellerLink, 0) && (await repo.findSellerLink({ accountId: creatorId, applicationId: '987654321', mode: 'test' }))?.providerUserId === sellerLink.providerUserId, 'No persistió el vínculo de vendedor Mercado Pago con control de versión.')
+  const oauthStateHash = randomUUID().replaceAll('-', '').padEnd(64, 'a').slice(0, 64)
+  const sessionBindingHash = randomUUID().replaceAll('-', '').padEnd(64, 'b').slice(0, 64)
+  await repo.createOAuthIntent({ accountId: creatorId, applicationId: '987654321', mode: 'test', stateHash: oauthStateHash, sessionBindingHash, encryptedCodeVerifier: tokenCiphertext, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() })
+  assert(Boolean(await repo.consumeOAuthIntent(oauthStateHash, sessionBindingHash, new Date().toISOString())) && !await repo.consumeOAuthIntent(oauthStateHash, sessionBindingHash, new Date().toISOString()), 'El estado OAuth Mercado Pago no fue de un solo uso en PostgreSQL.')
+  const attemptId = randomUUID()
+  const attempt = await repo.createMercadoPagoOrderPayment({ id: attemptId, orderId: mercadoPagoOrderId, sellerId: creatorId, mode: 'test', applicationId: '987654321', providerUserId: sellerLink.providerUserId, idempotencyKey: `qa:${randomUUID()}`, preferenceId: mercadoPagoPreferenceId, checkoutUrl: 'https://www.mercadopago.com.mx/checkout/v1/redirect?pref_id=qa', externalReference: mercadoPagoOrderId, amountMinor: mercadoPagoAmountMinor, currency: 'MXN', quote: { sourceAmountMinor: 2_000, sourceCurrency: 'usd', exchangeRateUsdMxn: mercadoPagoRate, marketplaceFeeMinor: mercadoPagoFeeMinor, sellerNetMinor: mercadoPagoSellerNetMinor }, status: 'created', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+  assert(attempt.preferenceId === mercadoPagoPreferenceId && (await repo.findMercadoPagoOrderPaymentByPreference('987654321', 'test', sellerLink.providerUserId, mercadoPagoPreferenceId))?.id === attemptId, 'No persistió la preferencia/orden Mercado Pago.')
+  const reservation = { accountId: creatorId, applicationId: '987654321', mode: 'test' as const, key: mercadoPagoReservationKey, fingerprint: createHash('sha256').update(randomUUID()).digest('hex'), buyerId: outsiderId, orderId: mercadoPagoOrderId, operationId: `qa:${randomUUID()}` }
+  assert((await repo.reservePreference(reservation)).state === 'reserved', 'No reservó la creación idempotente de preferencia Mercado Pago.')
+  const preference = { preferenceId: mercadoPagoPreferenceId, checkoutUrl: 'https://www.mercadopago.com.mx/checkout/v1/redirect?pref_id=qa', collectorId: sellerLink.providerUserId, orderId: mercadoPagoOrderId, amountMinor: mercadoPagoAmountMinor, commissionMinor: mercadoPagoFeeMinor, currency: 'MXN' as const }
+  await repo.completePreference(reservation.key, reservation.fingerprint, preference)
+  assert((await repo.reservePreference(reservation)).state === 'complete', 'No recuperó la preferencia completada tras un reintento.')
+  const providerPayment = { paymentId: mercadoPagoPaymentId, attemptId: mercadoPagoPreferenceId, orderId: mercadoPagoOrderId, applicationId: '987654321', mode: 'test' as const, providerUserId: sellerLink.providerUserId, amountMinor: mercadoPagoAmountMinor, refundedMinor: 0, currency: 'MXN' as const, status: 'approved', statusDetail: 'accredited', normalizedStatus: 'paid' as const, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+  assert((await repo.createMercadoPagoProviderPayment(providerPayment)).paymentId === mercadoPagoPaymentId && (await repo.listMercadoPagoProviderPaymentsByOrder(mercadoPagoOrderId)).length === 1, 'No persistió el pago Mercado Pago asociado a su preferencia exacta.')
+  assert(await repo.recordProcessedProviderWebhookEvent({ provider: 'mercadopago', environment: 'test', eventId: mercadoPagoWebhookEventId, eventType: 'payment.updated', createdAt: new Date().toISOString() }) && !(await repo.recordProcessedProviderWebhookEvent({ provider: 'mercadopago', environment: 'test', eventId: mercadoPagoWebhookEventId, eventType: 'payment.updated', createdAt: new Date().toISOString() })) && await repo.hasProcessedProviderWebhookEvent('mercadopago', 'test', mercadoPagoWebhookEventId), 'La bandeja webhook Mercado Pago no deduplicó el evento en PostgreSQL.')
+  assert((await repo.transitionMercadoPagoProviderPayment(mercadoPagoPaymentId, '987654321', 'test', ['paid'], { normalizedStatus: 'refunded', status: 'refunded', refundedMinor: mercadoPagoAmountMinor }))?.normalizedStatus === 'refunded' && !(await repo.transitionMercadoPagoProviderPayment(mercadoPagoPaymentId, '987654321', 'test', ['paid'], { normalizedStatus: 'paid', status: 'approved' })), 'El ledger de pago Mercado Pago permitió retroceder de reembolsado a pagado.')
+  await pool.query('DELETE FROM provider_webhook_events WHERE provider=$1 AND environment=$2 AND event_id=$3', ['mercadopago', 'test', mercadoPagoWebhookEventId])
+  await pool.query('DELETE FROM mercadopago_provider_payments WHERE application_id=$1 AND mode=$2 AND payment_id=$3', ['987654321', 'test', mercadoPagoPaymentId])
+  await pool.query('DELETE FROM mercadopago_preference_reservations WHERE application_id=$1 AND mode=$2 AND key=$3', ['987654321', 'test', reservation.key])
+  await pool.query('DELETE FROM mercadopago_order_payments WHERE id=$1', [attemptId])
+  await pool.query('DELETE FROM beat_orders WHERE id=$1', [mercadoPagoOrderId])
+  await pool.query('DELETE FROM mercadopago_oauth_intents WHERE state_hash=$1', [oauthStateHash])
+  await pool.query('DELETE FROM mercadopago_seller_links WHERE account_id=$1 AND application_id=$2 AND mode=$3', [creatorId, '987654321', 'test'])
+  console.log('PASS: Mercado Pago OAuth single-use state, encrypted seller link, preference reservation/idempotency, exact payment ledger, webhook deduplication, and terminal state compare-and-set.')
+  const sourceId = randomUUID()
+  const sourceTime = new Date().toISOString()
+  const sourceAsset = { id: sourceId, ownerId: creatorId, originalName: 'source.wav', storageKey: `${creatorId}/${sourceId}.wav`, mimeType: 'audio/wav', sizeBytes: 32, contentHash: 'a'.repeat(64), state: 'available' as const, createdAt: sourceTime, updatedAt: sourceTime }
+  const sourceOrder = { ...testOrder, id: randomUUID(), fulfillment: { version: 1 as const, assetId: sourceId, sourceHash: sourceAsset.contentHash, sourceSizeBytes: 32, sourceMimeType: 'audio/wav', sourceName: 'source.wav', deliverables: ['wav' as const], offerLabel: 'WAV', usageSummary: 'Local PostgreSQL source retention test.', termsVersion: 'qa-v1' } }
+  await repo.createAsset(sourceAsset)
+  let invalidSourceBlocked = false
+  try { await repo.createBeatOrder({ ...sourceOrder, fulfillment: { ...sourceOrder.fulfillment, sourceHash: 'b'.repeat(64) } }) } catch (error) { invalidSourceBlocked = error instanceof Error && error.message === 'ORDER_DELIVERABLES_UNAVAILABLE' }
+  assert(invalidSourceBlocked, 'PostgreSQL permitió una compra con hash de audio incorrecto.')
+  await repo.createBeatOrder(sourceOrder)
+  let sourceRetained = false
+  try { await repo.deleteAsset(sourceId, creatorId) } catch (error) { sourceRetained = error instanceof Error && error.message === 'PURCHASE_SOURCE_RETAINED' }
+  assert(sourceRetained && await repo.findAsset(sourceId, creatorId), 'Se pudo borrar la fuente de una compra pendiente.')
+  await repo.updateBeatOrder(sourceOrder.id, { status: 'refunded' })
+  await repo.deleteAsset(sourceId, creatorId)
+  await pool.query('DELETE FROM beat_orders WHERE id=$1', [sourceOrder.id])
+  await repo.createAsset(sourceAsset)
+  const race = await Promise.allSettled([repo.createBeatOrder(sourceOrder), repo.deleteAsset(sourceId, creatorId)])
+  assert(race.filter(result => result.status === 'fulfilled').length === 1, 'Compra y borrado concurrentes deben ser mutuamente excluyentes.')
+  const racedOrder = await repo.findBeatOrder(sourceOrder.id)
+  const racedAsset = await repo.findAsset(sourceId, creatorId)
+  assert(!racedOrder || Boolean(racedAsset), 'La carrera dejó una compra sin su audio original.')
+  if (racedOrder) await repo.updateBeatOrder(sourceOrder.id, { status: 'refunded' })
+  await repo.deleteAsset(sourceId, creatorId)
+  await pool.query('DELETE FROM beat_orders WHERE id=$1', [sourceOrder.id])
+  console.log('PASS: PostgreSQL source integrity, purchase retention, terminal order-state compare-and-set, and concurrent order/delete serialization.')
   await startApi()
 
   let creator = await login(emailFor('creator'))
@@ -411,6 +530,71 @@ try {
   const socialFeed = (await request(outsider, '/api/feed').then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
   const socialProfile = (await request(outsider, `/api/profiles/${creatorId}/posts`).then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
   assert(socialFeed.some(post => post.id === socialPostId) && socialProfile.some(post => post.id === socialPostId), 'El post público no se sincronizó entre Home/feed y el perfil del creador.')
+  response = await request(creator, '/api/stories', 'POST', { body: 'PostgreSQL standalone story', audience: 'public' })
+  assert(response.status === 201, `No se publicó la historia separada en PostgreSQL (${response.status}).`)
+  const publicStory = (await response.json() as { data: { id: string; createdAt: string; expiresAt: string } }).data
+  assert(Date.parse(publicStory.expiresAt) - Date.parse(publicStory.createdAt) === 24 * 60 * 60 * 1000, 'La historia PostgreSQL no vence exactamente a las 24 horas.')
+  const outsiderStories = (await request(outsider, '/api/stories').then(value => value.json()) as { data: { stories: Array<{ id: string }> } }).data.stories
+  assert(outsiderStories.some(story => story.id === publicStory.id), 'La historia pública no se compartió con otra cuenta PostgreSQL.')
+  assert(!(await request(outsider, '/api/feed').then(value => value.json()) as { data: { posts: Array<{ body: string }> } }).data.posts.some(post => post.body === 'PostgreSQL standalone story'), 'Una historia independiente apareció como post del feed PostgreSQL.')
+  const storyImageBytes = await readFile(resolve(process.cwd(), 'server/fixtures/beat-upload-cover-qa.jpg'))
+  const photoStoryUpload = await rawStoryPhotoUpload(creator, 'reported-story.jpg', 'image/jpeg', storyImageBytes, 'PostgreSQL private evidence snapshot')
+  assert(photoStoryUpload.status === 201 && photoStoryUpload.body.data?.id && photoStoryUpload.body.data.media?.url, `No se creó la Story de imagen PostgreSQL (${photoStoryUpload.status} ${photoStoryUpload.body.error?.code ?? ''}: ${photoStoryUpload.body.error?.message ?? ''}); valida fixture/Sharp.`)
+  const photoStoryId = photoStoryUpload.body.data.id
+  const photoStoryMediaUrl = photoStoryUpload.body.data.media.url
+  const outsiderStoryMedia = await request(outsider, photoStoryMediaUrl)
+  assert(outsiderStoryMedia.status === 200, `El visitante no pudo leer el medio público de Story en PostgreSQL (${outsiderStoryMedia.status}).`)
+  const normalizedStoryImage = Buffer.from(await outsiderStoryMedia.arrayBuffer())
+  const storyReportResponse = await request(outsider, `/api/stories/${photoStoryId}/reports`, 'POST', { reason: 'copyright', details: 'PostgreSQL report evidence verification.' })
+  assert(storyReportResponse.status === 201, `No se pudo reportar la Story PostgreSQL (${storyReportResponse.status}).`)
+  const storyReportId = (await storyReportResponse.json() as { data: { id: string; status: string } }).data.id
+  const anonymousEvidence = await fetch(`${base()}/api/social-moderation/story-reports/${storyReportId}/evidence`)
+  const anonymousEvidenceHead = await fetch(`${base()}/api/social-moderation/story-reports/${storyReportId}/evidence`, { method: 'HEAD' })
+  const regularEvidence = await request(outsider, `/api/social-moderation/story-reports/${storyReportId}/evidence`)
+  const regularEvidenceHead = await fetch(`${base()}/api/social-moderation/story-reports/${storyReportId}/evidence`, { method: 'HEAD', headers: { cookie: outsider.cookie } })
+  assert(anonymousEvidence.status === 401 && anonymousEvidenceHead.status === 401 && regularEvidence.status === 403 && regularEvidenceHead.status === 403, 'GET/HEAD de evidencia debe rechazar anónimo (401) y cuentas normales (403).')
+  const storyQueue = (await request(manager, '/api/social-moderation/story-reports?limit=100').then(value => value.json()) as { data: { reports: Array<{ id: string; reporterId: string; evidenceUrl?: string; evidenceAvailable?: boolean; evidenceStorageKey?: string }> } }).data.reports
+  const queuedStoryReport = storyQueue.find(item => item.id === storyReportId)
+  assert(queuedStoryReport?.reporterId === outsiderId && queuedStoryReport.evidenceAvailable && queuedStoryReport.evidenceUrl && !queuedStoryReport.evidenceStorageKey, 'La cola staff no conservó el snapshot ni omitió la clave de almacenamiento.')
+  const staffEvidenceHead = await fetch(`${base()}${queuedStoryReport.evidenceUrl}`, { method: 'HEAD', headers: { cookie: manager.cookie } })
+  const staffEvidence = await fetch(`${base()}${queuedStoryReport.evidenceUrl}`, { headers: { cookie: manager.cookie } })
+  assert(staffEvidenceHead.status === 200 && Number(staffEvidenceHead.headers.get('content-length')) > 0 && staffEvidenceHead.headers.get('cache-control')?.includes('no-store'), 'HEAD staff debe confirmar evidencia privada con no-store.')
+  const staffEvidenceBytes = Buffer.from(await staffEvidence.arrayBuffer())
+  const persistedStoryReport = await pool.query<{ media_sha256: string; status: string; created_at: Date }>('SELECT media_sha256,status,created_at FROM social_story_reports WHERE id=$1', [storyReportId])
+  assert(staffEvidence.status === 200 && createHash('sha256').update(staffEvidenceBytes).digest('hex') === persistedStoryReport.rows[0]?.media_sha256 && staffEvidenceBytes.equals(normalizedStoryImage), 'GET staff no devolvió exactamente los bytes normalizados conservados de la Story.')
+  assert((await request(creator, `/api/social-moderation/story-reports/${storyReportId}/evidence`)).status === 403, 'El autor de la Story no puede leer evidencia reservada a staff.')
+  assert((await request(manager, `/api/social-moderation/story-reports/${randomUUID()}/evidence`)).status === 404, 'Un reporte inexistente debe devolver 404 aun para staff.')
+  response = await request(creator, `/api/stories/${photoStoryId}`, 'DELETE')
+  assert(response.status === 200 && (await request(outsider, photoStoryMediaUrl)).status === 404, 'Al borrar la Story se borró incorrectamente el snapshot privado o se dejó el medio original accesible.')
+  const triggerName = `qa_social_report_audit_${randomUUID().replaceAll('-', '').slice(0, 12)}`
+  socialSafetyTriggerName = triggerName
+  await pool.query(`CREATE OR REPLACE FUNCTION ${triggerName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.metadata->>'resource'='social-story-report-review' THEN RAISE EXCEPTION 'QA story audit failure' USING ERRCODE='23514'; END IF; RETURN NEW; END $$`)
+  await pool.query(`CREATE TRIGGER ${triggerName}_trigger BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION ${triggerName}()`)
+  const rejectedReview = await request(manager, `/api/social-moderation/story-reports/${storyReportId}`, 'PATCH', { status: 'reviewed' })
+  const afterRejectedReview = await pool.query<{ status: string }>('SELECT status FROM social_story_reports WHERE id=$1', [storyReportId])
+  const rejectedReviewAudit = await pool.query(`SELECT id FROM audit_events WHERE metadata->>'reportId'=$1 AND metadata->>'resource'='social-story-report-review'`, [storyReportId])
+  assert(rejectedReview.status === 500 && afterRejectedReview.rows[0]?.status === 'open' && rejectedReviewAudit.rowCount === 0, 'La decisión Story debe revertirse junto con la auditoría fallida.')
+  await pool.query(`DROP TRIGGER ${triggerName}_trigger ON audit_events`)
+  await pool.query(`DROP FUNCTION ${triggerName}()`)
+  socialSafetyTriggerName = ''
+  await pool.query('UPDATE social_story_reports SET created_at=NOW()-INTERVAL \'89 days\' WHERE id=$1', [storyReportId])
+  response = await request(manager, `/api/social-moderation/story-reports/${storyReportId}`, 'PATCH', { status: 'reviewed' })
+  assert(response.status === 200, `Staff no pudo resolver el reporte Story PostgreSQL (${response.status}).`)
+  const retention = await pool.query<{ reviewed_at: Date; created_at: Date; evidence_delete_at: Date; status: string }>('SELECT reviewed_at,created_at,evidence_delete_at,status FROM social_story_reports WHERE id=$1', [storyReportId])
+  const reviewedAtMs = Date.parse(String(retention.rows[0]?.reviewed_at))
+  const createdAtMs = Date.parse(String(retention.rows[0]?.created_at))
+  const expectedEvidenceExpiry = Math.min(reviewedAtMs + 30 * 86400000, createdAtMs + 90 * 86400000)
+  assert(retention.rows[0]?.status === 'reviewed' && Math.abs(Date.parse(String(retention.rows[0]?.evidence_delete_at)) - expectedEvidenceExpiry) < 1000, 'La retención debe terminar a los 30 días tras resolución o 90 días desde creación, lo que ocurra primero.')
+  const retainedAfterResolution = await fetch(`${base()}${queuedStoryReport.evidenceUrl}`, { headers: { cookie: manager.cookie } })
+  assert(retainedAfterResolution.status === 200, 'La evidencia debe permanecer disponible tras resolver el reporte mientras dure su ventana de retención.')
+  response = await request(creator, '/api/stories', 'POST', { body: 'PostgreSQL private story', audience: 'private' })
+  assert(response.status === 201, 'No se publicó la historia privada PostgreSQL.')
+  const privateStoryId = (await response.json() as { data: { id: string } }).data.id
+  assert(!(await request(outsider, '/api/stories').then(value => value.json()) as { data: { stories: Array<{ id: string }> } }).data.stories.some(story => story.id === privateStoryId), 'Una cuenta distinta recibió una historia privada PostgreSQL.')
+  response = await request(outsider, `/api/stories/${publicStory.id}`, 'DELETE')
+  assert(response.status === 404, 'Una cuenta distinta pudo borrar una historia PostgreSQL.')
+  response = await request(creator, `/api/stories/${publicStory.id}`, 'DELETE')
+  assert(response.status === 200, 'El creador no pudo borrar su historia PostgreSQL.')
   response = await request(creator, `/api/follows/${adminId}`, 'PUT', {})
   assert(response.status === 200, `No se pudo seguir una cuenta en PostgreSQL (${response.status}).`)
   response = await request(outsider, `/api/posts/${socialPostId}/bookmark`, 'PUT', {})
@@ -463,6 +647,87 @@ try {
   response = await request(manager, `/api/social-moderation/reports/${moderationReport.id}`, 'PATCH', { status: 'reviewed' })
   assert(response.status === 200 && (await request(outsider, `/api/posts/${moderationPostId}/social`)).status === 404, 'La moderación no ocultó el post o no registró la revisión del reporte.')
 
+  response = await request(creator, '/api/friend-requests', 'POST', { targetId: outsiderId })
+  assert(response.status === 201, 'No se pudo preparar la amistad temporal para probar bloqueos PostgreSQL.')
+  const blockRaceFriendship = (await response.json() as { data: { id: string } }).data
+  response = await request(outsider, `/api/friend-requests/${blockRaceFriendship.id}/accept`, 'POST', {})
+  assert(response.status === 200, 'No se pudo aceptar la amistad temporal de la prueba de bloqueo.')
+  response = await request(outsider, `/api/follows/${creatorId}`, 'PUT', {})
+  assert(response.status === 200, 'No se pudo crear el follow temporal antes del bloqueo.')
+  response = await request(outsider, `/api/chat/conversations/${creatorId}/messages`, 'POST', { body: 'Message before PostgreSQL block' })
+  assert(response.status === 201, 'No se pudo enviar el mensaje antes del bloqueo PostgreSQL.')
+  assert((await request(outsider, `/api/chat/conversations/${creatorId}/messages`)).status === 200, 'No se pudo leer el historial antes del bloqueo PostgreSQL.')
+  const blockPhotoUpload = await rawStoryPhotoUpload(creator, 'block-visibility.jpg', 'image/jpeg', storyImageBytes, 'Story media hidden by block')
+  assert(blockPhotoUpload.status === 201 && blockPhotoUpload.body.data?.id && blockPhotoUpload.body.data.media?.url, `No se pudo crear la Story multimedia para la prueba de bloqueo (${blockPhotoUpload.status}; fixture/Sharp).`)
+  const blockStoryId = blockPhotoUpload.body.data.id
+  const blockStoryMediaUrl = blockPhotoUpload.body.data.media.url
+  assert((await request(outsider, `/api/profiles/${creatorId}`)).status === 200, 'El perfil público no era visible antes del bloqueo.')
+  assert((await request(outsider, blockStoryMediaUrl)).status === 200, 'El medio público no era visible antes del bloqueo.')
+  const preBlockFeed = (await request(outsider, '/api/feed').then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
+  const preBlockStories = (await request(outsider, '/api/stories').then(value => value.json()) as { data: { stories: Array<{ id: string }> } }).data.stories
+  assert(preBlockFeed.some(post => post.id === socialPostId) && preBlockStories.some(story => story.id === blockStoryId), 'Feed o Story no eran visibles antes del bloqueo.')
+  if (profileAvatarUrl) assert((await request(outsider, profileAvatarUrl)).status === 200, 'La imagen del perfil público no era visible antes del bloqueo.')
+  response = await request(creator, `/api/friends/${blockRaceFriendship.id}`, 'DELETE', {})
+  assert(response.status === 200, 'No se pudo quitar la amistad aceptada antes de lanzar la carrera block/friend request.')
+  response = await request(outsider, `/api/follows/${creatorId}`, 'DELETE', {})
+  assert(response.status === 200, 'No se pudo quitar el follow antes de lanzar la carrera block/follow.')
+  const failedBlockAuditTrigger = `qa_social_block_audit_${randomUUID().replaceAll('-', '').slice(0, 12)}`
+  socialSafetyTriggerName = failedBlockAuditTrigger
+  await pool.query(`CREATE FUNCTION ${failedBlockAuditTrigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.metadata->>'resource'='social-account-block' THEN RAISE EXCEPTION 'QA block audit failure' USING ERRCODE='23514'; END IF; RETURN NEW; END $$`)
+  await pool.query(`CREATE TRIGGER ${failedBlockAuditTrigger}_trigger BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION ${failedBlockAuditTrigger}()`)
+  const failedBlockResponse = await request(creator, '/api/blocks', 'POST', { targetId: outsiderId })
+  const failedBlockRow = await pool.query('SELECT blocker_id FROM social_account_blocks WHERE blocker_id=$1 AND blocked_id=$2', [creatorId, outsiderId])
+  const failedBlockAudit = await pool.query(`SELECT id FROM audit_events WHERE actor_id=$1 AND target_id=$2 AND metadata->>'resource'='social-account-block'`, [creatorId, outsiderId])
+  assert(failedBlockResponse.status === 500 && failedBlockRow.rowCount === 0 && failedBlockAudit.rowCount === 0, 'El cambio de block sobrevivió a un fallo de auditoría; PostgreSQL debía revertir ambos.')
+  await pool.query(`DROP TRIGGER ${failedBlockAuditTrigger}_trigger ON audit_events`)
+  await pool.query(`DROP FUNCTION ${failedBlockAuditTrigger}()`)
+  socialSafetyTriggerName = ''
+  const raceResults = await Promise.all([
+    request(creator, '/api/blocks', 'POST', { targetId: outsiderId }),
+    request(outsider, `/api/follows/${creatorId}`, 'PUT', {}),
+    request(outsider, '/api/friend-requests', 'POST', { targetId: creatorId }),
+  ])
+  assert(raceResults[0].status === 200, `No se pudo bloquear la cuenta en la carrera PostgreSQL (${raceResults[0].status}).`)
+  assert([200, 404].includes(raceResults[1].status) && [201, 404].includes(raceResults[2].status), 'El follow/solicitud concurrente no respetó la política de block PostgreSQL.')
+  const blockRow = await pool.query('SELECT blocker_id FROM social_account_blocks WHERE blocker_id=$1 AND blocked_id=$2', [creatorId, outsiderId])
+  const relationshipRows = await pool.query(`SELECT (SELECT count(*)::int FROM social_account_follows WHERE (follower_id=$1 AND following_id=$2) OR (follower_id=$2 AND following_id=$1)) AS follows,
+    (SELECT count(*)::int FROM friendships WHERE (requester_id=$1 AND recipient_id=$2) OR (requester_id=$2 AND recipient_id=$1)) AS friendships`, [creatorId, outsiderId])
+  assert(blockRow.rowCount === 1 && relationshipRows.rows[0]?.follows === 0 && relationshipRows.rows[0]?.friendships === 0, 'La carrera dejó una relación social persistida junto al bloqueo.')
+  assert((await request(outsider, `/api/profiles/${creatorId}`)).status === 404, 'El perfil siguió visible tras bloquear a la cuenta.')
+  const hiddenFeed = (await request(outsider, '/api/feed').then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
+  const hiddenStories = (await request(outsider, '/api/stories').then(value => value.json()) as { data: { stories: Array<{ id: string }> } }).data.stories
+  assert(!hiddenFeed.some(post => post.id === socialPostId) && !hiddenStories.some(story => story.id === blockStoryId), 'Feed o Story siguieron visibles tras bloquear a la cuenta.')
+  assert((await request(outsider, blockStoryMediaUrl)).status === 404, 'El medio de Story siguió accesible tras bloquear a la cuenta.')
+  if (profileAvatarUrl) assert((await request(outsider, profileAvatarUrl)).status === 404, 'La imagen del perfil siguió accesible tras bloquear a la cuenta.')
+  const blockedFriendDirectory = (await request(outsider, '/api/friends').then(value => value.json()) as { data: { friends: Array<{ profile: { accountId: string } }> } }).data.friends
+  assert(blockedFriendDirectory.length === 0, 'La amistad bloqueada siguió visible en el directorio.')
+  assert((await request(outsider, `/api/chat/conversations/${creatorId}/messages`)).status === 404 && (await request(outsider, `/api/chat/conversations/${creatorId}/messages`, 'POST', { body: 'Message after PostgreSQL block' })).status === 404, 'El historial o envío de mensajes siguió disponible tras bloquear.')
+  const outsiderBlockedState = (await request(outsider, '/api/account/social-state').then(value => value.json()) as { data: { followedAccountIds: string[] } }).data
+  assert(!outsiderBlockedState.followedAccountIds.includes(creatorId), 'El follow concurrente persistió después del bloqueo.')
+  if (profileAvatarUrl) assert((await fetch(`${base()}${profileAvatarUrl}`, { method: 'HEAD', headers: { cookie: outsider.cookie } })).status === 404, 'HEAD de imagen de perfil siguió accesible tras el bloqueo.')
+  const blockedEvidenceStillStaffOnly = await fetch(`${base()}${queuedStoryReport.evidenceUrl}`, { headers: { cookie: manager.cookie } })
+  assert(blockedEvidenceStillStaffOnly.status === 200, 'El bloqueo de cuentas no debe cortar la evidencia privada de staff.')
+  const failedUnblockTrigger = `qa_social_unblock_audit_${randomUUID().replaceAll('-', '').slice(0, 12)}`
+  socialSafetyTriggerName = failedUnblockTrigger
+  await pool.query(`CREATE FUNCTION ${failedUnblockTrigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.metadata->>'resource'='social-account-block' THEN RAISE EXCEPTION 'QA unblock audit failure' USING ERRCODE='23514'; END IF; RETURN NEW; END $$`)
+  await pool.query(`CREATE TRIGGER ${failedUnblockTrigger}_trigger BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION ${failedUnblockTrigger}()`)
+  const failedUnblockResponse = await request(creator, `/api/blocks/${outsiderId}`, 'DELETE', {})
+  const stillBlockedRow = await pool.query('SELECT blocker_id FROM social_account_blocks WHERE blocker_id=$1 AND blocked_id=$2', [creatorId, outsiderId])
+  assert(failedUnblockResponse.status === 500 && stillBlockedRow.rowCount === 1, 'El unblock sobrevivió a un fallo de auditoría PostgreSQL.')
+  await pool.query(`DROP TRIGGER ${failedUnblockTrigger}_trigger ON audit_events`)
+  await pool.query(`DROP FUNCTION ${failedUnblockTrigger}()`)
+  socialSafetyTriggerName = ''
+  response = await request(creator, `/api/blocks/${outsiderId}`, 'DELETE', {})
+  assert(response.status === 200 && (await request(outsider, `/api/profiles/${creatorId}`)).status === 200, 'No se pudo desbloquear y restaurar acceso al perfil público.')
+  assert((await request(outsider, blockStoryMediaUrl)).status === 200, 'El medio de Story no volvió a estar disponible tras desbloquear.')
+  if (profileAvatarUrl) assert((await fetch(`${base()}${profileAvatarUrl}`, { method: 'HEAD', headers: { cookie: outsider.cookie } })).status === 200, 'HEAD de imagen de perfil no volvió a estar disponible tras desbloquear.')
+  const restoredFeed = (await request(outsider, '/api/feed').then(value => value.json()) as { data: { posts: Array<{ id: string }> } }).data.posts
+  assert(restoredFeed.some(post => post.id === socialPostId), 'El feed no volvió a mostrar publicaciones después del unblock.')
+  assert((await request(outsider, `/api/follows/${creatorId}`, 'PUT', {})).status === 200 && (await request(outsider, '/api/friend-requests', 'POST', { targetId: creatorId })).status === 201, 'El follow o nueva solicitud siguió bloqueado después del unblock.')
+  const socialBlockAudit = await pool.query(`SELECT count(*)::int AS count FROM audit_events WHERE actor_id=$1 AND target_id=$2 AND metadata->>'resource'='social-account-block'`, [creatorId, outsiderId])
+  assert(socialBlockAudit.rows[0]?.count === 2, 'Block y unblock no persistieron ambos eventos de auditoría PostgreSQL.')
+  console.log('PASS: PostgreSQL block/unblock atomic audit, profile/feed/Story/media privacy, friend/DM/follow enforcement, and concurrent block/follow/friend request serialization.')
+
   const streamController = new AbortController()
   let streamResponse = await fetch(`${base()}/api/chat/events`, { headers: { cookie: creator.cookie }, signal: streamController.signal })
   assert(streamResponse.status === 200 && streamResponse.headers.get('content-type')?.includes('text/event-stream'), 'No abrió el primer SSE.')
@@ -502,8 +767,12 @@ try {
   assert(response.status === 201, `No se pudo guardar el artwork antes de crear su ficha (${response.status}).`)
   const artworkUpload = (await response.json() as { data: { assetId: string; width: number; height: number; thumbnailAvailable: boolean; thumbnailSizeBytes: number } }).data
   assert(artworkUpload.assetId === asset.id && artworkUpload.width === 4000 && artworkUpload.height === 4000, 'La API no devolvió los metadatos correctos del artwork 4K.')
+  const storedArtwork = await repo.findCatalogArtwork(asset.id, creatorId)
+  assert(storedArtwork, 'La portada normalizada no se guardó en PostgreSQL.')
+  const storedArtworkBytes = await readFile(join(uploadDirectory, storedArtwork.storageKey))
+  assert(storedArtworkBytes.length === storedArtwork.sizeBytes, 'Los bytes guardados de la portada no coinciden con su metadata normalizada.')
   const usageWithArtwork = (await request(creator, '/api/account/storage').then(value => value.json()) as { data: { usedBytes: number } }).data.usedBytes
-  assert(usageWithArtwork === usageBeforeArtwork + artworkBytes.length + artworkUpload.thumbnailSizeBytes, 'El original y la miniatura no se incluyeron correctamente en el consumo de cuota PostgreSQL.')
+  assert(usageWithArtwork === usageBeforeArtwork + storedArtworkBytes.length + artworkUpload.thumbnailSizeBytes, 'La portada normalizada y la miniatura no se incluyeron correctamente en el consumo de cuota PostgreSQL.')
   response = await fetch(`${base()}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { cookie: outsider.cookie, 'x-csrf-token': outsider.csrf, 'content-type': 'image/jpeg' }, body: new Uint8Array(artworkBytes) })
   assert(response.status === 404, 'Otra cuenta pudo agregar artwork al audio privado.')
   if (hasFfmpeg) {
@@ -628,6 +897,14 @@ try {
   response = await request(creator, `/api/seller/beat-listings/${listing.contentId}`)
   const sellerReview = (await response.json() as { data: BeatListingRecord }).data.adminReview
   assert(response.status === 200 && sellerReview?.decision === 'approve' && sellerReview.current, 'El vendedor no recibió el estado de aprobación vigente.')
+  // Rotate only this fixture's historical audit timestamps. Business approval must survive.
+  await pool.query("UPDATE audit_events SET timestamp=NOW()-INTERVAL '366 days' WHERE target_id=$1 AND action IN ('marketplace_review_recommendation','marketplace_admin_decision')", [listing.contentId])
+  await stopApi()
+  await startApi()
+  response = await request(creator, `/api/seller/beat-listings/${listing.contentId}`)
+  const retainedReview = (await response.json() as { data: BeatListingRecord }).data
+  assert(response.status === 200 && retainedReview.communityReview?.current && retainedReview.adminReview?.current && retainedReview.adminReview.decision === 'approve', 'La aprobación comercial se perdió después de rotar auditoría y reiniciar PostgreSQL/API.')
+  console.log('PASS: commercial approval survives audit retention and API restart independently of historical logs.')
   const outsiderCatalogAfterReview = (await request(outsider, '/api/catalog').then(value => value.json()) as { data: { entries: Array<{ contentId: string; purchaseOffers?: unknown[] }> } }).data.entries
   assert(!outsiderCatalogAfterReview.some(item => item.contentId === listing.contentId), 'La revisión de intake publicó el beat antes de la aprobación de catálogo.')
   await delay(5)
@@ -655,6 +932,13 @@ try {
     assert(response.status === 409, 'La cola permitió una segunda decisión después de publicar por CM.')
     const publicEntry = (await request(outsider, '/api/catalog').then(value => value.json()) as { data: { entries: Array<{ contentId: string; assetId?: string; previewUrl?: string }> } }).data.entries.find(item => item.contentId === previewCatalog.contentId)
     assert(publicEntry?.previewUrl === `/api/catalog/${previewCatalog.contentId}/preview` && publicEntry.assetId === undefined, 'El catálogo no expuso únicamente la URL derivada.')
+    const favorite = await fetch(`${base()}/api/account/favorites/${previewCatalog.contentId}`, { method: 'PUT', headers: { cookie: outsider.cookie, 'x-csrf-token': outsider.csrf, 'x-beatvault-account': outsiderId } })
+    assert(favorite.status === 200, 'No se pudo guardar el favorito en PostgreSQL.')
+    const favoriteAgain = await fetch(`${base()}/api/account/favorites/${previewCatalog.contentId}`, { method: 'PUT', headers: { cookie: outsider.cookie, 'x-csrf-token': outsider.csrf, 'x-beatvault-account': outsiderId } })
+    const favoriteIds = (await favoriteAgain.json() as { data: { accountId: string; contentIds: string[] } }).data
+    assert(favoriteAgain.status === 200 && favoriteIds.accountId === outsiderId && favoriteIds.contentIds.filter(id => id === previewCatalog.contentId).length === 1, 'Guardar un favorito no fue idempotente o cambió de dueño.')
+    const wrongFavoriteAccount = await fetch(`${base()}/api/account/favorites/${previewCatalog.contentId}`, { method: 'DELETE', headers: { cookie: outsider.cookie, 'x-csrf-token': outsider.csrf, 'x-beatvault-account': creatorId } })
+    assert(wrongFavoriteAccount.status === 409, 'Una escritura atrasada pudo cambiar favoritos después de un cambio de cuenta.')
     response = await fetch(`${base()}${publicEntry.previewUrl}`)
     const derivative = Buffer.from(await response.arrayBuffer())
     assert(response.status === 200 && response.headers.get('content-type') === 'audio/mp4' && derivative.toString('ascii', 4, 8) === 'ftyp' && derivative.length < wav.length, 'El endpoint público no entregó el derivado M4A esperado.')
@@ -768,12 +1052,23 @@ try {
   const thumbnailResponse = artworkUpload.thumbnailAvailable ? await fetch(`${base()}${previewCatalog.artworkUrl}`, { headers: { cookie: creator.cookie } }) : undefined
   const thumbnailBytes = thumbnailResponse?.ok ? Buffer.from(await thumbnailResponse.arrayBuffer()) : undefined
   if (artworkUpload.thumbnailAvailable) assert(thumbnailBytes && thumbnailBytes.length === artworkUpload.thumbnailSizeBytes && thumbnailBytes.length < artworkBytes.length, 'La miniatura no redujo el peso transferido del artwork.')
-  await verifyBackupRestore(asset.id, previewCatalog.contentId, wav, artworkBytes, thumbnailBytes, socialPostId)
-  console.log('PASS: PostgreSQL auth/chat/SSE, creator profile avatar/cover and privacy, transactional notifications and rollback/deduplication, feed/profile sync, isolated follows/bookmarks, social interactions and CM moderation, quota race, audio formats and limits, private Beat artwork/audio review, independent CM/admin Beat approval, and seller listing/evidence review.')
+  await verifyBackupRestore(asset.id, previewCatalog.contentId, wav, storedArtworkBytes, thumbnailBytes, socialPostId)
+  console.log('PASS: PostgreSQL auth/chat/SSE, creator profile avatar/cover and privacy, transactional notifications and rollback/deduplication, feed/profile sync, expiring private/public standalone stories, isolated follows/bookmarks, social interactions and CM moderation, quota race, audio formats and limits, private Beat artwork/audio review, independent CM/admin Beat approval, and seller listing/evidence review.')
 } finally {
   await stopApi()
   try {
+    if (socialSafetyTriggerName) {
+      await pool.query(`DROP TRIGGER IF EXISTS ${socialSafetyTriggerName}_trigger ON audit_events`).catch(() => undefined)
+      await pool.query(`DROP FUNCTION IF EXISTS ${socialSafetyTriggerName}()`).catch(() => undefined)
+    }
     await pool.query('DELETE FROM stripe_webhook_events WHERE event_id = $1', [webhookEventId])
+    await pool.query('DELETE FROM provider_webhook_events WHERE provider=$1 AND environment=$2 AND event_id=$3', ['mercadopago', 'test', mercadoPagoWebhookEventId]).catch(() => undefined)
+    await pool.query('DELETE FROM mercadopago_provider_payments WHERE application_id=$1 AND mode=$2 AND payment_id=$3', ['987654321', 'test', mercadoPagoPaymentId]).catch(() => undefined)
+    await pool.query('DELETE FROM mercadopago_preference_reservations WHERE application_id=$1 AND mode=$2 AND key=$3', ['987654321', 'test', mercadoPagoReservationKey]).catch(() => undefined)
+    await pool.query('DELETE FROM mercadopago_order_payments WHERE order_id=$1', [mercadoPagoOrderId]).catch(() => undefined)
+    await pool.query('DELETE FROM beat_orders WHERE id = $1', [mercadoPagoOrderId]).catch(() => undefined)
+    await pool.query('DELETE FROM mercadopago_oauth_intents WHERE account_id=$1', [creatorId]).catch(() => undefined)
+    await pool.query('DELETE FROM mercadopago_seller_links WHERE account_id=$1 AND application_id=$2 AND mode=$3', [creatorId, '987654321', 'test']).catch(() => undefined)
     await pool.query('DELETE FROM beat_orders WHERE id = $1', [orderId])
     await pool.query('DELETE FROM account_storage_quotas WHERE owner_id = ANY($1::text[]) OR updated_by = ANY($1::text[])', [[creatorId, adminId, outsiderId, quotaId]])
     await pool.query('DELETE FROM accounts WHERE id = ANY($1::text[])', [[creatorId, adminId, outsiderId, managerId, quotaId]])

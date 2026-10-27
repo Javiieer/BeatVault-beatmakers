@@ -50,7 +50,7 @@ export function BeatSaleListingForm({ asset, listing, onClose, onSave }: {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const compositionTotal = draft.rights.sellerCompositionShareBps + draft.rights.collaborators.reduce((sum, item) => sum + item.compositionShareBps, 0)
   const masterTotal = draft.rights.sellerMasterShareBps + draft.rights.collaborators.reduce((sum, item) => sum + item.masterShareBps, 0)
-  const valid = isBeatListingInput(draft)
+  const valid = isBeatListingInput(draft) && draft.offers.every(offer => !offer.deliverables.includes('stems'))
   const readyForReview = isBeatListingReady({ ...draft, rights: { ...draft.rights, sampleProofAvailable: evidence.length > 0 } })
   useEffect(() => {
     if (!listing) return
@@ -138,7 +138,8 @@ export function BeatSaleListingForm({ asset, listing, onClose, onSave }: {
             <label>{tx('seller.offerName')}<input required maxLength={60} value={offer.label} onChange={event => updateOffer(index, { label: event.target.value })} /></label>
             <label>{tx('seller.price')}<input required type="number" min="1" max="1000000" step="0.01" value={(offer.amountMinor / 100).toFixed(2)} onChange={event => updateOffer(index, { amountMinor: toBasisPoints(event.target.value) })} /></label>
           </div>
-          <fieldset className="beat-listing-deliverables"><legend>{tx('seller.deliverables')}</legend>{(['mp3', 'wav', 'stems'] as const).map(deliverable => <label key={deliverable}><input type="checkbox" checked={offer.deliverables.includes(deliverable)} onChange={event => updateOffer(index, { deliverables: event.target.checked ? [...offer.deliverables, deliverable] : offer.deliverables.filter(item => item !== deliverable) })} /> {deliverable.toUpperCase()}</label>)}</fieldset>
+          <fieldset className="beat-listing-deliverables"><legend>{tx('seller.deliverables')}</legend>{(['mp3', 'wav'] as const).map(deliverable => <label key={deliverable}><input type="checkbox" checked={offer.deliverables.includes(deliverable)} onChange={event => updateOffer(index, { deliverables: event.target.checked ? [...offer.deliverables, deliverable] : offer.deliverables.filter(item => item !== deliverable) })} /> {deliverable.toUpperCase()}</label>)}</fieldset>
+          {offer.deliverables.includes('stems') && <button type="button" onClick={() => updateOffer(index, { deliverables: offer.deliverables.filter(item => item !== 'stems') })}>{tx('seller.removeLegacyStems')}</button>}
           <label className="short-upload-field">{tx('seller.usageSummary')}<textarea required minLength={10} maxLength={600} rows={3} value={offer.usageSummary} onChange={event => updateOffer(index, { usageSummary: event.target.value })} /></label>
         </article>)}
         <button type="button" className="button ghost beat-listing-add" disabled={draft.offers.length >= 5} onClick={() => setDraft(current => ({ ...current, offers: [...current.offers, { id: `offer-${Date.now()}`, label: tx('seller.newOffer'), amountMinor: 5000, currency: 'USD', deliverables: ['wav'], usageSummary: draftUsageSummary(), termsVersion: 'non-exclusive-offer-draft-v1', status: 'draft-only' }] }))}><Plus size={16} /> {tx('seller.addOffer')}</button>

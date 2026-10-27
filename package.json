@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "android:sync": "npm run build && cap sync android",
+    "android:open": "cap open android",
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
-    "server": "tsx server/index.ts",
-    "server:dev": "tsx watch server/index.ts",
+    "server": "node --env-file-if-exists=.env.local --import tsx server/index.ts",
+    "server:dev": "node --env-file-if-exists=.env.local --import tsx --watch server/index.ts",
     "server:test": "vitest run server --pool forks --maxWorkers 2",
     "test:postgres": "tsx scripts/postgres-qa.ts",
     "artwork:backfill": "tsx scripts/backfill-artwork-thumbnails.ts",
@@ -24,9 +26,18 @@
     "test:qa-bots": "npm run server:test && playwright test tests/chat.spec.ts tests/persistent-uploads.spec.ts tests/settings.spec.ts tests/creator-profile.spec.ts tests/profile-menu.spec.ts tests/feature-shots.spec.ts tests/site-audit.spec.ts tests/theme-route-audit.spec.ts",
     "test:security": "vitest run server/security-probes.test.ts",
     "diagnose": "tsx scripts/diagnose.ts",
-    "diagnose:full": "tsx scripts/diagnose.ts --browser"
+    "diagnose:full": "tsx scripts/diagnose.ts --browser",
+    "postgres:start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/postgres-local.ps1 -Action start",
+    "postgres:status": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/postgres-local.ps1 -Action status",
+    "postgres:stop": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/postgres-local.ps1 -Action stop",
+    "postgres:migrate": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/postgres-workflow.ps1 -Task migrate",
+    "postgres:backup": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/postgres-workflow.ps1 -Task backup",
+    "test:postgres:local": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/postgres-workflow.ps1 -Task qa",
+    "test:e2e:postgres": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/postgres-workflow.ps1 -Task qa-browser"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
     "@types/busboy": "^1.5.4",
     "@vitejs/plugin-react": "latest",
     "busboy": "^1.6.0",
@@ -36,10 +47,10 @@
     "react-dom": "latest",
     "sharp": "^0.35.5",
     "stripe": "^23.0.0",
-    "typescript": "latest",
-    "vite": "latest"
+    "typescript": "6.0.3"
   },
   "devDependencies": {
+    "@capacitor/cli": "8.4.3",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.62.1",
     "@testing-library/jest-dom": "^7.0.1",
@@ -54,6 +65,7 @@
     "jsdom": "^30.0.1",
     "tsx": "latest",
     "typescript-eslint": "^8.68.0",
-    "vitest": "latest"
+    "vite": "^8.3.4",
+    "vitest": "^4.1.12"
   }
 }

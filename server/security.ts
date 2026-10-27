@@ -69,6 +69,7 @@ export class AuditLog {
     const event: AuditEvent = { id: randomUUID(), timestamp: new Date().toISOString(), action, requestId, success, metadata: redactMetadata(metadata), ...(actorId ? { actorId } : {}), ...(targetId ? { targetId } : {}) }
     return event
   }
+  createEvent(action: AuditAction, requestId: string, actorId?: string, targetId?: string, success = true, metadata: SafeMetadata = {}): AuditEvent { return this.event(action, requestId, actorId, targetId, success, metadata) }
   private persist(event: AuditEvent): Promise<void> {
     const writing = this.queue.then(async () => {
       await this.store?.append(event)
@@ -94,6 +95,12 @@ export class AuditLog {
       this.entriesValue = this.entriesValue.filter(item => item.id !== event.id)
       throw error
     }
+  }
+  recordCommitted(event: AuditEvent): void {
+    if (this.entriesValue.some(item => item.id === event.id)) return
+    this.entriesValue.push({ ...event, metadata: redactMetadata(event.metadata) })
+    this.entriesValue.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp))
+    this.entriesValue = this.entriesValue.slice(-500)
   }
   clear(): void { this.entriesValue.length = 0 }
 }

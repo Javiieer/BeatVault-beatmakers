@@ -1,7 +1,11 @@
+import { randomUUID } from 'node:crypto'
 import type { CatalogEntry, CatalogInput } from '../src/domains/catalog/types'
 import type { ProjectRecord, ProjectStatus } from '../src/domains/core/contracts'
-import { StorageQuotaExceededError, type AssetRecord, type AssetState, type BeatOrder, type Friendship, type ServerRepository, type SessionRecord, type SocialAccountState, type StorageQuotaRecord, type StripeConnectRecord } from './store'
+import { StorageQuotaExceededError, type AssetRecord, type AssetState, type BeatOrder, type BeatOrderMutableFields, type Friendship, type ServerRepository, type SessionRecord, type SocialAccountBlock, type SocialAccountState, type StorageQuotaRecord, type StripeConnectRecord, type SocialStoryReportCursor, type SocialStoryReportPage, type MercadoPagoSellerLink, type MercadoPagoOAuthIntent, type MercadoPagoOrderPayment, type MercadoPagoProviderPayment, type MercadoPagoPaymentStatus, type PaymentEnvironment, type ProviderWebhookEvent, isMercadoPagoSellerLink, isMercadoPagoOAuthIntent, isMercadoPagoOrderPayment, isMercadoPagoProviderPayment, type MercadoPagoScope, type MercadoPagoPreferenceReservation, type MercadoPagoPreferenceClaim, type MercadoPagoPreference } from './store'
 import type { Account } from './auth'
+import { isPurchaseEntitlement } from './purchase-entitlements'
+import type { AuditEvent } from './security'
+import { applyMarketplaceReview, marketplaceRevision, type MarketplaceReviewState, type MarketplaceReviewWrite } from './marketplace-review-state'
 import type { CreatorProfile } from '../src/domains/profile'
 import type { ChatConversation, DirectMessage } from '../src/domains/chat'
 import type { SocialActivity, SocialComment } from '../src/domains/social'
@@ -10,9 +14,10 @@ import type { BeatListingRecord } from '../src/domains/marketplace/sellerListing
 import { sellerEvidenceMaxFiles, type SellerEvidenceRecord } from '../src/domains/marketplace/sellerEvidence'
 import type { ArtworkRecord } from './artwork'
 import type { SocialPost, SocialPostComment, SocialPostCursor, SocialPostReport, SocialPostVisibility } from './social-posts'
+import { socialStoryMaxActivePerAccount, type SocialStory, type SocialStoryCursor, type SocialStoryReport } from './social-stories'
 import { isValidNotificationTimestamp, normalizeNotificationCursor, normalizeNotificationRecord, notificationLimit, type NotificationPage, type NotificationPageOptions, type NotificationRecord, type NotificationSeed } from './notifications'
 
-export type SqlResult<Row> = { rows: Row[] }
+export type SqlResult<Row> = { rows: Row[]; rowCount?: number }
 export interface SqlConnection {
   query<Row>(text: string, values?: readonly unknown[]): Promise<SqlResult<Row>>
   release(): void
@@ -30,7 +35,9 @@ type MessageRow = { id: string; sender_id: string; recipient_id: string; body: s
 type SocialCommentRow = { id: string; content_id: string; author_id: string; body: string; created_at: string }
 type SessionRow = { token_hash: string; account_id: string; csrf_token_hash: string; expires_at: string }
 type SocialPostRow = { id: string; author_id: string; kind: SocialPost['kind']; body: string; audience: SocialPost['audience']; visibility: SocialPost['visibility']; media_storage_key: string | null; media_mime_type: SocialPost['media'] extends infer M ? M extends { mimeType: infer T } ? T | null : never : never; media_size_bytes: string | number | null; media_sha256: string | null; created_at: string; updated_at: string; reviewed_at: string | null; reviewed_by: string | null; review_note: string | null }
+type SocialStoryRow = { id: string; author_id: string; kind: SocialStory['kind']; body: string; audience: SocialStory['audience']; media_storage_key: string | null; media_mime_type: string | null; media_size_bytes: string | number | null; media_sha256: string | null; created_at: string | Date; expires_at: string | Date }
 type SocialPostReportRow = { id: string; post_id: string; reporter_id: string; reason: SocialPostReport['reason']; details: string; status: SocialPostReport['status']; created_at: string; reviewed_at: string | null; reviewed_by: string | null }
+type SocialStoryReportRow = { id: string; story_id: string; author_id: string; reporter_id: string; story_kind: SocialStoryReport['kind']; story_body: string; story_audience: SocialStoryReport['audience']; story_created_at: string | Date; story_expires_at: string | Date; media_sha256: string | null; evidence_storage_key: string | null; evidence_mime_type: SocialStoryReport['evidenceMimeType'] | null; evidence_size_bytes: string | number | null; evidence_delete_at: string | Date | null; evidence_expired_at: string | Date | null; reason: SocialStoryReport['reason']; details: string; status: SocialStoryReport['status']; created_at: string | Date; reviewed_at: string | Date | null; reviewed_by: string | null }
 type SocialPostCommentRow = { id: string; post_id: string; author_id: string; body: string; created_at: string }
 type NotificationRow = { unread_count?: string | number; id: string | null; recipient_id: string | null; actor_id: string | null; type: NotificationRecord['type'] | null; resource_type: NotificationRecord['resourceType'] | null; resource_id: string | null; source_id: string | null; event_key: string | null; created_at: string | Date | null; read_at: string | Date | null }
 type NotificationMutationRow = { notification_id: string | null; notification_recipient_id: string | null; notification_actor_id: string | null; notification_type: NotificationRecord['type'] | null; notification_resource_type: NotificationRecord['resourceType'] | null; notification_resource_id: string | null; notification_source_id: string | null; notification_event_key: string | null; notification_created_at: string | Date | null; notification_read_at: string | Date | null }
@@ -41,7 +48,10 @@ const catalogColumns = 'content_id, creator_id, type, title, tag_ids, preview_id
 const chatMessage = (row: MessageRow): DirectMessage => ({ id: row.id, senderId: row.sender_id, recipientId: row.recipient_id, body: row.body, createdAt: row.created_at, readAt: row.read_at ?? undefined })
 const socialPostColumns = 'id, author_id, kind, body, audience, visibility, media_storage_key, media_mime_type, media_size_bytes, media_sha256, created_at, updated_at, reviewed_at, reviewed_by, review_note'
 const socialPost = (row: SocialPostRow): SocialPost => ({ id: row.id, authorId: row.author_id, kind: row.kind, body: row.body, audience: row.audience, visibility: row.visibility, ...(row.media_storage_key ? { media: { storageKey: row.media_storage_key, mimeType: row.media_mime_type as NonNullable<SocialPost['media']>['mimeType'], sizeBytes: Number(row.media_size_bytes), sha256: row.media_sha256! } } : {}), createdAt: row.created_at, updatedAt: row.updated_at, ...(row.reviewed_at ? { reviewedAt: row.reviewed_at } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}), ...(row.review_note ? { reviewNote: row.review_note } : {}) })
+const socialStoryColumns = 'id, author_id, kind, body, audience, media_storage_key, media_mime_type, media_size_bytes, media_sha256, created_at, expires_at'
+const socialStory = (row: SocialStoryRow): SocialStory => ({ id: row.id, authorId: row.author_id, kind: row.kind, body: row.body, audience: row.audience, ...(row.media_storage_key ? { media: { storageKey: row.media_storage_key, mimeType: row.media_mime_type as NonNullable<SocialStory['media']>['mimeType'], sizeBytes: Number(row.media_size_bytes), sha256: row.media_sha256! } } : {}), createdAt: timestamp(row.created_at), expiresAt: timestamp(row.expires_at) })
 const socialPostReport = (row: SocialPostReportRow): SocialPostReport => ({ id: row.id, postId: row.post_id, reporterId: row.reporter_id, reason: row.reason, details: row.details, status: row.status, createdAt: row.created_at, ...(row.reviewed_at ? { reviewedAt: row.reviewed_at } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}) })
+const socialStoryReport = (row: SocialStoryReportRow): SocialStoryReport => ({ id: row.id, storyId: row.story_id, authorId: row.author_id, reporterId: row.reporter_id, kind: row.story_kind, body: row.story_body, audience: row.story_audience, storyCreatedAt: timestamp(row.story_created_at), storyExpiresAt: timestamp(row.story_expires_at), ...(row.media_sha256 ? { mediaSha256: row.media_sha256 } : {}), ...(row.evidence_storage_key ? { evidenceStorageKey: row.evidence_storage_key } : {}), ...(row.evidence_mime_type ? { evidenceMimeType: row.evidence_mime_type } : {}), ...(row.evidence_size_bytes !== null ? { evidenceSizeBytes: Number(row.evidence_size_bytes) } : {}), ...(row.evidence_delete_at ? { evidenceDeleteAt: timestamp(row.evidence_delete_at) } : {}), ...(row.evidence_expired_at ? { evidenceExpiredAt: timestamp(row.evidence_expired_at) } : {}), reason: row.reason, details: row.details, status: row.status, createdAt: timestamp(row.created_at), ...(row.reviewed_at ? { reviewedAt: timestamp(row.reviewed_at) } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}) })
 const timestamp = (value: string | Date): string => value instanceof Date ? value.toISOString() : value
 const notification = (row: NotificationRow): NotificationRecord => {
   if (!row.id || !row.recipient_id || !row.actor_id || !row.type || !row.resource_type || !row.resource_id || !row.source_id || !row.event_key || !row.created_at) throw new Error('INVALID_NOTIFICATION_ROW')
@@ -56,7 +66,7 @@ const normalizedNotificationSeed = (seed: NotificationSeed | undefined, type: No
   return { id: normalized.id, type, resourceType, resourceId, sourceId, eventKey: normalized.eventKey, createdAt: normalized.createdAt }
 }
 
-/** SQL-only adapter. A PostgreSQL driver and transaction boundary are injected by a later platform phase. */
+/** SQL adapter. Injected pools provide a connection per transaction. */
 export class PostgresRepository implements ServerRepository {
   constructor(private readonly db: SqlClient) {}
   private async withTransaction<T>(action: (client: SqlClient) => Promise<T>): Promise<T> {
@@ -72,6 +82,55 @@ export class PostgresRepository implements ServerRepository {
       throw error
     } finally { client.release() }
   }
+  async listFavoriteIds(accountId: string) {
+    const result = await this.db.query<{ content_id: string }>('SELECT content_id FROM account_catalog_favorites WHERE account_id=$1 ORDER BY created_at DESC,content_id', [accountId])
+    return result.rows.map(item => item.content_id)
+  }
+  addFavorite(accountId: string, contentId: string, limit: number) {
+    return this.withTransaction(async client => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext('catalog-favorites'))", [accountId])
+      const entry = await client.query('SELECT content_id FROM catalog_assets WHERE content_id=$1 AND publication_status=$2 FOR SHARE', [contentId, 'published'])
+      if (!entry.rows.length) throw new Error('FAVORITE_NOT_AVAILABLE')
+      const existing = await client.query('SELECT content_id FROM account_catalog_favorites WHERE account_id=$1 AND content_id=$2', [accountId, contentId])
+      if (existing.rows.length) return
+      const count = await client.query<{ count: number }>('SELECT count(*)::int AS count FROM account_catalog_favorites WHERE account_id=$1', [accountId])
+      if (Number(count.rows[0]?.count || 0) >= limit) throw new Error('FAVORITES_LIMIT')
+      await client.query('INSERT INTO account_catalog_favorites(account_id,content_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [accountId, contentId])
+    })
+  }
+  async removeFavorite(accountId: string, contentId: string) { await this.db.query('DELETE FROM account_catalog_favorites WHERE account_id=$1 AND content_id=$2', [accountId, contentId]) }
+  async findMarketplaceReviewState(contentId: string, ownerId: string) {
+    const result = await this.db.query<{ data: MarketplaceReviewState }>('SELECT data FROM marketplace_listing_review_state WHERE content_id=$1 AND owner_id=$2', [contentId, ownerId])
+    return result.rows[0]?.data
+  }
+  private async marketplaceReviewSource(client: SqlClient, contentId: string, ownerId: string) {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext('marketplace-review'))", [contentId])
+    const listing = await client.query<{ data: BeatListingRecord }>('SELECT data FROM marketplace_beat_listing_drafts WHERE content_id=$1 AND owner_id=$2 FOR UPDATE', [contentId, ownerId])
+    const evidence = await client.query<{ data: SellerEvidenceRecord }>('SELECT data FROM marketplace_beat_listing_evidence WHERE content_id=$1 AND owner_id=$2 ORDER BY created_at', [contentId, ownerId])
+    return { listing: listing.rows[0]?.data, evidence: evidence.rows.map(item => item.data) }
+  }
+  importMarketplaceReviewState(state: MarketplaceReviewState, expectedRevision: string) {
+    return this.withTransaction(async client => {
+      const source = await this.marketplaceReviewSource(client, state.contentId, state.ownerId)
+      if (!source.listing || marketplaceRevision(source.listing, source.evidence) !== expectedRevision) throw new Error('LISTING_REVISION_CHANGED')
+      const result = await client.query<{ data: MarketplaceReviewState }>('INSERT INTO marketplace_listing_review_state(content_id,owner_id,data) VALUES($1,$2,$3::jsonb) ON CONFLICT(content_id) DO UPDATE SET content_id=EXCLUDED.content_id RETURNING data', [state.contentId, state.ownerId, JSON.stringify(state)])
+      return result.rows[0].data
+    })
+  }
+  saveMarketplaceReview(input: MarketplaceReviewWrite, event: AuditEvent) {
+    return this.withTransaction(async client => {
+      const source = await this.marketplaceReviewSource(client, input.contentId, input.ownerId)
+      if (!source.listing || marketplaceRevision(source.listing, source.evidence) !== input.expectedRevision) throw new Error('LISTING_REVISION_CHANGED')
+      const previous = (await client.query<{ data: MarketplaceReviewState }>('SELECT data FROM marketplace_listing_review_state WHERE content_id=$1 AND owner_id=$2', [input.contentId, input.ownerId])).rows[0]?.data
+      const actor = (await client.query<{ role: string }>('SELECT role FROM accounts WHERE id=$1', [input.review.reviewerId])).rows[0]
+      const recommender = previous?.communityReview ? (await client.query<{ role: string }>('SELECT role FROM accounts WHERE id=$1', [previous.communityReview.reviewerId])).rows[0] : undefined
+      const state = applyMarketplaceReview(previous, input, actor?.role, recommender?.role)
+      await client.query('INSERT INTO marketplace_listing_review_state(content_id,owner_id,data) VALUES($1,$2,$3::jsonb) ON CONFLICT(content_id) DO UPDATE SET data=EXCLUDED.data,updated_at=now()', [input.contentId, input.ownerId, JSON.stringify(state)])
+      await client.query('INSERT INTO audit_events(id,timestamp,action,request_id,actor_id,target_id,success,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)', [event.id, event.timestamp, event.action, event.requestId, event.actorId ?? null, event.targetId ?? null, event.success, JSON.stringify(event.metadata)])
+      return state
+    })
+  }
+  async drainMarketplaceReviewAudit(): Promise<void> { /* PostgreSQL commits review state and audit together. */ }
   async findProfile(accountId: string) {
     const result = await this.db.query<{ account_id: string; metadata: Omit<CreatorProfile, 'accountId'> }>('SELECT account_id, metadata FROM creator_profiles WHERE account_id = $1', [accountId])
     const row = result.rows[0]
@@ -87,18 +146,19 @@ export class PostgresRepository implements ServerRepository {
     return result.rows.map(row => ({ ...row.metadata, accountId: row.account_id }))
   }
   async listFriendships(accountId: string): Promise<Friendship[]> {
-    const result = await this.db.query<Friendship>('SELECT id, requester_id AS "requesterId", recipient_id AS "recipientId", status, created_at AS "createdAt", updated_at AS "updatedAt" FROM friendships WHERE requester_id = $1 OR recipient_id = $1', [accountId])
+    const result = await this.db.query<Friendship>('SELECT f.id, f.requester_id AS "requesterId", f.recipient_id AS "recipientId", f.status, f.created_at AS "createdAt", f.updated_at AS "updatedAt" FROM friendships f WHERE (f.requester_id=$1 OR f.recipient_id=$1) AND NOT EXISTS (SELECT 1 FROM social_account_blocks b WHERE (b.blocker_id=f.requester_id AND b.blocked_id=f.recipient_id) OR (b.blocker_id=f.recipient_id AND b.blocked_id=f.requester_id))', [accountId])
     return result.rows
   }
   async createFriendship(input: Friendship): Promise<Friendship> {
-    const result = await this.db.query<Friendship>('INSERT INTO friendships (id, requester_id, recipient_id, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, requester_id AS "requesterId", recipient_id AS "recipientId", status, created_at AS "createdAt", updated_at AS "updatedAt"', [input.id, input.requesterId, input.recipientId, input.status, input.createdAt, input.updatedAt])
+    const result = await this.db.query<Friendship>('INSERT INTO friendships (id, requester_id, recipient_id, status, created_at, updated_at) SELECT $1, $2, $3, $4, $5, $6 WHERE NOT EXISTS (SELECT 1 FROM social_account_blocks WHERE (blocker_id=$2 AND blocked_id=$3) OR (blocker_id=$3 AND blocked_id=$2)) RETURNING id, requester_id AS "requesterId", recipient_id AS "recipientId", status, created_at AS "createdAt", updated_at AS "updatedAt"', [input.id, input.requesterId, input.recipientId, input.status, input.createdAt, input.updatedAt])
+    if (!result.rows[0]) throw new Error('SOCIAL_ACCOUNT_BLOCKED')
     return result.rows[0]
   }
   async createFriendshipWithNotification(input: Friendship, inputSeed?: NotificationSeed) {
     const seed = normalizedNotificationSeed(inputSeed, 'friend_request', 'friendship', input.id, input.id)
     const result = await this.db.query<Friendship & NotificationMutationRow>(`WITH created AS (
       INSERT INTO friendships (id, requester_id, recipient_id, status, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      SELECT $1, $2, $3, $4, $5, $6 WHERE NOT EXISTS (SELECT 1 FROM social_account_blocks WHERE (blocker_id=$2 AND blocked_id=$3) OR (blocker_id=$3 AND blocked_id=$2))
       RETURNING id, requester_id AS "requesterId", recipient_id AS "recipientId", status, created_at AS "createdAt", updated_at AS "updatedAt"
     ), saved AS (
       INSERT INTO notifications (${notificationColumns})
@@ -109,7 +169,7 @@ export class PostgresRepository implements ServerRepository {
     )
     SELECT created.*, ${notificationMutationColumns} FROM created LEFT JOIN saved ON TRUE`, [input.id, input.requesterId, input.recipientId, input.status, input.createdAt, input.updatedAt, seed?.id ?? null, seed?.createdAt ?? null])
     const row = result.rows[0]
-    if (!row) throw new Error('FRIENDSHIP_CREATE_FAILED')
+    if (!row) throw new Error('SOCIAL_ACCOUNT_BLOCKED')
     const saved = notificationFromMutation(row)
     return { value: { id: row.id, requesterId: row.requesterId, recipientId: row.recipientId, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt }, notifications: saved ? [saved] : [] }
   }
@@ -122,6 +182,7 @@ export class PostgresRepository implements ServerRepository {
     const result = await this.db.query<(Friendship & NotificationMutationRow)>(`WITH updated AS (
       UPDATE friendships SET status = 'accepted', updated_at = NOW()
       WHERE id = $1 AND recipient_id = $2 AND status = 'pending'
+        AND NOT EXISTS (SELECT 1 FROM social_account_blocks b WHERE (b.blocker_id=friendships.requester_id AND b.blocked_id=friendships.recipient_id) OR (b.blocker_id=friendships.recipient_id AND b.blocked_id=friendships.requester_id))
       RETURNING id, requester_id AS "requesterId", recipient_id AS "recipientId", status, created_at AS "createdAt", updated_at AS "updatedAt"
     ), saved AS (
       INSERT INTO notifications (${notificationColumns})
@@ -140,6 +201,51 @@ export class PostgresRepository implements ServerRepository {
     const result = await this.db.query('DELETE FROM friendships WHERE id = $1 AND status = $3 AND (requester_id = $2 OR recipient_id = $2) RETURNING id', [id, actorId, status])
     return result.rows.length > 0
   }
+  async listSocialAccountBlocks(accountId: string): Promise<SocialAccountBlock[]> {
+    const result = await this.db.query<{ blocker_id: string; blocked_id: string; created_at: string | Date }>('SELECT blocker_id, blocked_id, created_at FROM social_account_blocks WHERE blocker_id=$1 ORDER BY created_at DESC', [accountId])
+    return result.rows.map(row => ({ blockerId: row.blocker_id, blockedId: row.blocked_id, createdAt: timestamp(row.created_at) }))
+  }
+  async areSocialAccountsBlocked(firstAccountId: string, secondAccountId: string) {
+    if (firstAccountId === secondAccountId) return false
+    const result = await this.db.query<{ blocked: boolean }>('SELECT EXISTS (SELECT 1 FROM social_account_blocks WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1)) AS blocked', [firstAccountId, secondAccountId])
+    return Boolean(result.rows[0]?.blocked)
+  }
+  async createSocialAccountBlock(input: SocialAccountBlock) {
+    if (input.blockerId === input.blockedId) throw new Error('SOCIAL_SELF_BLOCK')
+    await this.withTransaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext(LEAST($1,$2)),hashtext(GREATEST($1,$2)))', [input.blockerId, input.blockedId])
+      await client.query('INSERT INTO social_account_blocks(blocker_id,blocked_id,created_at) VALUES($1,$2,$3) ON CONFLICT(blocker_id,blocked_id) DO NOTHING', [input.blockerId, input.blockedId, input.createdAt])
+      await client.query('DELETE FROM friendships WHERE (requester_id=$1 AND recipient_id=$2) OR (requester_id=$2 AND recipient_id=$1)', [input.blockerId, input.blockedId])
+      await client.query('DELETE FROM social_account_follows WHERE (follower_id=$1 AND following_id=$2) OR (follower_id=$2 AND following_id=$1)', [input.blockerId, input.blockedId])
+    })
+  }
+  async deleteSocialAccountBlock(blockerId: string, blockedId: string) {
+    return this.withTransaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext(LEAST($1,$2)),hashtext(GREATEST($1,$2)))', [blockerId, blockedId])
+      const result = await client.query('DELETE FROM social_account_blocks WHERE blocker_id=$1 AND blocked_id=$2 RETURNING blocker_id', [blockerId, blockedId])
+      return result.rows.length > 0
+    })
+  }
+  async createSocialAccountBlockWithAudit(input: SocialAccountBlock, event: AuditEvent) {
+    if (input.blockerId === input.blockedId) throw new Error('SOCIAL_SELF_BLOCK')
+    await this.withTransaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext(LEAST($1,$2)),hashtext(GREATEST($1,$2)))', [input.blockerId, input.blockedId])
+      await client.query('INSERT INTO social_account_blocks(blocker_id,blocked_id,created_at) VALUES($1,$2,$3) ON CONFLICT(blocker_id,blocked_id) DO NOTHING', [input.blockerId, input.blockedId, input.createdAt])
+      await client.query('DELETE FROM friendships WHERE (requester_id=$1 AND recipient_id=$2) OR (requester_id=$2 AND recipient_id=$1)', [input.blockerId, input.blockedId])
+      await client.query('DELETE FROM social_account_follows WHERE (follower_id=$1 AND following_id=$2) OR (follower_id=$2 AND following_id=$1)', [input.blockerId, input.blockedId])
+      await client.query('INSERT INTO audit_events(id,timestamp,action,request_id,actor_id,target_id,success,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)', [event.id, event.timestamp, event.action, event.requestId, event.actorId ?? null, event.targetId ?? null, event.success, JSON.stringify(event.metadata)])
+    })
+  }
+  async deleteSocialAccountBlockWithAudit(blockerId: string, blockedId: string, event: AuditEvent) {
+    return this.withTransaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext(LEAST($1,$2)),hashtext(GREATEST($1,$2)))', [blockerId, blockedId])
+      const result = await client.query('DELETE FROM social_account_blocks WHERE blocker_id=$1 AND blocked_id=$2 RETURNING blocker_id', [blockerId, blockedId])
+      if (!result.rows.length) return false
+      await client.query('INSERT INTO audit_events(id,timestamp,action,request_id,actor_id,target_id,success,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)', [event.id, event.timestamp, event.action, event.requestId, event.actorId ?? null, event.targetId ?? null, event.success, JSON.stringify(event.metadata)])
+      return true
+    })
+  }
+  async drainSocialBlockAudit() { /* PostgreSQL commits block state and audit together. */ }
   async listChatConversations(accountId: string): Promise<ChatConversation[]> {
     const result = await this.db.query<MessageRow & { peer_id: string; unread_count: number }>(`SELECT latest.peer_id, latest.id, latest.sender_id, latest.recipient_id, latest.body, latest.created_at, latest.read_at,
       (SELECT COUNT(*)::int FROM direct_messages unread WHERE unread.sender_id = latest.peer_id AND unread.recipient_id = $1 AND unread.read_at IS NULL) AS unread_count
@@ -155,8 +261,12 @@ export class PostgresRepository implements ServerRepository {
     return result.rows.reverse().map(chatMessage)
   }
   async createChatMessage(input: DirectMessage): Promise<DirectMessage> {
-    const result = await this.db.query<MessageRow>('INSERT INTO direct_messages (id, sender_id, recipient_id, body, created_at, read_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, sender_id, recipient_id, body, created_at, read_at', [input.id, input.senderId, input.recipientId, input.body, input.createdAt, input.readAt ?? null])
-    return chatMessage(result.rows[0])
+    return this.withTransaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext(LEAST($1,$2)),hashtext(GREATEST($1,$2)))', [input.senderId, input.recipientId])
+      const result = await client.query<MessageRow>('INSERT INTO direct_messages (id, sender_id, recipient_id, body, created_at, read_at) SELECT $1, $2, $3, $4, $5, $6 WHERE NOT EXISTS (SELECT 1 FROM social_account_blocks WHERE (blocker_id=$2 AND blocked_id=$3) OR (blocker_id=$3 AND blocked_id=$2)) RETURNING id, sender_id, recipient_id, body, created_at, read_at', [input.id, input.senderId, input.recipientId, input.body, input.createdAt, input.readAt ?? null])
+      if (!result.rows[0]) throw new Error('SOCIAL_ACCOUNT_BLOCKED')
+      return chatMessage(result.rows[0])
+    })
   }
   async markChatMessagesRead(accountId: string, peerId: string, readAt: string): Promise<number> {
     const result = await this.db.query('UPDATE direct_messages SET read_at = $3 WHERE sender_id = $2 AND recipient_id = $1 AND read_at IS NULL RETURNING id', [accountId, peerId, readAt])
@@ -237,6 +347,9 @@ export class PostgresRepository implements ServerRepository {
   followSocialAccount(followerId: string, followingId: string, maxFollows: number): Promise<void> {
     if (followerId === followingId) return Promise.reject(new Error('SOCIAL_SELF_FOLLOW'))
     return this.withTransaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext(LEAST($1,$2)),hashtext(GREATEST($1,$2)))', [followerId, followingId])
+      const blocked = await client.query<{ blocked: boolean }>('SELECT EXISTS (SELECT 1 FROM social_account_blocks WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1)) AS blocked', [followerId, followingId])
+      if (blocked.rows[0]?.blocked) throw new Error('SOCIAL_ACCOUNT_BLOCKED')
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('social-follows'))", [followerId])
       const existing = await client.query<{ exists: boolean }>('SELECT EXISTS (SELECT 1 FROM social_account_follows WHERE follower_id = $1 AND following_id = $2) AS exists', [followerId, followingId])
       if (existing.rows[0]?.exists) return
@@ -265,6 +378,33 @@ export class PostgresRepository implements ServerRepository {
   async reviewSocialPost(id: string, status: Extract<SocialPostVisibility, 'published' | 'rejected' | 'removed'>, staffId: string, note?: string) {
     const result = await this.db.query<SocialPostRow>(`UPDATE social_posts SET visibility = $1, reviewed_by = $2, reviewed_at = NOW(), review_note = $3, updated_at = NOW() WHERE id = $4 AND visibility <> 'removed' AND ($1 <> 'published' OR visibility = 'pending-review') RETURNING ${socialPostColumns}`, [status, staffId, note?.slice(0, 500) ?? null, id])
     return result.rows[0] ? socialPost(result.rows[0]) : undefined
+  }
+  async createSocialStory(input: SocialStory, mediaLimitBytes: number): Promise<SocialStory> {
+    if (input.media && input.media.sizeBytes > mediaLimitBytes) throw new StorageQuotaExceededError(0, mediaLimitBytes, input.media.sizeBytes)
+    const inserted = await this.withTransaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [input.authorId])
+      const count = await client.query<{ count: number | string }>('SELECT COUNT(*)::int AS count FROM social_stories WHERE author_id = $1 AND expires_at > $2', [input.authorId, input.createdAt])
+      if (Number(count.rows[0]?.count || 0) >= socialStoryMaxActivePerAccount) throw new Error('SOCIAL_STORY_LIMIT')
+      const result = await client.query<SocialStoryRow>(`INSERT INTO social_stories (${socialStoryColumns}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ${socialStoryColumns}`, [input.id, input.authorId, input.kind, input.body, input.audience, input.media?.storageKey ?? null, input.media?.mimeType ?? null, input.media?.sizeBytes ?? null, input.media?.sha256 ?? null, input.createdAt, input.expiresAt])
+      return result.rows[0]
+    })
+    return socialStory(inserted)
+  }
+  async findSocialStory(id: string) {
+    const result = await this.db.query<SocialStoryRow>(`SELECT ${socialStoryColumns} FROM social_stories WHERE id = $1`, [id])
+    return result.rows[0] ? socialStory(result.rows[0]) : undefined
+  }
+  async listSocialStories(options: { expiresAfter?: string; cursor?: SocialStoryCursor; limit: number }) {
+    const result = await this.db.query<SocialStoryRow>(`SELECT ${socialStoryColumns} FROM social_stories WHERE ($1::timestamptz IS NULL OR expires_at > $1) AND ($2::timestamptz IS NULL OR created_at < $2 OR (created_at = $2 AND id < $3::uuid)) ORDER BY created_at DESC, id DESC LIMIT $4`, [options.expiresAfter ?? null, options.cursor?.createdAt ?? null, options.cursor?.id ?? null, options.limit])
+    return result.rows.map(socialStory)
+  }
+  async deleteSocialStory(id: string, authorId: string) {
+    const result = await this.db.query<SocialStoryRow>(`DELETE FROM social_stories WHERE id = $1 AND author_id = $2 RETURNING ${socialStoryColumns}`, [id, authorId])
+    return result.rows[0] ? socialStory(result.rows[0]) : undefined
+  }
+  async deleteExpiredSocialStories(now: string) {
+    const result = await this.db.query<SocialStoryRow>(`DELETE FROM social_stories WHERE expires_at <= $1 RETURNING ${socialStoryColumns}`, [now])
+    return result.rows.map(socialStory)
   }
   async listSocialPostComments(postId: string, limit = 100): Promise<SocialPostComment[]> {
     const safeLimit = Number.isSafeInteger(limit) ? Math.min(100, Math.max(1, limit)) : 100
@@ -343,6 +483,52 @@ export class PostgresRepository implements ServerRepository {
     const result = await this.db.query<SocialPostReportRow>('UPDATE social_post_reports SET status = $1, reviewed_by = $2, reviewed_at = NOW() WHERE id = $3 AND status = \'open\' RETURNING id, post_id, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by', [status, staffId, id])
     return result.rows[0] ? socialPostReport(result.rows[0]) : undefined
   }
+  async reviewSocialPostReportWithAudit(id: string, status: Extract<SocialPostReport['status'], 'reviewed' | 'dismissed'>, staffId: string, event: AuditEvent) {
+    return this.withTransaction(async client => {
+      const result = await client.query<SocialPostReportRow>('UPDATE social_post_reports SET status=$1, reviewed_by=$2, reviewed_at=$3 WHERE id=$4 AND status=\'open\' RETURNING id, post_id, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by', [status, staffId, event.timestamp, id])
+      if (!result.rows[0]) return undefined
+      await client.query('INSERT INTO audit_events(id,timestamp,action,request_id,actor_id,target_id,success,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)', [event.id, event.timestamp, event.action, event.requestId, event.actorId ?? null, event.targetId ?? null, event.success, JSON.stringify(event.metadata)])
+      return socialPostReport(result.rows[0])
+    })
+  }
+  async createSocialStoryReport(input: SocialStoryReport) {
+    const result = await this.db.query<SocialStoryReportRow>(`INSERT INTO social_story_reports (id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,reason,details,status,created_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+      RETURNING id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,evidence_expired_at,reason,details,status,created_at,reviewed_at,reviewed_by`, [input.id, input.storyId, input.authorId, input.reporterId, input.kind, input.body, input.audience, input.storyCreatedAt, input.storyExpiresAt, input.mediaSha256 ?? null, input.evidenceStorageKey ?? null, input.evidenceMimeType ?? null, input.evidenceSizeBytes ?? null, input.evidenceDeleteAt ?? null, input.reason, input.details, input.status, input.createdAt])
+    return socialStoryReport(result.rows[0])
+  }
+  async deleteSocialStoryReport(id: string, reporterId: string) {
+    const result = await this.db.query('DELETE FROM social_story_reports WHERE id=$1 AND reporter_id=$2 RETURNING id', [id, reporterId])
+    return result.rows.length > 0
+  }
+  async listSocialStoryReports(status?: SocialStoryReport['status']) {
+    const result = await this.db.query<SocialStoryReportRow>(`SELECT id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,evidence_expired_at,reason,details,status,created_at,reviewed_at,reviewed_by FROM social_story_reports WHERE ($1::text IS NULL OR status=$1) ORDER BY created_at DESC,id DESC`, [status ?? null])
+    return result.rows.map(socialStoryReport)
+  }
+  async pageSocialStoryReports(status: SocialStoryReport['status'] | undefined, cursor: SocialStoryReportCursor | undefined, limit: number): Promise<SocialStoryReportPage> {
+    const safeLimit = Number.isSafeInteger(limit) ? Math.min(100, Math.max(1, limit)) : 50
+    const result = await this.db.query<SocialStoryReportRow>(`SELECT id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,evidence_expired_at,reason,details,status,created_at,reviewed_at,reviewed_by FROM social_story_reports WHERE ($1::text IS NULL OR status=$1) AND ($2::timestamptz IS NULL OR created_at < $2 OR (created_at=$2 AND id < $3::uuid)) ORDER BY created_at DESC,id DESC LIMIT $4`, [status ?? null, cursor?.createdAt ?? null, cursor?.id ?? null, safeLimit + 1])
+    const hasMore = result.rows.length > safeLimit
+    const reports = result.rows.slice(0, safeLimit).map(socialStoryReport)
+    const last = reports.at(-1)
+    return { reports, nextCursor: hasMore && last ? { createdAt: last.createdAt, id: last.id } : null }
+  }
+  async reviewSocialStoryReport(id: string, status: Extract<SocialStoryReport['status'], 'reviewed' | 'dismissed'>, staffId: string, event: AuditEvent) {
+    return this.withTransaction(async client => {
+      const result = await client.query<SocialStoryReportRow>(`UPDATE social_story_reports SET status=$1,reviewed_by=$2,reviewed_at=$3,evidence_delete_at=CASE WHEN evidence_storage_key IS NULL THEN NULL ELSE LEAST($3::timestamptz + INTERVAL '30 days',created_at + INTERVAL '90 days') END WHERE id=$4 AND status='open'
+        RETURNING id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,evidence_expired_at,reason,details,status,created_at,reviewed_at,reviewed_by`, [status, staffId, event.timestamp, id])
+      if (!result.rows[0]) return undefined
+      await client.query('INSERT INTO audit_events(id,timestamp,action,request_id,actor_id,target_id,success,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)', [event.id, event.timestamp, event.action, event.requestId, event.actorId ?? null, event.targetId ?? null, event.success, JSON.stringify(event.metadata)])
+      return socialStoryReport(result.rows[0])
+    })
+  }
+  async listExpiredSocialStoryEvidence(now: string, limit: number) {
+    const result = await this.db.query<SocialStoryReportRow>(`SELECT id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,evidence_expired_at,reason,details,status,created_at,reviewed_at,reviewed_by FROM social_story_reports WHERE evidence_storage_key IS NOT NULL AND ((status='open' AND created_at <= $1::timestamptz - INTERVAL '90 days') OR (status <> 'open' AND evidence_delete_at <= $1)) ORDER BY COALESCE(evidence_delete_at,created_at + INTERVAL '90 days') LIMIT $2`, [now, Math.min(Math.max(limit, 1), 500)])
+    return result.rows.map(socialStoryReport)
+  }
+  async clearSocialStoryEvidence(reportId: string, expiredAt: string) { await this.db.query(`UPDATE social_story_reports SET evidence_storage_key=NULL,evidence_mime_type=NULL,evidence_size_bytes=NULL,evidence_expired_at=$2 WHERE id=$1 AND evidence_storage_key IS NOT NULL AND ((status='open' AND created_at <= $2::timestamptz - INTERVAL '90 days') OR (status <> 'open' AND evidence_delete_at <= $2))`, [reportId, expiredAt]) }
+  async listSocialStoryEvidenceStorageKeys() { return (await this.db.query<{ evidence_storage_key: string }>('SELECT evidence_storage_key FROM social_story_reports WHERE evidence_storage_key IS NOT NULL')).rows.map(row => row.evidence_storage_key) }
+  async drainSocialModerationAudit() { /* PostgreSQL commits moderation and its audit event in one transaction. */ }
   async findAccountByEmail(email: string) { const result = await this.db.query<AccountRow>('SELECT * FROM accounts WHERE email = $1', [email]); return result.rows[0] ? account(result.rows[0]) : undefined }
   async findAccountById(id: string) { const result = await this.db.query<AccountRow>('SELECT * FROM accounts WHERE id = $1', [id]); return result.rows[0] ? account(result.rows[0]) : undefined }
   async listAccounts() { const result = await this.db.query<AccountRow>('SELECT * FROM accounts ORDER BY email ASC'); return result.rows.map(account) }
@@ -360,17 +546,109 @@ export class PostgresRepository implements ServerRepository {
   async saveStripeConnectAccount(input: StripeConnectRecord) { await this.db.query('INSERT INTO stripe_connected_accounts (account_id, stripe_account_id, charges_enabled, payouts_enabled, details_submitted, deauthorized, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (account_id) DO UPDATE SET stripe_account_id = EXCLUDED.stripe_account_id, charges_enabled = EXCLUDED.charges_enabled, payouts_enabled = EXCLUDED.payouts_enabled, details_submitted = EXCLUDED.details_submitted, deauthorized = EXCLUDED.deauthorized, updated_at = EXCLUDED.updated_at', [input.accountId, input.stripeAccountId, input.chargesEnabled, input.payoutsEnabled, input.detailsSubmitted, input.deauthorized, input.updatedAt]) }
   async hasProcessedStripeEvent(eventId: string) { const result = await this.db.query<{ exists: boolean }>('SELECT EXISTS (SELECT 1 FROM stripe_webhook_events WHERE event_id = $1) AS exists', [eventId]); return result.rows[0]?.exists ?? false }
   async recordProcessedStripeEvent(eventId: string, eventType: string) { const result = await this.db.query<{ event_id: string }>('INSERT INTO stripe_webhook_events (event_id, event_type) VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING RETURNING event_id', [eventId, eventType]); return result.rows.length > 0 }
+  async findSellerLink(accountIdOrScope: string | MercadoPagoScope, applicationId?: string, mode?: PaymentEnvironment) { const scope = typeof accountIdOrScope === 'string' ? { accountId: accountIdOrScope, applicationId: applicationId!, mode: mode! } : accountIdOrScope; const result = await this.db.query<MercadoPagoSellerLink>(`SELECT account_id AS "accountId",application_id AS "applicationId",mode,provider_user_id AS "providerUserId",encrypted_access_token AS "encryptedAccessToken",encrypted_refresh_token AS "encryptedRefreshToken",access_token_expires_at::text AS "accessTokenExpiresAt",version,status,updated_at::text AS "updatedAt" FROM mercadopago_seller_links WHERE account_id=$1 AND application_id=$2 AND mode=$3`, [scope.accountId,scope.applicationId,scope.mode]); return result.rows[0] }
+  async findSellerLinkByProviderUserId(providerUserId: string, applicationId: string, mode: PaymentEnvironment) { const result = await this.db.query<MercadoPagoSellerLink>(`SELECT account_id AS "accountId",application_id AS "applicationId",mode,provider_user_id AS "providerUserId",encrypted_access_token AS "encryptedAccessToken",encrypted_refresh_token AS "encryptedRefreshToken",access_token_expires_at::text AS "accessTokenExpiresAt",version,status,updated_at::text AS "updatedAt" FROM mercadopago_seller_links WHERE provider_user_id=$1 AND application_id=$2 AND mode=$3`, [providerUserId,applicationId,mode]); return result.rows[0] }
+  async saveSellerLink(input: MercadoPagoSellerLink, expectedVersion: number) { if (!isMercadoPagoSellerLink(input) || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0 || input.version !== expectedVersion + 1) throw new Error('MERCADOPAGO_SELLER_LINK_INVALID'); const result = await this.db.query(`INSERT INTO mercadopago_seller_links (account_id,application_id,mode,provider_user_id,encrypted_access_token,encrypted_refresh_token,access_token_expires_at,version,status,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (account_id,application_id,mode) DO UPDATE SET provider_user_id=EXCLUDED.provider_user_id,encrypted_access_token=EXCLUDED.encrypted_access_token,encrypted_refresh_token=EXCLUDED.encrypted_refresh_token,access_token_expires_at=EXCLUDED.access_token_expires_at,version=EXCLUDED.version,status=EXCLUDED.status,updated_at=EXCLUDED.updated_at WHERE mercadopago_seller_links.version=$11 RETURNING account_id`, [input.accountId,input.applicationId,input.mode,input.providerUserId,input.encryptedAccessToken,input.encryptedRefreshToken,input.accessTokenExpiresAt,input.version,input.status,input.updatedAt,expectedVersion]); return (result.rowCount ?? 0) > 0 }
+  async createOAuthIntent(input: MercadoPagoOAuthIntent) { if (!isMercadoPagoOAuthIntent(input)) throw new Error('MERCADOPAGO_OAUTH_INTENT_INVALID'); await this.db.query('INSERT INTO mercadopago_oauth_intents (state_hash,account_id,application_id,mode,session_binding_hash,encrypted_code_verifier,created_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [input.stateHash,input.accountId,input.applicationId,input.mode,input.sessionBindingHash,input.encryptedCodeVerifier,input.createdAt,input.expiresAt]) }
+  async consumeOAuthIntent(stateHash: string, sessionBindingHash: string, now: string) { const result = await this.db.query<MercadoPagoOAuthIntent>(`DELETE FROM mercadopago_oauth_intents WHERE state_hash=$1 AND session_binding_hash=$2 AND expires_at>$3 RETURNING state_hash AS "stateHash",account_id AS "accountId",application_id AS "applicationId",mode,session_binding_hash AS "sessionBindingHash",encrypted_code_verifier AS "encryptedCodeVerifier",created_at::text AS "createdAt",expires_at::text AS "expiresAt"`, [stateHash,sessionBindingHash,now]); return result.rows[0] }
+  async deleteExpiredOAuthIntents(now: string) { const result = await this.db.query('DELETE FROM mercadopago_oauth_intents WHERE expires_at <= $1', [now]); return result.rowCount ?? 0 }
+  async withSellerLock<T>(scope: MercadoPagoScope, action: () => Promise<T>): Promise<T> {
+    const key = `mercadopago:${scope.applicationId}:${scope.mode}:${scope.accountId}`
+    if (!this.db.connect) return action()
+    const connection = await this.db.connect()
+    try {
+      await connection.query('SELECT pg_advisory_lock(hashtextextended($1,0))', [key])
+      return await action()
+    } finally {
+      try { await connection.query('SELECT pg_advisory_unlock(hashtextextended($1,0))', [key]) } finally { connection.release() }
+    }
+  }
+  async reservePreference(request: MercadoPagoPreferenceReservation): Promise<MercadoPagoPreferenceClaim> {
+    return this.withTransaction(async client => {
+      const inserted = await client.query<{ key: string }>(`INSERT INTO mercadopago_preference_reservations (application_id,mode,key,fingerprint,account_id,buyer_id,order_id,operation_id,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'reserved') ON CONFLICT (application_id,mode,key) DO NOTHING RETURNING key`, [request.applicationId,request.mode,request.key,request.fingerprint,request.accountId,request.buyerId,request.orderId,request.operationId])
+      if (inserted.rows.length) return { state: 'reserved' }
+      const selected = await client.query<{ fingerprint: string; account_id: string; buyer_id: string; order_id: string; operation_id: string; status: string; result: MercadoPagoPreference | null; stale: boolean }>(`SELECT fingerprint,account_id,buyer_id,order_id,operation_id,status,result,(reserved_at <= NOW() - INTERVAL '2 minutes') AS stale FROM mercadopago_preference_reservations WHERE application_id=$1 AND mode=$2 AND key=$3 FOR UPDATE`, [request.applicationId,request.mode,request.key])
+      const prior = selected.rows[0]
+      if (!prior || prior.fingerprint !== request.fingerprint || prior.account_id !== request.accountId || prior.buyer_id !== request.buyerId || prior.order_id !== request.orderId || prior.operation_id !== request.operationId) return { state: 'conflict' }
+      if (prior.status === 'complete' && prior.result) return { state: 'complete', result: prior.result }
+      if (prior.status === 'uncertain' || prior.stale) {
+        await client.query(`UPDATE mercadopago_preference_reservations SET status='uncertain',updated_at=NOW() WHERE application_id=$1 AND mode=$2 AND key=$3`, [request.applicationId,request.mode,request.key])
+        return { state: 'uncertain' }
+      }
+      return { state: 'busy' }
+    })
+  }
+  async completePreference(key: string, fingerprint: string, result: MercadoPagoPreference) {
+    const updated = await this.db.query(`UPDATE mercadopago_preference_reservations SET status='complete',result=$3::jsonb,updated_at=NOW() WHERE key=$1 AND fingerprint=$2 AND status='reserved'`, [key,fingerprint,JSON.stringify(result)])
+    if ((updated.rowCount ?? 0) > 0) return
+    const prior = await this.db.query<{ status: string; fingerprint: string; result: MercadoPagoPreference | null }>('SELECT status,fingerprint,result FROM mercadopago_preference_reservations WHERE key=$1', [key])
+    if (!prior.rows[0] || prior.rows[0].fingerprint !== fingerprint || prior.rows[0].status !== 'complete' || JSON.stringify(prior.rows[0].result) !== JSON.stringify(result)) throw new Error('MERCADOPAGO_PREFERENCE_RESERVATION_CONFLICT')
+  }
+  async failPreference(key: string, fingerprint: string, uncertain: boolean) {
+    if (uncertain) await this.db.query(`UPDATE mercadopago_preference_reservations SET status='uncertain',updated_at=NOW() WHERE key=$1 AND fingerprint=$2 AND status='reserved'`, [key,fingerprint])
+    else await this.db.query(`DELETE FROM mercadopago_preference_reservations WHERE key=$1 AND fingerprint=$2 AND status='reserved'`, [key,fingerprint])
+  }
+  private mercadoPagoPaymentSelect = `id,order_id AS "orderId",seller_id AS "sellerId",mode,application_id AS "applicationId",provider_user_id AS "providerUserId",idempotency_key AS "idempotencyKey",preference_id AS "preferenceId",checkout_url AS "checkoutUrl",external_reference AS "externalReference",amount_minor::float8 AS "amountMinor",currency,quote_snapshot AS quote,status,created_at::text AS "createdAt",updated_at::text AS "updatedAt"`
+  async createMercadoPagoOrderPayment(input: MercadoPagoOrderPayment) {
+    if (!isMercadoPagoOrderPayment(input)) throw new Error('MERCADOPAGO_PAYMENT_INVALID')
+    const order = await this.findBeatOrder(input.orderId)
+    if (!order || order.sellerId !== input.sellerId || order.currency !== 'mxn' || order.paymentProvider !== 'mercadopago' || order.mercadoPagoMode !== input.mode || order.mercadoPagoClientId !== input.applicationId || order.mercadoPagoPreferenceId !== input.preferenceId || !order.mercadoPagoQuote || order.mercadoPagoQuote.amountMinor !== input.amountMinor || order.mercadoPagoQuote.sourceAmountMinor !== input.quote.sourceAmountMinor || order.mercadoPagoQuote.exchangeRateUsdMxn !== input.quote.exchangeRateUsdMxn || order.mercadoPagoQuote.commissionMinor !== input.quote.marketplaceFeeMinor || order.mercadoPagoQuote.sellerNetMinor !== input.quote.sellerNetMinor) throw new Error('MERCADOPAGO_ORDER_SELLER_MISMATCH')
+    const result = await this.db.query<MercadoPagoOrderPayment>(`INSERT INTO mercadopago_order_payments (id,order_id,seller_id,mode,application_id,provider_user_id,idempotency_key,preference_id,checkout_url,external_reference,amount_minor,currency,quote_snapshot,status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16) ON CONFLICT (application_id,mode,provider_user_id,idempotency_key) DO NOTHING RETURNING ${this.mercadoPagoPaymentSelect}`, [input.id,input.orderId,input.sellerId,input.mode,input.applicationId,input.providerUserId,input.idempotencyKey,input.preferenceId,input.checkoutUrl,input.externalReference,input.amountMinor,input.currency,JSON.stringify(input.quote),input.status,input.createdAt,input.updatedAt])
+    if (result.rows[0]) return result.rows[0]
+    const existing = await this.db.query<MercadoPagoOrderPayment>(`SELECT ${this.mercadoPagoPaymentSelect} FROM mercadopago_order_payments WHERE application_id=$1 AND mode=$2 AND provider_user_id=$3 AND idempotency_key=$4`, [input.applicationId,input.mode,input.providerUserId,input.idempotencyKey])
+    const prior = existing.rows[0]
+    if (!prior || prior.orderId !== input.orderId || prior.sellerId !== input.sellerId || prior.amountMinor !== input.amountMinor || prior.currency !== input.currency || JSON.stringify(prior.quote) !== JSON.stringify(input.quote)) throw new Error('MERCADOPAGO_IDEMPOTENCY_CONFLICT')
+    return prior
+  }
+  async findMercadoPagoOrderPayment(id: string) { const result = await this.db.query<MercadoPagoOrderPayment>(`SELECT ${this.mercadoPagoPaymentSelect} FROM mercadopago_order_payments WHERE id=$1`, [id]); return result.rows[0] }
+  async findMercadoPagoOrderPayments(orderId: string) { const result = await this.db.query<MercadoPagoOrderPayment>(`SELECT ${this.mercadoPagoPaymentSelect} FROM mercadopago_order_payments WHERE order_id=$1 ORDER BY created_at ASC`, [orderId]); return result.rows }
+  async findMercadoPagoOrderPaymentByPreference(applicationId: string, mode: PaymentEnvironment, providerUserId: string, preferenceId: string) { const result = await this.db.query<MercadoPagoOrderPayment>(`SELECT ${this.mercadoPagoPaymentSelect} FROM mercadopago_order_payments WHERE application_id=$1 AND mode=$2 AND provider_user_id=$3 AND preference_id=$4`, [applicationId,mode,providerUserId,preferenceId]); return result.rows[0] }
+  async findMercadoPagoOrderPaymentByProviderPaymentId(applicationId: string, mode: PaymentEnvironment, paymentId: string) { const payment = await this.findMercadoPagoProviderPaymentById(applicationId,mode,paymentId); return payment ? this.findMercadoPagoOrderPaymentByPreference(applicationId,mode,payment.providerUserId,payment.attemptId) : undefined }
+  async transitionMercadoPagoOrderPayment(id: string, from: MercadoPagoPaymentStatus[], patch: Partial<Pick<MercadoPagoOrderPayment, 'status' | 'updatedAt'>>) { if (!from.length || !patch.status) return undefined; const result = await this.db.query<MercadoPagoOrderPayment>(`UPDATE mercadopago_order_payments SET status=$2,updated_at=COALESCE($3,updated_at) WHERE id=$1 AND status=ANY($4::text[]) RETURNING ${this.mercadoPagoPaymentSelect}`, [id,patch.status,patch.updatedAt ?? null,from]); return result.rows[0] }
+  private mercadoPagoProviderPaymentSelect = `payment_id AS "paymentId",attempt_id AS "attemptId",order_id AS "orderId",application_id AS "applicationId",mode,provider_user_id AS "providerUserId",amount_minor::float8 AS "amountMinor",refunded_minor::float8 AS "refundedMinor",currency,status,status_detail AS "statusDetail",normalized_status AS "normalizedStatus",created_at::text AS "createdAt",updated_at::text AS "updatedAt"`
+  async createMercadoPagoProviderPayment(input: MercadoPagoProviderPayment) {
+    if (!isMercadoPagoProviderPayment(input)) throw new Error('MERCADOPAGO_PROVIDER_PAYMENT_INVALID')
+    const applicationId = input.applicationId ?? input.clientId!
+    const attempt = await this.findMercadoPagoOrderPaymentByPreference(applicationId,input.mode,input.providerUserId,input.attemptId)
+    if (!attempt || attempt.orderId !== input.orderId || attempt.amountMinor !== input.amountMinor || attempt.currency !== input.currency) throw new Error('MERCADOPAGO_PROVIDER_PAYMENT_MISMATCH')
+    const result = await this.db.query<MercadoPagoProviderPayment>(`INSERT INTO mercadopago_provider_payments (payment_id,attempt_id,order_id,application_id,mode,provider_user_id,amount_minor,refunded_minor,currency,status,status_detail,normalized_status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (application_id,mode,payment_id) DO NOTHING RETURNING ${this.mercadoPagoProviderPaymentSelect}`, [input.paymentId,input.attemptId,input.orderId,applicationId,input.mode,input.providerUserId,input.amountMinor,input.refundedMinor,input.currency,input.status,input.statusDetail,input.normalizedStatus,input.createdAt,input.updatedAt])
+    if (result.rows[0]) return result.rows[0]
+    const prior = await this.findMercadoPagoProviderPaymentById(applicationId,input.mode,input.paymentId)
+    if (!prior || prior.orderId !== input.orderId || prior.attemptId !== input.attemptId || prior.amountMinor !== input.amountMinor || prior.providerUserId !== input.providerUserId) throw new Error('MERCADOPAGO_PROVIDER_PAYMENT_CONFLICT')
+    return prior
+  }
+  async findMercadoPagoProviderPaymentById(applicationId: string, mode: PaymentEnvironment, paymentId: string) { const result = await this.db.query<MercadoPagoProviderPayment>(`SELECT ${this.mercadoPagoProviderPaymentSelect} FROM mercadopago_provider_payments WHERE application_id=$1 AND mode=$2 AND payment_id=$3`, [applicationId,mode,paymentId]); return result.rows[0] }
+  async listMercadoPagoProviderPaymentsByOrder(orderId: string) { const result = await this.db.query<MercadoPagoProviderPayment>(`SELECT ${this.mercadoPagoProviderPaymentSelect} FROM mercadopago_provider_payments WHERE order_id=$1 ORDER BY created_at,payment_id`, [orderId]); return result.rows }
+  async transitionMercadoPagoProviderPayment(paymentId: string, applicationId: string, mode: PaymentEnvironment, from: MercadoPagoProviderPayment['normalizedStatus'][], patch: Partial<Pick<MercadoPagoProviderPayment, 'refundedMinor' | 'status' | 'statusDetail' | 'normalizedStatus' | 'updatedAt'>>) { if (!from.length) return undefined; const result = await this.db.query<MercadoPagoProviderPayment>(`UPDATE mercadopago_provider_payments SET refunded_minor=COALESCE($4,refunded_minor),status=COALESCE($5,status),status_detail=COALESCE($6,status_detail),normalized_status=COALESCE($7,normalized_status),updated_at=COALESCE($8,updated_at) WHERE application_id=$1 AND mode=$2 AND payment_id=$3 AND normalized_status=ANY($9::text[]) RETURNING ${this.mercadoPagoProviderPaymentSelect}`, [applicationId,mode,paymentId,patch.refundedMinor ?? null,patch.status ?? null,patch.statusDetail ?? null,patch.normalizedStatus ?? null,patch.updatedAt ?? null,from]); return result.rows[0] }
+  async hasProcessedProviderWebhookEvent(provider: ProviderWebhookEvent['provider'], environment: PaymentEnvironment, eventId: string) { const result = await this.db.query<{ exists: boolean }>('SELECT EXISTS (SELECT 1 FROM provider_webhook_events WHERE provider=$1 AND environment=$2 AND event_id=$3) AS exists', [provider,environment,eventId]); return result.rows[0]?.exists ?? false }
+  async recordProcessedProviderWebhookEvent(input: ProviderWebhookEvent) { const result = await this.db.query('INSERT INTO provider_webhook_events (provider,environment,event_id,event_type,created_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (provider,environment,event_id) DO NOTHING RETURNING event_id', [input.provider,input.environment,input.eventId,input.eventType,input.createdAt]); return (result.rowCount ?? 0) > 0 }
+  async hasProcessedMercadoPagoEvent(mode: PaymentEnvironment, eventId: string) { return this.hasProcessedProviderWebhookEvent('mercadopago',mode,eventId) }
+  async recordProcessedMercadoPagoEvent(mode: PaymentEnvironment, eventId: string, eventType: string) { return this.recordProcessedProviderWebhookEvent({ provider: 'mercadopago', environment: mode, eventId, eventType, createdAt: new Date().toISOString() }) }
   async createBeatOrder(order: BeatOrder) {
-    const result = await this.db.query<{ data: BeatOrder }>('INSERT INTO beat_orders (id, buyer_id, seller_id, checkout_session_id, status, data, created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id RETURNING data', [order.id, order.buyerId, order.sellerId, order.stripeCheckoutSessionId ?? null, order.status, JSON.stringify(order), order.createdAt])
-    return result.rows[0].data
+    return this.withTransaction(async client => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('purchase-source'))", [order.sellerId])
+      if (order.fulfillment) {
+        const found = await client.query<AssetRow>('SELECT * FROM assets WHERE id=$1 AND owner_id=$2 FOR UPDATE', [order.fulfillment.assetId, order.sellerId])
+        const source = found.rows[0] && asset(found.rows[0])
+        if (!isPurchaseEntitlement(order.fulfillment) || !source || source.state !== 'available' || source.contentHash !== order.fulfillment.sourceHash || source.sizeBytes !== order.fulfillment.sourceSizeBytes) throw new Error('ORDER_DELIVERABLES_UNAVAILABLE')
+      }
+      const result = await client.query<{ data: BeatOrder }>('INSERT INTO beat_orders (id, buyer_id, seller_id, checkout_session_id, status, data, created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7) ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id RETURNING data', [order.id, order.buyerId, order.sellerId, order.stripeCheckoutSessionId ?? null, order.status, JSON.stringify(order), order.createdAt])
+      return result.rows[0].data
+    })
   }
   async findBeatOrder(id: string) { const result = await this.db.query<{ data: BeatOrder }>('SELECT data FROM beat_orders WHERE id = $1', [id]); return result.rows[0]?.data }
   async listBeatOrders(buyerId: string) { const result = await this.db.query<{ data: BeatOrder }>('SELECT data FROM beat_orders WHERE buyer_id = $1 ORDER BY created_at DESC', [buyerId]); return result.rows.map(row => row.data) }
   async listAllBeatOrders() { const result = await this.db.query<{ data: BeatOrder }>('SELECT data FROM beat_orders ORDER BY created_at DESC'); return result.rows.map(row => row.data) }
   async findBeatOrderByCheckoutSessionId(sessionId: string) { const result = await this.db.query<{ data: BeatOrder }>('SELECT data FROM beat_orders WHERE checkout_session_id = $1', [sessionId]); return result.rows[0]?.data }
   async findBeatOrderByPaymentIntentId(paymentIntentId: string) { const result = await this.db.query<{ data: BeatOrder }>("SELECT data FROM beat_orders WHERE data->>'stripePaymentIntentId' = $1", [paymentIntentId]); return result.rows[0]?.data }
-  async updateBeatOrder(id: string, patch: Partial<Pick<BeatOrder, 'status' | 'stripeCheckoutSessionId' | 'stripePaymentIntentId' | 'stripeRefundId' | 'refundRequestedAt' | 'refundRequestedBy' | 'disputeId' | 'disputeReason' | 'paidAt'>>) {
+  async findBeatOrderByMercadoPagoPreferenceId(preferenceId: string) { const result = await this.db.query<{ data: BeatOrder }>("SELECT data FROM beat_orders WHERE data->>'mercadoPagoPreferenceId' = $1", [preferenceId]); return result.rows[0]?.data }
+  async findBeatOrderByMercadoPagoPaymentId(paymentId: string) { const result = await this.db.query<{ data: BeatOrder }>("SELECT data FROM beat_orders WHERE data->>'mercadoPagoPaymentId' = $1", [paymentId]); return result.rows[0]?.data }
+  async updateBeatOrder(id: string, patch: Partial<Pick<BeatOrder, BeatOrderMutableFields>>) {
     const result = await this.db.query<{ data: BeatOrder }>(`UPDATE beat_orders SET checkout_session_id = COALESCE($2, checkout_session_id), status = COALESCE($3, status), data = data || $4::jsonb WHERE id = $1 RETURNING data`, [id, patch.stripeCheckoutSessionId ?? null, patch.status ?? null, JSON.stringify(patch)])
+    return result.rows[0]?.data
+  }
+  async transitionBeatOrder(id: string, from: BeatOrder['status'][], patch: Partial<Pick<BeatOrder, Exclude<BeatOrderMutableFields, 'status'>>> & Pick<BeatOrder, 'status'>) {
+    const result = await this.db.query<{ data: BeatOrder }>(`UPDATE beat_orders SET checkout_session_id = COALESCE($4, checkout_session_id), status = $3, data = data || $5::jsonb WHERE id = $1 AND status = ANY($2::text[]) RETURNING data`, [id, from, patch.status, patch.stripeCheckoutSessionId ?? null, JSON.stringify(patch)])
     return result.rows[0]?.data
   }
 
@@ -474,11 +752,14 @@ export class PostgresRepository implements ServerRepository {
     return result.rows[0]?.data
   }
   async saveBeatListingDraft(record: BeatListingRecord): Promise<BeatListingRecord> {
-    const result = await this.db.query<{ data: BeatListingRecord }>(`INSERT INTO marketplace_beat_listing_drafts (content_id, owner_id, data, created_at, updated_at)
-      VALUES ($1, $2, $3::jsonb, $4, NOW()) ON CONFLICT (content_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
+    return this.withTransaction(async client => {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext('marketplace-review'))", [record.contentId])
+    const result = await client.query<{ data: BeatListingRecord }>(`INSERT INTO marketplace_beat_listing_drafts (content_id, owner_id, data, created_at, updated_at)
+      VALUES ($1, $2, $3::jsonb, $4, NOW()) ON CONFLICT (content_id) DO UPDATE SET data = EXCLUDED.data || CASE WHEN marketplace_beat_listing_drafts.data ? 'reviewEvidenceRevision' THEN jsonb_build_object('reviewEvidenceRevision', marketplace_beat_listing_drafts.data->'reviewEvidenceRevision') ELSE '{}'::jsonb END, updated_at = NOW()
       WHERE marketplace_beat_listing_drafts.owner_id = EXCLUDED.owner_id RETURNING data`, [record.contentId, record.ownerId, JSON.stringify(record), record.createdAt])
     if (!result.rows[0]) throw new Error('LISTING_NOT_FOUND')
     return result.rows[0].data
+    })
   }
   async listSellerEvidence(contentId: string, ownerId?: string): Promise<SellerEvidenceRecord[]> {
     const result = ownerId === undefined
@@ -491,15 +772,25 @@ export class PostgresRepository implements ServerRepository {
     return result.rows[0]?.data
   }
   async saveSellerEvidence(record: SellerEvidenceRecord): Promise<SellerEvidenceRecord> {
-    const result = await this.db.query<{ data: SellerEvidenceRecord }>(`INSERT INTO marketplace_beat_listing_evidence (id, content_id, owner_id, data, created_at)
+    return this.withTransaction(async client => {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext('marketplace-review'))", [record.contentId])
+    const result = await client.query<{ data: SellerEvidenceRecord }>(`INSERT INTO marketplace_beat_listing_evidence (id, content_id, owner_id, data, created_at)
       SELECT $1, $2, $3, $4::jsonb, $5 WHERE (SELECT count(*) FROM marketplace_beat_listing_evidence WHERE content_id = $2 AND owner_id = $3) < $6
       RETURNING data`, [record.id, record.contentId, record.ownerId, JSON.stringify(record), record.createdAt, sellerEvidenceMaxFiles])
     if (!result.rows[0]) throw new Error('EVIDENCE_LIMIT')
+    await client.query("UPDATE marketplace_beat_listing_drafts SET data=jsonb_set(data,'{reviewEvidenceRevision}',to_jsonb($3::text)),updated_at=now() WHERE content_id=$1 AND owner_id=$2", [record.contentId, record.ownerId, randomUUID()])
     return result.rows[0].data
+    })
   }
   async deleteSellerEvidence(id: string, ownerId: string): Promise<boolean> {
-    const result = await this.db.query('DELETE FROM marketplace_beat_listing_evidence WHERE id = $1 AND owner_id = $2 RETURNING id', [id, ownerId])
-    return result.rows.length > 0
+    return this.withTransaction(async client => {
+      const existing = await client.query<{ content_id: string }>('SELECT content_id FROM marketplace_beat_listing_evidence WHERE id=$1 AND owner_id=$2', [id, ownerId])
+      if (!existing.rows.length) return false
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext('marketplace-review'))", [existing.rows[0].content_id])
+      const result = await client.query('DELETE FROM marketplace_beat_listing_evidence WHERE id = $1 AND owner_id = $2 RETURNING id', [id, ownerId])
+      if (result.rows.length) await client.query("UPDATE marketplace_beat_listing_drafts SET data=jsonb_set(data,'{reviewEvidenceRevision}',to_jsonb($3::text)),updated_at=now() WHERE content_id=$1 AND owner_id=$2", [existing.rows[0].content_id, ownerId, randomUUID()])
+      return result.rows.length > 0
+    })
   }
   async createAsset(input: AssetRecord, limitBytes?: number) {
     const r = await this.db.query<AssetRow>(`WITH quota AS (
@@ -527,11 +818,16 @@ export class PostgresRepository implements ServerRepository {
   }
   async updateAssetPreview(id: string, preview: Pick<AssetRecord, 'previewStorageKey' | 'previewMimeType' | 'previewSizeBytes'>) { await this.db.query('UPDATE assets SET preview_storage_key = $1, preview_mime_type = $2, preview_size_bytes = $3, updated_at = NOW() WHERE id = $4', [preview.previewStorageKey ?? null, preview.previewMimeType ?? null, preview.previewSizeBytes ?? null, id]) }
   async deleteAsset(id: string, ownerId: string) {
-    await this.db.query(`WITH removed_artwork AS (DELETE FROM catalog_artwork WHERE asset_id = $1 AND owner_id = $2 RETURNING owner_id, size_bytes, thumbnail_size_bytes),
+    await this.withTransaction(async client => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('purchase-source'))", [ownerId])
+      const retained = await client.query("SELECT id FROM beat_orders WHERE seller_id=$1 AND data->'fulfillment'->>'assetId'=$2 AND status NOT IN ('failed','refunded') LIMIT 1", [ownerId, id])
+      if (retained.rows.length) throw new Error('PURCHASE_SOURCE_RETAINED')
+      await client.query(`WITH removed_artwork AS (DELETE FROM catalog_artwork WHERE asset_id = $1 AND owner_id = $2 RETURNING owner_id, size_bytes, thumbnail_size_bytes),
       removed AS (DELETE FROM assets WHERE id = $1 AND owner_id = $2 AND (SELECT COUNT(*) FROM removed_artwork) >= 0 RETURNING owner_id, size_bytes, state),
       delta AS (SELECT removed.owner_id, (CASE WHEN removed.state = 'available' THEN removed.size_bytes ELSE 0 END) + COALESCE((SELECT SUM(size_bytes + COALESCE(thumbnail_size_bytes, 0)) FROM removed_artwork), 0) AS bytes_removed FROM removed)
       UPDATE account_storage_usage usage SET used_bytes = GREATEST(0, usage.used_bytes - delta.bytes_removed), updated_at = NOW()
       FROM delta WHERE usage.owner_id = delta.owner_id`, [id, ownerId])
+    })
   }
 }
 const asset = (row: AssetRow): AssetRecord => ({ id: row.id, ownerId: row.owner_id, originalName: row.original_name, storageKey: row.storage_key, mimeType: row.mime_type, sizeBytes: Number(row.size_bytes), contentHash: row.content_hash, state: row.state, createdAt: row.created_at, updatedAt: row.updated_at, ...(row.preview_storage_key && row.preview_mime_type && row.preview_size_bytes ? { previewStorageKey: row.preview_storage_key, previewMimeType: row.preview_mime_type, previewSizeBytes: Number(row.preview_size_bytes) } : {}) })

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">BeatVault BeatMakers</string>
+    <string name="title_activity_main">BeatVault BeatMakers</string>
+    <string name="package_name">com.beatvault.beatmakers</string>
+    <string name="custom_url_scheme">com.beatvault.beatmakers</string>
+</resources>

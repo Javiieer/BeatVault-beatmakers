@@ -3,7 +3,7 @@ import { ApiClient } from '../api/client'
 export type CatalogUploadReviewItem = {
   contentId: string
   title: string
-  type: 'beat'
+  type: 'beat' | 'sample'
   creatorId: string
   previewAvailable: boolean
   previewUrl?: string
@@ -13,7 +13,7 @@ export type CatalogUploadReviewItem = {
 const isItem = (value: unknown): value is CatalogUploadReviewItem => {
   if (!value || typeof value !== 'object') return false
   const item = value as Record<string, unknown>
-  return typeof item.contentId === 'string' && typeof item.title === 'string' && item.type === 'beat' && typeof item.creatorId === 'string' && typeof item.previewAvailable === 'boolean' && (item.previewUrl === undefined || typeof item.previewUrl === 'string') && (item.artworkUrl === undefined || typeof item.artworkUrl === 'string')
+  return typeof item.contentId === 'string' && typeof item.title === 'string' && ['beat', 'sample'].includes(String(item.type)) && typeof item.creatorId === 'string' && typeof item.previewAvailable === 'boolean' && (item.previewUrl === undefined || typeof item.previewUrl === 'string') && (item.artworkUrl === undefined || typeof item.artworkUrl === 'string')
 }
 
 export class CatalogUploadReviewRepository {
