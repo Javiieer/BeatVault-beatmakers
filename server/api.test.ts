@@ -268,6 +268,20 @@ describe('local API routes', () => {
     const evidenceReportResponse = await fetch(`${origin}/api/stories/${evidenceStoryId}/reports`, { method: 'POST', headers: viewer.headers, body: JSON.stringify({ reason: 'copyright', details: 'Staff-only evidence check' }) })
     expect(evidenceReportResponse.status).toBe(201)
     const evidenceReport = (await evidenceReportResponse.json() as { data: { id: string } }).data
+    expect(audit.entries.some(entry => entry.metadata.resource === 'social-story-report' && entry.metadata.reportId === evidenceReport.id)).toBe(true)
+    const previousEvidenceQuota = config.socialModerationEvidenceQuotaBytes
+    const overflowStoryId = randomUUID()
+    const overflowStorageKey = `social-stories/${owner.session.id}/${randomUUID()}`
+    const overflowCreatedAt = new Date().toISOString()
+    await mkdir(dirname(artworkPath(config.uploadDirectory, overflowStorageKey)), { recursive: true })
+    await writeFile(artworkPath(config.uploadDirectory, overflowStorageKey), evidenceBytes)
+    await runtime.repository.createSocialStory({ id: overflowStoryId, authorId: owner.session.id, kind: 'photo', body: '', audience: 'public', media: { storageKey: overflowStorageKey, mimeType: 'image/png', sizeBytes: evidenceBytes.length, sha256: createHash('sha256').update(evidenceBytes).digest('hex') }, createdAt: overflowCreatedAt, expiresAt: new Date(Date.parse(overflowCreatedAt) + 86_400_000).toISOString() }, 512 * 1024 * 1024)
+    config.socialModerationEvidenceQuotaBytes = evidenceBytes.length
+    try {
+      const quotaResponse = await fetch(`${origin}/api/stories/${overflowStoryId}/reports`, { method: 'POST', headers: viewer.headers, body: JSON.stringify({ reason: 'copyright', details: 'This evidence exceeds the shared quota' }) })
+      expect(quotaResponse.status).toBe(507)
+      expect((await runtime.repository.listSocialStoryReports()).some(item => item.storyId === overflowStoryId)).toBe(false)
+    } finally { config.socialModerationEvidenceQuotaBytes = previousEvidenceQuota }
     expect((await fetch(`${origin}/api/social-moderation/story-reports/${evidenceReport.id}/evidence`)).status).toBe(401)
     const queued = await fetch(`${origin}/api/social-moderation/story-reports`, { headers: { cookie: adminHeaders.cookie } }).then(response => response.json()) as { data: { reports: Array<{ id: string; body: string; reporterId: string }>; nextCursor: string | null } }
     const report = queued.data.reports.find(item => item.body === 'Reported story snapshot')
@@ -782,8 +796,34 @@ describe('local API routes', () => {
       expect.objectContaining({ type: 'reaction', actorName: 'Social Listener', contentId: content.contentId }),
     ]))
     expect((await fetch(`${origin}/api/profile`, { method: 'PUT', headers: { cookie: actor.cookie, 'x-csrf-token': actor.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Hidden listener', bio: '', location: '', website: '', instagram: '', genres: [], coverId: 'lo-fi', avatarId: 'initials', publicProfile: false }) })).status).toBe(200)
+    const privateCatalogSocial = await fetch(route, { headers: { cookie: owner.cookie } }).then(response => response.json()) as { data: { comments: Array<{ authorId: string; authorName: string }> } }
+    expect(privateCatalogSocial.data.comments).toContainEqual(expect.objectContaining({ authorId: 'private-creator', authorName: 'Productor' }))
     const privateActorNotifications = await fetch(`${origin}/api/notifications/social`, { headers: { cookie: owner.cookie } }).then(response => response.json()) as { data: Array<{ actorId: string; actorName: string }> }
     expect(privateActorNotifications.data.every(item => item.actorId === 'private-creator' && item.actorName === 'BeatVault creator')).toBe(true)
+    const reportable = await fetch(`${origin}/api/posts`, { method: 'POST', headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'status', body: 'Reported post snapshot survives author deletion', audience: 'public' }) })
+    expect(reportable.status).toBe(201)
+    const reportablePostId = (await reportable.json() as { data: { id: string } }).data.id
+    const submittedReport = await fetch(`${origin}/api/posts/${reportablePostId}/reports`, { method: 'POST', headers: { cookie: actor.cookie, 'x-csrf-token': actor.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'spam', details: 'Repeated unsolicited promotion' }) })
+    expect(submittedReport.status).toBe(201)
+    const reportId = (await submittedReport.json() as { data: { id: string } }).data.id
+    expect((await fetch(`${origin}/api/posts/${reportablePostId}`, { method: 'DELETE', headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf } })).status).toBe(200)
+    const moderationReports = await fetch(`${origin}/api/social-moderation/reports`, { headers: { cookie: `beatvault_session=${adminSession!.token}` } }).then(response => response.json()) as { data: { reports: Array<{ id: string; post?: { body: string; visibility: string } }> } }
+    expect(moderationReports.data.reports).toContainEqual(expect.objectContaining({ id: reportId, post: expect.objectContaining({ body: 'Reported post snapshot survives author deletion', visibility: 'removed' }) }))
+    const mediaPostId = randomUUID()
+    const mediaPostCreatedAt = new Date().toISOString()
+    const mediaPost = { id: mediaPostId, authorId: owner.id, kind: 'photo' as const, body: 'Reported photo stays available for review', audience: 'public' as const, visibility: 'published' as const, media: { storageKey: `social-posts/${owner.id}/${randomUUID()}`, mimeType: 'image/png' as const, sizeBytes: 8, sha256: 'b'.repeat(64) }, createdAt: mediaPostCreatedAt, updatedAt: mediaPostCreatedAt }
+    await runtime.repository.createSocialPost(mediaPost, 512 * 1024 * 1024)
+    const mediaReportId = randomUUID()
+    await runtime.repository.createSocialPostReport({ id: mediaReportId, postId: mediaPostId, reporterId: actor.id, postSnapshot: { id: mediaPostId, authorId: owner.id, kind: mediaPost.kind, body: mediaPost.body, audience: mediaPost.audience, createdAt: mediaPost.createdAt, mediaSha256: mediaPost.media.sha256 }, reason: 'copyright', details: 'Review the reported image', status: 'open', createdAt: mediaPostCreatedAt })
+    expect((await fetch(`${origin}/api/posts/${mediaPostId}`, { method: 'DELETE', headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf } })).status).toBe(409)
+    expect((await fetch(`${origin}/api/social-moderation/reports/${mediaReportId}`, { method: 'PATCH', headers: { cookie: `beatvault_session=${adminSession!.token}`, 'x-csrf-token': adminSession!.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ status: 'reviewed' }) })).status).toBe(200)
+    expect((await fetch(`${origin}/api/posts/${mediaPostId}`, { method: 'DELETE', headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf } })).status).toBe(200)
+    expect(await runtime.repository.listSocialPostReports()).toContainEqual(expect.objectContaining({ id: mediaReportId, postSnapshot: expect.objectContaining({ body: mediaPost.body, mediaSha256: mediaPost.media.sha256 }) }))
+    const blocked = await fetch(`${origin}/api/blocks`, { method: 'POST', headers: { cookie: actor.cookie, 'x-csrf-token': actor.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ targetId: owner.id }) })
+    expect(blocked.status).toBe(200)
+    expect((await fetch(route, { headers: { cookie: actor.cookie } })).status).toBe(404)
+    expect((await fetch(`${route}/comments`, { method: 'POST', headers: { cookie: actor.cookie, 'x-csrf-token': actor.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ body: 'Must remain blocked' }) })).status).toBe(404)
+    expect((await fetch(`${route}/reaction`, { method: 'POST', headers: { cookie: actor.cookie, 'x-csrf-token': actor.csrf, 'content-type': 'application/json' }, body: '{}' })).status).toBe(404)
   })
   it('persists social-post notifications and scopes read state to the recipient', async () => {
     const register = async (label: string) => {

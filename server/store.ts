@@ -223,6 +223,7 @@ export interface ServerRepository extends MercadoPagoRepository, MercadoPagoPref
   listSocialPostReports(status?: SocialPostReport['status']): Promise<SocialPostReport[]>
   reviewSocialPostReport(id: string, status: Extract<SocialPostReport['status'], 'reviewed' | 'dismissed'>, staffId: string): Promise<SocialPostReport | undefined>
   createSocialStoryReport(report: SocialStoryReport): Promise<SocialStoryReport>
+  createSocialStoryReportWithAudit(report: SocialStoryReport, event: AuditEvent): Promise<SocialStoryReport>
   deleteSocialStoryReport(id: string, reporterId: string): Promise<boolean>
   listSocialStoryReports(status?: SocialStoryReport['status']): Promise<SocialStoryReport[]>
   pageSocialStoryReports(status: SocialStoryReport['status'] | undefined, cursor: SocialStoryReportCursor | undefined, limit: number): Promise<SocialStoryReportPage>
@@ -914,15 +915,18 @@ export class LocalRepository implements ServerRepository {
     return this.socialPostBookmarks.update<SocialPostBookmarkRecord[], void>([], isSocialPostBookmarkRecord, items => ({ value: items.filter(item => item.accountId !== accountId || item.postId !== postId), result: undefined }))
   }
   async deleteSocialPost(id: string, authorId: string) {
-    const deleted = await this.socialPosts.update<SocialPost[], SocialPost | undefined>([], isSocialPost, items => {
-    const existing = items.find(item => item.id === id && item.authorId === authorId)
-    return { value: items.filter(item => item.id !== id || item.authorId !== authorId), result: existing }
+    return withLocalStorageLock(`social-post-report:${id}`, async () => {
+      const existing = (await this.socialPosts.read<SocialPost[]>([], isSocialPost)).find(item => item.id === id && item.authorId === authorId)
+      if (existing?.media && (await this.listSocialPostReports('open')).some(report => report.postId === id)) throw new Error('SOCIAL_POST_REPORT_PENDING')
+      const deleted = await this.socialPosts.update<SocialPost[], SocialPost | undefined>([], isSocialPost, items => {
+        const current = items.find(item => item.id === id && item.authorId === authorId)
+        return { value: items.filter(item => item.id !== id || item.authorId !== authorId), result: current }
+      })
+      if (deleted) await this.socialPostComments.update<SocialPostComment[], void>([], isSocialPostComment, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
+      if (deleted) await this.socialPostReactions.update<SocialPostReactionRecord[], void>([], isSocialPostReactionRecord, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
+      if (deleted) await this.socialPostBookmarks.update<SocialPostBookmarkRecord[], void>([], isSocialPostBookmarkRecord, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
+      return deleted
     })
-    if (deleted) await this.socialPostReports.update<SocialPostReport[], void>([], isSocialPostReport, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
-    if (deleted) await this.socialPostComments.update<SocialPostComment[], void>([], isSocialPostComment, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
-    if (deleted) await this.socialPostReactions.update<SocialPostReactionRecord[], void>([], isSocialPostReactionRecord, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
-    if (deleted) await this.socialPostBookmarks.update<SocialPostBookmarkRecord[], void>([], isSocialPostBookmarkRecord, items => ({ value: items.filter(item => item.postId !== id), result: undefined }))
-    return deleted
   }
   listSocialPostComments(postId: string, limit = 100) { const safeLimit = Number.isSafeInteger(limit) ? Math.min(100, Math.max(1, limit)) : 100; return this.socialPostComments.read<SocialPostComment[]>([], isSocialPostComment).then(items => items.filter(item => item.postId === postId).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)).slice(-safeLimit)) }
   createSocialPostComment(comment: SocialPostComment) { return this.socialPostComments.update<SocialPostComment[], SocialPostComment>([], isSocialPostComment, items => ({ value: [...items, comment], result: comment })) }
@@ -978,9 +982,12 @@ export class LocalRepository implements ServerRepository {
       return { value: items.filter(item => item.expiresAt > now), result: expired }
     })
   }
-  createSocialPostReport(report: SocialPostReport) { return this.socialPostReports.update<SocialPostReport[], SocialPostReport>([], isSocialPostReport, items => {
-    if (items.some(item => item.postId === report.postId && item.reporterId === report.reporterId)) throw new Error('SOCIAL_REPORT_EXISTS')
-    return { value: [...items, report], result: report }
+  createSocialPostReport(report: SocialPostReport) { return withLocalStorageLock(`social-post-report:${report.postId}`, async () => {
+    if (!(await this.findSocialPost(report.postId))) throw new Error('POST_NOT_FOUND')
+    return this.socialPostReports.update<SocialPostReport[], SocialPostReport>([], isSocialPostReport, items => {
+      if (items.some(item => item.postId === report.postId && item.reporterId === report.reporterId)) throw new Error('SOCIAL_REPORT_EXISTS')
+      return { value: [...items, report], result: report }
+    })
   }) }
   deleteSocialPostReport(id: string, reporterId: string) { return this.socialPostReports.update<SocialPostReport[], boolean>([], isSocialPostReport, items => {
     const next = items.filter(item => item.id !== id || item.reporterId !== reporterId)
@@ -1015,7 +1022,25 @@ export class LocalRepository implements ServerRepository {
   async createSocialStoryReport(report: SocialStoryReport) {
     return this.socialStoryReports.update<SocialStoryReport[], SocialStoryReport>([], isSocialStoryReport, items => {
       if (items.some(item => item.storyId === report.storyId && item.reporterId === report.reporterId)) throw new Error('SOCIAL_REPORT_EXISTS')
+      const usedEvidenceBytes = items.reduce((sum, item) => sum + (item.evidenceSizeBytes || 0), 0)
+      if (usedEvidenceBytes + (report.evidenceSizeBytes || 0) > config.socialModerationEvidenceQuotaBytes) throw new Error('SOCIAL_EVIDENCE_STORAGE_FULL')
       return { value: [...items, report], result: report }
+    })
+  }
+  async createSocialStoryReportWithAudit(report: SocialStoryReport, event: AuditEvent) {
+    return withLocalStorageLock(`social-moderation:${config.dataDirectory}`, async () => {
+      const [base, journal] = await Promise.all([this.socialStoryReports.read<SocialStoryReport[]>([], isSocialStoryReport), this.socialModerationJournal.read<SocialModerationJournalEntry[]>([], isSocialModerationJournalEntry)])
+      const overrides = new Map(journal.filter(item => item.kind === 'story').map(item => [item.reportId, item.report as SocialStoryReport]))
+      const baseById = new Set(base.map(item => item.id))
+      const effective = [...base.map(item => overrides.get(item.id) || item), ...journal.filter(item => item.kind === 'story' && !baseById.has(item.reportId)).map(item => item.report as SocialStoryReport)]
+      if (effective.some(item => item.storyId === report.storyId && item.reporterId === report.reporterId)) throw new Error('SOCIAL_REPORT_EXISTS')
+      const usedEvidenceBytes = effective.reduce((sum, item) => sum + (item.evidenceSizeBytes || 0), 0)
+      if (usedEvidenceBytes + (report.evidenceSizeBytes || 0) > config.socialModerationEvidenceQuotaBytes) throw new Error('SOCIAL_EVIDENCE_STORAGE_FULL')
+      await this.socialModerationJournal.update<SocialModerationJournalEntry[], void>([], isSocialModerationJournalEntry, entries => ({ value: [...entries, { kind: 'story', reportId: report.id, report, event, delivered: false }], result: undefined }))
+      try {
+        await this.socialStoryReports.update<SocialStoryReport[], void>([], isSocialStoryReport, items => ({ value: items.some(item => item.id === report.id) ? items : [...items, report], result: undefined }))
+      } catch { /* The durable moderation journal remains the report and audit source of truth. */ }
+      return report
     })
   }
   deleteSocialStoryReport(id: string, reporterId: string) { return this.socialStoryReports.update<SocialStoryReport[], boolean>([], isSocialStoryReport, items => { const next = items.filter(item => item.id !== id || item.reporterId !== reporterId); return { value: next, result: next.length !== items.length } }) }
@@ -1023,7 +1048,9 @@ export class LocalRepository implements ServerRepository {
     const [base, journal] = await Promise.all([this.socialStoryReports.read<SocialStoryReport[]>([], isSocialStoryReport), this.socialModerationJournal.read<SocialModerationJournalEntry[]>([], isSocialModerationJournalEntry)])
     const latest = new Map<string, SocialStoryReport>()
     for (const item of journal) if (item.kind === 'story') latest.set(item.reportId, item.report as SocialStoryReport)
-    return base.map(item => latest.get(item.id) || item).filter(item => status === undefined || item.status === status).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+    const baseIds = new Set(base.map(item => item.id))
+    const merged = [...base.map(item => latest.get(item.id) || item), ...[...latest.entries()].filter(([id]) => !baseIds.has(id)).map(([, report]) => report)]
+    return merged.filter(item => status === undefined || item.status === status).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
   }
   async pageSocialStoryReports(status: SocialStoryReport['status'] | undefined, cursor: SocialStoryReportCursor | undefined, limit: number) {
     const safeLimit = Number.isSafeInteger(limit) ? Math.min(100, Math.max(1, limit)) : 50

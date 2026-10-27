@@ -239,9 +239,16 @@ export async function preserveStoryReportEvidence(reportId: string, story: Socia
   await mkdir(join(target, '..'), { recursive: true })
   await copyFile(source.path, target, constants.COPYFILE_EXCL)
   try {
-    const bytes = await readFile(target)
-    if (bytes.length !== story.media.sizeBytes || createHash('sha256').update(bytes).digest('hex') !== story.media.sha256) throw new Error('SOCIAL_STORY_EVIDENCE_INVALID')
-    return { storageKey: key, mimeType: story.media.mimeType, sizeBytes: bytes.length }
+    const digest = createHash('sha256')
+    await new Promise<void>((resolve, reject) => {
+      const stream = createReadStream(target)
+      stream.on('data', chunk => digest.update(chunk))
+      stream.once('error', reject)
+      stream.once('end', resolve)
+    })
+    const info = await stat(target)
+    if (info.size !== story.media.sizeBytes || digest.digest('hex') !== story.media.sha256) throw new Error('SOCIAL_STORY_EVIDENCE_INVALID')
+    return { storageKey: key, mimeType: story.media.mimeType, sizeBytes: info.size }
   } catch (error) { await unlink(target).catch(() => undefined); throw error }
 }
 

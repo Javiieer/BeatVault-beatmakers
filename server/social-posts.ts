@@ -18,7 +18,8 @@ export type SocialPost = {
   reviewedBy?: string
   reviewNote?: string
 }
-export type SocialPostReport = { id: string; postId: string; reporterId: string; reason: 'spam' | 'harassment' | 'copyright' | 'nudity' | 'violence' | 'other'; details: string; status: 'open' | 'reviewed' | 'dismissed'; createdAt: string; reviewedAt?: string; reviewedBy?: string }
+export type SocialPostReportSnapshot = Pick<SocialPost, 'id' | 'authorId' | 'kind' | 'body' | 'audience' | 'createdAt'> & { mediaSha256?: string }
+export type SocialPostReport = { id: string; postId: string; reporterId: string; postSnapshot?: SocialPostReportSnapshot; reason: 'spam' | 'harassment' | 'copyright' | 'nudity' | 'violence' | 'other'; details: string; status: 'open' | 'reviewed' | 'dismissed'; createdAt: string; reviewedAt?: string; reviewedBy?: string }
 export type SocialPostComment = { id: string; postId: string; authorId: string; body: string; createdAt: string }
 export type SocialPostCommentView = Pick<SocialPostComment, 'id' | 'authorId' | 'body' | 'createdAt'> & { authorName: string }
 export type SocialPostInteractionSnapshot = { comments: SocialPostCommentView[]; reactionCount: number; reactedByMe: boolean }
@@ -42,7 +43,9 @@ export const isSocialPost = (value: unknown): value is SocialPost => {
 export const isSocialPostReport = (value: unknown): value is SocialPostReport => {
   if (!value || typeof value !== 'object') return false
   const report = value as Partial<SocialPostReport>
-  return typeof report.id === 'string' && typeof report.postId === 'string' && typeof report.reporterId === 'string' && ['spam', 'harassment', 'copyright', 'nudity', 'violence', 'other'].includes(report.reason || '') && typeof report.details === 'string' && report.details.length <= 500 && ['open', 'reviewed', 'dismissed'].includes(report.status || '') && typeof report.createdAt === 'string'
+  const snapshot = report.postSnapshot
+  const validSnapshot = snapshot === undefined || Boolean(snapshot && typeof snapshot === 'object' && typeof snapshot.id === 'string' && /^[a-f0-9-]{36}$/i.test(snapshot.id) && snapshot.id === report.postId && typeof snapshot.authorId === 'string' && snapshot.authorId.length > 0 && ['status', 'photo', 'video'].includes(snapshot.kind) && typeof snapshot.body === 'string' && snapshot.body.length <= 600 && ['public', 'friends', 'private'].includes(snapshot.audience) && typeof snapshot.createdAt === 'string' && Number.isFinite(Date.parse(snapshot.createdAt)) && (snapshot.mediaSha256 === undefined || /^[a-f0-9]{64}$/.test(snapshot.mediaSha256)))
+  return typeof report.id === 'string' && typeof report.postId === 'string' && typeof report.reporterId === 'string' && validSnapshot && ['spam', 'harassment', 'copyright', 'nudity', 'violence', 'other'].includes(report.reason || '') && typeof report.details === 'string' && report.details.length <= 500 && ['open', 'reviewed', 'dismissed'].includes(report.status || '') && typeof report.createdAt === 'string'
 }
 export const socialPostView = (post: SocialPost, author: CreatorProfile | undefined) => ({
   id: post.id,

@@ -25,7 +25,7 @@ data was separately restored and compared exactly across 32 tables. See
 `npm run test:postgres` runs live integration checks against an isolated local
 PostgreSQL database. It refuses remote hosts and database names unless they match
 `beatvault_test_*` or `beatvault_audit_*`. The current schema includes migrations
-001-029; mounting `db/migrations` into a new Postgres container applies all of them
+001-036; mounting `db/migrations` into a new Postgres container applies all of them
 in order. The QA harness checks that the notification table from migration 027, the
 follow/bookmark tables from migration 028, and independent story records from migration
 029 exist. It checks public story visibility, private-story isolation, exact 24-hour
@@ -41,7 +41,7 @@ both decisions. Catalog Beats can be independently approved by either a CM or an
 admin; CM reviews use a private processed preview, and either approval publishes the
 Beat with only the processed preview exposed. It
 also checks that seller-intake approval does not publish a beat by itself,
-exercises historical Stripe records, Mercado Pago migration 035, one-use OAuth state,
+exercises Mercado Pago migration 035, social report snapshots from migration 036, one-use OAuth state,
 seller-link persistence, preference reservation/idempotency, exact preference/payment
 linkage, webhook-event idempotency, terminal provider-state compare-and-set, persists
 an order state, and checks session reuse across an API restart. The synthetic HTTP flow

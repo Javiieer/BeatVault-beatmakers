@@ -37,13 +37,23 @@ describe('social posts JSON repository contract', () => {
     expect((await repository.listSocialPosts({ limit: 1 })).map(post => post.id)).toEqual([second.id])
     expect((await repository.listSocialPosts({ limit: 2, cursor: { createdAt: second.createdAt, id: second.id }, publishedOnly: true })).map(post => post.id)).toEqual([first.id])
     expect(await repository.deleteSocialPost(first.id, randomUUID())).toBeUndefined()
-    const report = { id: randomUUID(), postId: second.id, reporterId: randomUUID(), reason: 'spam' as const, details: 'Repeated spam', status: 'open' as const, createdAt }
+    const report = { id: randomUUID(), postId: second.id, reporterId: randomUUID(), postSnapshot: { id: second.id, authorId: second.authorId, kind: second.kind, body: second.body, audience: second.audience, createdAt: second.createdAt }, reason: 'spam' as const, details: 'Repeated spam', status: 'open' as const, createdAt }
     expect(await repository.createSocialPostReport(report)).toEqual(report)
     await expect(repository.createSocialPostReport({ ...report, id: randomUUID() })).rejects.toThrow('SOCIAL_REPORT_EXISTS')
     const reviewed = await repository.reviewSocialPostReport(report.id, 'dismissed', randomUUID())
     expect(reviewed).toMatchObject({ status: 'dismissed', reviewedBy: expect.any(String), reviewedAt: expect.any(String) })
     expect(await repository.listSocialPostReports('open')).toEqual([])
     expect((await repository.deleteSocialPost(second.id, authorId))?.id).toBe(second.id)
+    expect(await repository.listSocialPostReports()).toContainEqual(expect.objectContaining({ id: report.id, postId: second.id, postSnapshot: report.postSnapshot, status: 'dismissed' }))
+
+    const pendingReportPost = { ...first, id: randomUUID(), kind: 'photo' as const, body: 'Reported multimedia post', media: { storageKey: `social-posts/${authorId}/${randomUUID()}`, mimeType: 'image/png' as const, sizeBytes: 1, sha256: 'a'.repeat(64) }, createdAt: '2026-10-14T12:00:00.000Z', updatedAt: '2026-10-14T12:00:00.000Z' }
+    await repository.createSocialPost(pendingReportPost, 1024)
+    const pendingReport = { ...report, id: randomUUID(), postId: pendingReportPost.id, postSnapshot: { ...report.postSnapshot, id: pendingReportPost.id, body: pendingReportPost.body, createdAt: pendingReportPost.createdAt }, status: 'open' as const }
+    await repository.createSocialPostReport(pendingReport)
+    await expect(repository.deleteSocialPost(pendingReportPost.id, authorId)).rejects.toThrow('SOCIAL_POST_REPORT_PENDING')
+    expect((await repository.reviewSocialPostReport(pendingReport.id, 'reviewed', randomUUID()))?.status).toBe('reviewed')
+    expect((await repository.deleteSocialPost(pendingReportPost.id, authorId))?.id).toBe(pendingReportPost.id)
+    expect(await repository.listSocialPostReports()).toContainEqual(expect.objectContaining({ id: pendingReport.id, postId: pendingReportPost.id, postSnapshot: pendingReport.postSnapshot, status: 'reviewed' }))
   })
 
   it('only releases a pending public post through a staff decision', async () => {

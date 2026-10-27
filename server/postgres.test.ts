@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { PostgresRepository, type SqlClient } from './postgres'
+import { config } from './config'
 import { emptyProfile } from '../src/domains/profile'
 import type { NotificationRecord } from './notifications'
 
@@ -121,13 +122,85 @@ describe('PostgresRepository', () => {
     query.mockResolvedValueOnce({ rows: [{ ...row, visibility: 'published', reviewed_at: createdAt, reviewed_by: 'staff', review_note: 'approved' }] })
     expect(await repo.reviewSocialPost(row.id, 'published', 'staff', 'approved')).toMatchObject({ visibility: 'published', reviewedBy: 'staff' })
 
-    const report = { id: '057d8889-83a8-42c2-89d6-da4a613ae674', postId: row.id, reporterId: 'reporter', reason: 'spam' as const, details: 'spam', status: 'open' as const, createdAt }
-    query.mockResolvedValueOnce({ rows: [{ id: report.id, post_id: row.id, reporter_id: report.reporterId, reason: report.reason, details: report.details, status: 'open', created_at: createdAt, reviewed_at: null, reviewed_by: null }] })
+    const snapshot = { id: row.id, authorId: row.author_id, kind: row.kind, body: row.body, audience: row.audience, createdAt }
+    const report = { id: '057d8889-83a8-42c2-89d6-da4a613ae674', postId: row.id, reporterId: 'reporter', postSnapshot: snapshot, reason: 'spam' as const, details: 'spam', status: 'open' as const, createdAt }
+    query.mockResolvedValueOnce({ rows: [{ id: report.id, post_id: row.id, post_snapshot: snapshot, reporter_id: report.reporterId, reason: report.reason, details: report.details, status: 'open', created_at: createdAt, reviewed_at: null, reviewed_by: null }] })
     expect(await repo.createSocialPostReport(report)).toEqual(report)
-    expect(query).toHaveBeenLastCalledWith(expect.stringContaining('INSERT INTO social_post_reports'), [report.id, row.id, report.reporterId, 'spam', 'spam', 'open', createdAt])
-    query.mockResolvedValueOnce({ rows: [{ id: report.id, post_id: row.id, reporter_id: report.reporterId, reason: report.reason, details: report.details, status: 'reviewed', created_at: createdAt, reviewed_at: createdAt, reviewed_by: 'staff' }] })
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining('INSERT INTO social_post_reports'), [report.id, row.id, JSON.stringify(snapshot), report.reporterId, 'spam', 'spam', 'open', createdAt])
+    query.mockResolvedValueOnce({ rows: [{ id: report.id, post_id: row.id, post_snapshot: snapshot, reporter_id: report.reporterId, reason: report.reason, details: report.details, status: 'reviewed', created_at: createdAt, reviewed_at: createdAt, reviewed_by: 'staff' }] })
     expect(await repo.reviewSocialPostReport(report.id, 'reviewed', 'staff')).toMatchObject({ status: 'reviewed', reviewedBy: 'staff' })
     expect(query).toHaveBeenLastCalledWith(expect.stringContaining("status = 'open'"), ['reviewed', 'staff', report.id])
+  })
+  it('keeps multimedia evidence available until its open PostgreSQL report is resolved', async () => {
+    const postId = randomUUID()
+    const createdAt = '2026-10-14T10:00:00.000Z'
+    const mediaRow = { id: postId, author_id: 'author', kind: 'photo' as const, body: 'reported photo', audience: 'public' as const, visibility: 'published' as const, media_storage_key: `social-posts/author/${randomUUID()}`, media_mime_type: 'image/png', media_size_bytes: 12, media_sha256: 'a'.repeat(64), created_at: createdAt, updated_at: createdAt, reviewed_at: null, reviewed_by: null, review_note: null }
+    const calls: string[] = []
+    const connection = {
+      query: vi.fn(async (sql: string) => {
+        calls.push(sql)
+        if (sql.startsWith('SELECT id, author_id')) return { rows: [mediaRow] }
+        if (sql.includes('FROM social_post_reports')) return { rows: [{ id: randomUUID() }] }
+        return { rows: [] }
+      }),
+      release: vi.fn(),
+    }
+    const repo = new PostgresRepository({ query: vi.fn(), connect: async () => connection } as unknown as SqlClient)
+    await expect(repo.deleteSocialPost(postId, 'author')).rejects.toThrow('SOCIAL_POST_REPORT_PENDING')
+    expect(calls[0]).toBe('BEGIN')
+    expect(calls.some(sql => sql.includes('FOR UPDATE'))).toBe(true)
+    expect(calls.some(sql => sql.includes("status='open'"))).toBe(true)
+    expect(calls.some(sql => sql.startsWith('DELETE FROM social_posts'))).toBe(false)
+    expect(calls).toContain('ROLLBACK')
+    expect(connection.release).toHaveBeenCalledOnce()
+  })
+  it('serializes Story evidence quota reservations and rejects a report before persistence when full', async () => {
+    const previousQuota = config.socialModerationEvidenceQuotaBytes
+    config.socialModerationEvidenceQuotaBytes = 10
+    const calls: string[] = []
+    const connection = {
+      query: vi.fn(async (sql: string) => {
+        calls.push(sql)
+        if (sql.includes('SUM(evidence_size_bytes)')) return { rows: [{ used_bytes: '6' }] }
+        return { rows: [] }
+      }),
+      release: vi.fn(),
+    }
+    const repo = new PostgresRepository({ query: vi.fn(), connect: async () => connection } as unknown as SqlClient)
+    const reportId = randomUUID()
+    const now = '2026-10-27T12:00:00.000Z'
+    const report = { id: reportId, storyId: randomUUID(), authorId: 'author', reporterId: 'reporter', kind: 'photo' as const, body: '', audience: 'public' as const, storyCreatedAt: now, storyExpiresAt: new Date(Date.parse(now) + 86_400_000).toISOString(), mediaSha256: 'a'.repeat(64), evidenceStorageKey: `moderation-evidence/stories/${reportId}`, evidenceMimeType: 'image/png' as const, evidenceSizeBytes: 5, reason: 'copyright' as const, details: 'Review this image', status: 'open' as const, createdAt: now }
+    try {
+      await expect(repo.createSocialStoryReport(report)).rejects.toThrow('SOCIAL_EVIDENCE_STORAGE_FULL')
+      expect(calls[0]).toBe('BEGIN')
+      expect(calls[1]).toContain('pg_advisory_xact_lock')
+      expect(calls[2]).toContain('SUM(evidence_size_bytes)')
+      expect(calls).toContain('ROLLBACK')
+      expect(calls.some(sql => sql.startsWith('INSERT INTO social_story_reports'))).toBe(false)
+      expect(connection.release).toHaveBeenCalledOnce()
+    } finally { config.socialModerationEvidenceQuotaBytes = previousQuota }
+  })
+  it('rolls back a Story report when its audit insert fails', async () => {
+    const calls: string[] = []
+    const connection = {
+      query: vi.fn(async (sql: string) => {
+        calls.push(sql)
+        if (sql.startsWith('INSERT INTO social_story_reports')) return { rows: [{ id: '057d8889-83a8-42c2-89d6-da4a613ae674', story_id: 'd276ad36-9d07-4d17-97e6-075ab8a81a0e', author_id: 'author', reporter_id: 'reporter', story_kind: 'status', story_body: 'Reported', story_audience: 'public', story_created_at: '2026-10-14T10:00:00.000Z', story_expires_at: '2026-10-15T10:00:00.000Z', media_sha256: null, evidence_storage_key: null, evidence_mime_type: null, evidence_size_bytes: null, evidence_delete_at: null, evidence_expired_at: null, reason: 'spam', details: 'spam', status: 'open', created_at: '2026-10-14T10:00:00.000Z', reviewed_at: null, reviewed_by: null }] }
+        if (sql.startsWith('INSERT INTO audit_events')) throw new Error('AUDIT_DISK_FAILURE')
+        return { rows: [] }
+      }),
+      release: vi.fn(),
+    }
+    const repo = new PostgresRepository({ query: vi.fn(), connect: async () => connection } as unknown as SqlClient)
+    const now = '2026-10-14T10:00:00.000Z'
+    const report = { id: '057d8889-83a8-42c2-89d6-da4a613ae674', storyId: 'd276ad36-9d07-4d17-97e6-075ab8a81a0e', authorId: 'author', reporterId: 'reporter', kind: 'status' as const, body: 'Reported', audience: 'public' as const, storyCreatedAt: now, storyExpiresAt: '2026-10-15T10:00:00.000Z', reason: 'spam' as const, details: 'spam', status: 'open' as const, createdAt: now }
+    const event = { id: randomUUID(), timestamp: now, action: 'create' as const, requestId: randomUUID(), actorId: 'reporter', targetId: report.storyId, success: true, metadata: { resource: 'social-story-report', reportId: report.id } }
+    await expect(repo.createSocialStoryReportWithAudit(report, event)).rejects.toThrow('AUDIT_DISK_FAILURE')
+    expect(calls.some(sql => sql.startsWith('INSERT INTO social_story_reports'))).toBe(true)
+    expect(calls.some(sql => sql.startsWith('INSERT INTO audit_events'))).toBe(true)
+    expect(calls).toContain('ROLLBACK')
+    expect(calls).not.toContain('COMMIT')
+    expect(connection.release).toHaveBeenCalledOnce()
   })
   it('rolls back a report decision when its audit insert fails', async () => {
     const createdAt = '2026-10-14T10:00:00.000Z'
@@ -136,7 +209,7 @@ describe('PostgresRepository', () => {
     const connection = {
       query: vi.fn(async (sql: string) => {
         calls.push(sql)
-        if (sql.startsWith('UPDATE social_post_reports')) return { rows: [{ id: reportId, post_id: 'd276ad36-9d07-4d17-97e6-075ab8a81a0e', reporter_id: 'reporter', reason: 'spam', details: 'spam', status: 'reviewed', created_at: createdAt, reviewed_at: createdAt, reviewed_by: 'staff' }] }
+        if (sql.startsWith('UPDATE social_post_reports')) return { rows: [{ id: reportId, post_id: 'd276ad36-9d07-4d17-97e6-075ab8a81a0e', post_snapshot: { id: 'd276ad36-9d07-4d17-97e6-075ab8a81a0e', authorId: 'author', kind: 'status', body: 'Reported', audience: 'public', createdAt }, reporter_id: 'reporter', reason: 'spam', details: 'spam', status: 'reviewed', created_at: createdAt, reviewed_at: createdAt, reviewed_by: 'staff' }] }
         if (sql.startsWith('INSERT INTO audit_events')) throw new Error('AUDIT_DISK_FAILURE')
         return { rows: [] }
       }),
@@ -258,5 +331,64 @@ describe('PostgresRepository', () => {
     expect(accepted.value?.status).toBe('accepted')
     expect(query.mock.calls[4][0]).toContain("status = 'pending'")
     expect(query.mock.calls[4][0]).toContain('INSERT INTO notifications')
+  })
+
+  it('accepts a friendship only once when two PostgreSQL requests race', async () => {
+    const friendshipId = randomUUID()
+    const createdAt = '2026-10-15T12:00:00.000Z'
+    const notificationId = randomUUID()
+    let pending = true
+    const query = vi.fn(async (sql: string, values: unknown[]) => {
+      expect(sql).toContain("status = 'pending'")
+      expect(sql).toContain('INSERT INTO notifications')
+      expect(sql).toContain('NOT EXISTS (SELECT 1 FROM social_account_blocks')
+      if (!pending || values[0] !== friendshipId || values[1] !== 'recipient') return { rows: [] }
+      pending = false
+      return { rows: [{
+        id: friendshipId, requesterId: 'requester', recipientId: 'recipient', status: 'accepted', createdAt, updatedAt: createdAt,
+        notification_id: notificationId, notification_recipient_id: 'requester', notification_actor_id: 'recipient',
+        notification_type: 'friend_request_accepted', notification_resource_type: 'friendship', notification_resource_id: friendshipId,
+        notification_source_id: friendshipId, notification_event_key: `friend_request_accepted:${friendshipId}`,
+        notification_created_at: createdAt, notification_read_at: null,
+      }] }
+    })
+    const repo = new PostgresRepository({ query: query as unknown as SqlClient['query'] })
+    const seed: NotificationRecord = {
+      id: notificationId, recipientId: 'requester', actorId: 'recipient', type: 'friend_request_accepted',
+      resourceType: 'friendship', resourceId: friendshipId, sourceId: friendshipId,
+      eventKey: `friend_request_accepted:${friendshipId}`, createdAt, readAt: null,
+    }
+
+    const results = await Promise.all([
+      repo.acceptFriendshipWithNotification(friendshipId, 'recipient', seed),
+      repo.acceptFriendshipWithNotification(friendshipId, 'recipient', seed),
+    ])
+
+    expect(results.filter(result => result.value?.status === 'accepted')).toHaveLength(1)
+    expect(results.filter(result => result.value === undefined)).toHaveLength(1)
+    expect(results.flatMap(result => result.notifications)).toHaveLength(1)
+    expect(query).toHaveBeenCalledTimes(2)
+  })
+
+  it('selects and clears only PostgreSQL Story evidence whose retention has expired', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] })
+    const repo = new PostgresRepository({ query: query as unknown as SqlClient['query'] })
+    const now = '2026-10-27T12:00:00.000Z'
+    const reportId = randomUUID()
+
+    expect(await repo.listExpiredSocialStoryEvidence(now, 10000)).toEqual([])
+    const [selectSql, selectValues] = query.mock.calls[0]
+    expect(selectSql).toContain('evidence_storage_key IS NOT NULL')
+    expect(selectSql).toContain("status='open' AND created_at <= $1::timestamptz - INTERVAL '90 days'")
+    expect(selectSql).toContain("status <> 'open' AND evidence_delete_at <= $1")
+    expect(selectSql).toContain('ORDER BY COALESCE(evidence_delete_at,created_at + INTERVAL \'90 days\') LIMIT $2')
+    expect(selectValues).toEqual([now, 500])
+
+    await repo.clearSocialStoryEvidence(reportId, now)
+    const [clearSql, clearValues] = query.mock.calls[1]
+    expect(clearSql).toContain('WHERE id=$1 AND evidence_storage_key IS NOT NULL')
+    expect(clearSql).toContain("status='open' AND created_at <= $2::timestamptz - INTERVAL '90 days'")
+    expect(clearSql).toContain("status <> 'open' AND evidence_delete_at <= $2")
+    expect(clearValues).toEqual([reportId, now])
   })
 })

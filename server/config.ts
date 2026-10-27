@@ -15,6 +15,7 @@ export type ServerConfig = {
   dataDirectory: string
   uploadDirectory: string
   storageQuotaBytes?: number
+  socialModerationEvidenceQuotaBytes: number
   planStorageBytes: { free?: number; creator?: number; studio?: number }
   ffmpegPath: string
   ffprobePath: string
@@ -99,6 +100,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServerConfig =
     dataDirectory: resolve(env.BEATVAULT_DATA_DIR || 'data/server-local'),
     uploadDirectory: resolve(env.BEATVAULT_UPLOAD_DIR || 'data/uploads'),
     storageQuotaBytes: env.BEATVAULT_STORAGE_QUOTA_BYTES === undefined ? undefined : positive('BEATVAULT_STORAGE_QUOTA_BYTES', env.BEATVAULT_STORAGE_QUOTA_BYTES, 1),
+    socialModerationEvidenceQuotaBytes: positive('BEATVAULT_SOCIAL_EVIDENCE_QUOTA_BYTES', env.BEATVAULT_SOCIAL_EVIDENCE_QUOTA_BYTES, 1024 * 1024 * 1024),
     planStorageBytes: {
       free: env.BEATVAULT_PLAN_FREE_STORAGE_BYTES === undefined ? undefined : positive('BEATVAULT_PLAN_FREE_STORAGE_BYTES', env.BEATVAULT_PLAN_FREE_STORAGE_BYTES, 1),
       creator: env.BEATVAULT_PLAN_CREATOR_STORAGE_BYTES === undefined ? undefined : positive('BEATVAULT_PLAN_CREATOR_STORAGE_BYTES', env.BEATVAULT_PLAN_CREATOR_STORAGE_BYTES, 1),

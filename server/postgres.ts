@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { config } from './config'
 import type { CatalogEntry, CatalogInput } from '../src/domains/catalog/types'
 import type { ProjectRecord, ProjectStatus } from '../src/domains/core/contracts'
 import { StorageQuotaExceededError, type AssetRecord, type AssetState, type BeatOrder, type BeatOrderMutableFields, type Friendship, type ServerRepository, type SessionRecord, type SocialAccountBlock, type SocialAccountState, type StorageQuotaRecord, type StripeConnectRecord, type SocialStoryReportCursor, type SocialStoryReportPage, type MercadoPagoSellerLink, type MercadoPagoOAuthIntent, type MercadoPagoOrderPayment, type MercadoPagoProviderPayment, type MercadoPagoPaymentStatus, type PaymentEnvironment, type ProviderWebhookEvent, isMercadoPagoSellerLink, isMercadoPagoOAuthIntent, isMercadoPagoOrderPayment, isMercadoPagoProviderPayment, type MercadoPagoScope, type MercadoPagoPreferenceReservation, type MercadoPagoPreferenceClaim, type MercadoPagoPreference } from './store'
@@ -13,7 +14,7 @@ import type { PromotionRule } from '../src/domains/marketplace/promotions'
 import type { BeatListingRecord } from '../src/domains/marketplace/sellerListings'
 import { sellerEvidenceMaxFiles, type SellerEvidenceRecord } from '../src/domains/marketplace/sellerEvidence'
 import type { ArtworkRecord } from './artwork'
-import type { SocialPost, SocialPostComment, SocialPostCursor, SocialPostReport, SocialPostVisibility } from './social-posts'
+import type { SocialPost, SocialPostComment, SocialPostCursor, SocialPostReport, SocialPostReportSnapshot, SocialPostVisibility } from './social-posts'
 import { socialStoryMaxActivePerAccount, type SocialStory, type SocialStoryCursor, type SocialStoryReport } from './social-stories'
 import { isValidNotificationTimestamp, normalizeNotificationCursor, normalizeNotificationRecord, notificationLimit, type NotificationPage, type NotificationPageOptions, type NotificationRecord, type NotificationSeed } from './notifications'
 
@@ -36,7 +37,7 @@ type SocialCommentRow = { id: string; content_id: string; author_id: string; bod
 type SessionRow = { token_hash: string; account_id: string; csrf_token_hash: string; expires_at: string }
 type SocialPostRow = { id: string; author_id: string; kind: SocialPost['kind']; body: string; audience: SocialPost['audience']; visibility: SocialPost['visibility']; media_storage_key: string | null; media_mime_type: SocialPost['media'] extends infer M ? M extends { mimeType: infer T } ? T | null : never : never; media_size_bytes: string | number | null; media_sha256: string | null; created_at: string; updated_at: string; reviewed_at: string | null; reviewed_by: string | null; review_note: string | null }
 type SocialStoryRow = { id: string; author_id: string; kind: SocialStory['kind']; body: string; audience: SocialStory['audience']; media_storage_key: string | null; media_mime_type: string | null; media_size_bytes: string | number | null; media_sha256: string | null; created_at: string | Date; expires_at: string | Date }
-type SocialPostReportRow = { id: string; post_id: string; reporter_id: string; reason: SocialPostReport['reason']; details: string; status: SocialPostReport['status']; created_at: string; reviewed_at: string | null; reviewed_by: string | null }
+type SocialPostReportRow = { id: string; post_id: string | null; post_snapshot: SocialPostReportSnapshot | string; reporter_id: string; reason: SocialPostReport['reason']; details: string; status: SocialPostReport['status']; created_at: string; reviewed_at: string | null; reviewed_by: string | null }
 type SocialStoryReportRow = { id: string; story_id: string; author_id: string; reporter_id: string; story_kind: SocialStoryReport['kind']; story_body: string; story_audience: SocialStoryReport['audience']; story_created_at: string | Date; story_expires_at: string | Date; media_sha256: string | null; evidence_storage_key: string | null; evidence_mime_type: SocialStoryReport['evidenceMimeType'] | null; evidence_size_bytes: string | number | null; evidence_delete_at: string | Date | null; evidence_expired_at: string | Date | null; reason: SocialStoryReport['reason']; details: string; status: SocialStoryReport['status']; created_at: string | Date; reviewed_at: string | Date | null; reviewed_by: string | null }
 type SocialPostCommentRow = { id: string; post_id: string; author_id: string; body: string; created_at: string }
 type NotificationRow = { unread_count?: string | number; id: string | null; recipient_id: string | null; actor_id: string | null; type: NotificationRecord['type'] | null; resource_type: NotificationRecord['resourceType'] | null; resource_id: string | null; source_id: string | null; event_key: string | null; created_at: string | Date | null; read_at: string | Date | null }
@@ -50,7 +51,10 @@ const socialPostColumns = 'id, author_id, kind, body, audience, visibility, medi
 const socialPost = (row: SocialPostRow): SocialPost => ({ id: row.id, authorId: row.author_id, kind: row.kind, body: row.body, audience: row.audience, visibility: row.visibility, ...(row.media_storage_key ? { media: { storageKey: row.media_storage_key, mimeType: row.media_mime_type as NonNullable<SocialPost['media']>['mimeType'], sizeBytes: Number(row.media_size_bytes), sha256: row.media_sha256! } } : {}), createdAt: row.created_at, updatedAt: row.updated_at, ...(row.reviewed_at ? { reviewedAt: row.reviewed_at } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}), ...(row.review_note ? { reviewNote: row.review_note } : {}) })
 const socialStoryColumns = 'id, author_id, kind, body, audience, media_storage_key, media_mime_type, media_size_bytes, media_sha256, created_at, expires_at'
 const socialStory = (row: SocialStoryRow): SocialStory => ({ id: row.id, authorId: row.author_id, kind: row.kind, body: row.body, audience: row.audience, ...(row.media_storage_key ? { media: { storageKey: row.media_storage_key, mimeType: row.media_mime_type as NonNullable<SocialStory['media']>['mimeType'], sizeBytes: Number(row.media_size_bytes), sha256: row.media_sha256! } } : {}), createdAt: timestamp(row.created_at), expiresAt: timestamp(row.expires_at) })
-const socialPostReport = (row: SocialPostReportRow): SocialPostReport => ({ id: row.id, postId: row.post_id, reporterId: row.reporter_id, reason: row.reason, details: row.details, status: row.status, createdAt: row.created_at, ...(row.reviewed_at ? { reviewedAt: row.reviewed_at } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}) })
+const socialPostReport = (row: SocialPostReportRow): SocialPostReport => {
+  const snapshot = typeof row.post_snapshot === 'string' ? JSON.parse(row.post_snapshot) as SocialPostReportSnapshot : row.post_snapshot
+  return { id: row.id, postId: row.post_id ?? snapshot.id, reporterId: row.reporter_id, postSnapshot: snapshot, reason: row.reason, details: row.details, status: row.status, createdAt: timestamp(row.created_at), ...(row.reviewed_at ? { reviewedAt: timestamp(row.reviewed_at) } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}) }
+}
 const socialStoryReport = (row: SocialStoryReportRow): SocialStoryReport => ({ id: row.id, storyId: row.story_id, authorId: row.author_id, reporterId: row.reporter_id, kind: row.story_kind, body: row.story_body, audience: row.story_audience, storyCreatedAt: timestamp(row.story_created_at), storyExpiresAt: timestamp(row.story_expires_at), ...(row.media_sha256 ? { mediaSha256: row.media_sha256 } : {}), ...(row.evidence_storage_key ? { evidenceStorageKey: row.evidence_storage_key } : {}), ...(row.evidence_mime_type ? { evidenceMimeType: row.evidence_mime_type } : {}), ...(row.evidence_size_bytes !== null ? { evidenceSizeBytes: Number(row.evidence_size_bytes) } : {}), ...(row.evidence_delete_at ? { evidenceDeleteAt: timestamp(row.evidence_delete_at) } : {}), ...(row.evidence_expired_at ? { evidenceExpiredAt: timestamp(row.evidence_expired_at) } : {}), reason: row.reason, details: row.details, status: row.status, createdAt: timestamp(row.created_at), ...(row.reviewed_at ? { reviewedAt: timestamp(row.reviewed_at) } : {}), ...(row.reviewed_by ? { reviewedBy: row.reviewed_by } : {}) })
 const timestamp = (value: string | Date): string => value instanceof Date ? value.toISOString() : value
 const notification = (row: NotificationRow): NotificationRecord => {
@@ -374,7 +378,19 @@ export class PostgresRepository implements ServerRepository {
   async unbookmarkSocialPost(accountId: string, postId: string): Promise<void> {
     await this.db.query('DELETE FROM social_post_bookmarks WHERE account_id = $1 AND post_id = $2', [accountId, postId])
   }
-  async deleteSocialPost(id: string, authorId: string) { const result = await this.db.query<SocialPostRow>(`DELETE FROM social_posts WHERE id = $1 AND author_id = $2 RETURNING ${socialPostColumns}`, [id, authorId]); return result.rows[0] ? socialPost(result.rows[0]) : undefined }
+  async deleteSocialPost(id: string, authorId: string) {
+    return this.withTransaction(async client => {
+      const current = await client.query<SocialPostRow>(`SELECT ${socialPostColumns} FROM social_posts WHERE id=$1 AND author_id=$2 FOR UPDATE`, [id, authorId])
+      const row = current.rows[0]
+      if (!row) return undefined
+      if (row.media_storage_key) {
+        const openReports = await client.query('SELECT id FROM social_post_reports WHERE post_id=$1 AND status=\'open\' LIMIT 1', [id])
+        if (openReports.rows.length) throw new Error('SOCIAL_POST_REPORT_PENDING')
+      }
+      const deleted = await client.query<SocialPostRow>(`DELETE FROM social_posts WHERE id=$1 AND author_id=$2 RETURNING ${socialPostColumns}`, [id, authorId])
+      return deleted.rows[0] ? socialPost(deleted.rows[0]) : undefined
+    })
+  }
   async reviewSocialPost(id: string, status: Extract<SocialPostVisibility, 'published' | 'rejected' | 'removed'>, staffId: string, note?: string) {
     const result = await this.db.query<SocialPostRow>(`UPDATE social_posts SET visibility = $1, reviewed_by = $2, reviewed_at = NOW(), review_note = $3, updated_at = NOW() WHERE id = $4 AND visibility <> 'removed' AND ($1 <> 'published' OR visibility = 'pending-review') RETURNING ${socialPostColumns}`, [status, staffId, note?.slice(0, 500) ?? null, id])
     return result.rows[0] ? socialPost(result.rows[0]) : undefined
@@ -471,31 +487,55 @@ export class PostgresRepository implements ServerRepository {
   }
   async drainNotificationOutbox(): Promise<NotificationRecord[]> { return [] }
   async createSocialPostReport(input: SocialPostReport) {
-    const result = await this.db.query<SocialPostReportRow>('INSERT INTO social_post_reports (id, post_id, reporter_id, reason, details, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, post_id, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by', [input.id, input.postId, input.reporterId, input.reason, input.details, input.status, input.createdAt])
+    if (!input.postSnapshot) throw new Error('SOCIAL_POST_REPORT_SNAPSHOT_REQUIRED')
+    const result = await this.db.query<SocialPostReportRow>('INSERT INTO social_post_reports (id, post_id, post_snapshot, reporter_id, reason, details, status, created_at) VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7,$8) RETURNING id, post_id, post_snapshot, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by', [input.id, input.postId, JSON.stringify(input.postSnapshot), input.reporterId, input.reason, input.details, input.status, input.createdAt])
     return socialPostReport(result.rows[0])
   }
   async deleteSocialPostReport(id: string, reporterId: string) { const result = await this.db.query('DELETE FROM social_post_reports WHERE id = $1 AND reporter_id = $2 RETURNING id', [id, reporterId]); return result.rows.length > 0 }
   async listSocialPostReports(status?: SocialPostReport['status']) {
-    const result = await this.db.query<SocialPostReportRow>('SELECT id, post_id, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by FROM social_post_reports WHERE ($1::text IS NULL OR status = $1) ORDER BY created_at DESC LIMIT 500', [status ?? null])
+    const result = await this.db.query<SocialPostReportRow>('SELECT id, post_id, post_snapshot, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by FROM social_post_reports WHERE ($1::text IS NULL OR status = $1) ORDER BY created_at DESC LIMIT 500', [status ?? null])
     return result.rows.map(socialPostReport)
   }
   async reviewSocialPostReport(id: string, status: Extract<SocialPostReport['status'], 'reviewed' | 'dismissed'>, staffId: string) {
-    const result = await this.db.query<SocialPostReportRow>('UPDATE social_post_reports SET status = $1, reviewed_by = $2, reviewed_at = NOW() WHERE id = $3 AND status = \'open\' RETURNING id, post_id, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by', [status, staffId, id])
+    const result = await this.db.query<SocialPostReportRow>('UPDATE social_post_reports SET status = $1, reviewed_by = $2, reviewed_at = NOW() WHERE id = $3 AND status = \'open\' RETURNING id, post_id, post_snapshot, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by', [status, staffId, id])
     return result.rows[0] ? socialPostReport(result.rows[0]) : undefined
   }
   async reviewSocialPostReportWithAudit(id: string, status: Extract<SocialPostReport['status'], 'reviewed' | 'dismissed'>, staffId: string, event: AuditEvent) {
     return this.withTransaction(async client => {
-      const result = await client.query<SocialPostReportRow>('UPDATE social_post_reports SET status=$1, reviewed_by=$2, reviewed_at=$3 WHERE id=$4 AND status=\'open\' RETURNING id, post_id, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by', [status, staffId, event.timestamp, id])
+      const result = await client.query<SocialPostReportRow>('UPDATE social_post_reports SET status=$1, reviewed_by=$2, reviewed_at=$3 WHERE id=$4 AND status=\'open\' RETURNING id, post_id, post_snapshot, reporter_id, reason, details, status, created_at, reviewed_at, reviewed_by', [status, staffId, event.timestamp, id])
       if (!result.rows[0]) return undefined
       await client.query('INSERT INTO audit_events(id,timestamp,action,request_id,actor_id,target_id,success,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)', [event.id, event.timestamp, event.action, event.requestId, event.actorId ?? null, event.targetId ?? null, event.success, JSON.stringify(event.metadata)])
       return socialPostReport(result.rows[0])
     })
   }
   async createSocialStoryReport(input: SocialStoryReport) {
-    const result = await this.db.query<SocialStoryReportRow>(`INSERT INTO social_story_reports (id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,reason,details,status,created_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-      RETURNING id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,evidence_expired_at,reason,details,status,created_at,reviewed_at,reviewed_by`, [input.id, input.storyId, input.authorId, input.reporterId, input.kind, input.body, input.audience, input.storyCreatedAt, input.storyExpiresAt, input.mediaSha256 ?? null, input.evidenceStorageKey ?? null, input.evidenceMimeType ?? null, input.evidenceSizeBytes ?? null, input.evidenceDeleteAt ?? null, input.reason, input.details, input.status, input.createdAt])
-    return socialStoryReport(result.rows[0])
+    return this.withTransaction(async client => {
+      if (input.evidenceSizeBytes) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext('beatvault-social-story-evidence-quota'),0)")
+        const usedResult = await client.query<{ used_bytes: string }>('SELECT COALESCE(SUM(evidence_size_bytes),0)::text AS used_bytes FROM social_story_reports WHERE evidence_storage_key IS NOT NULL')
+        const usedBytes = BigInt(usedResult.rows[0]?.used_bytes || '0')
+        if (usedBytes + BigInt(input.evidenceSizeBytes) > BigInt(config.socialModerationEvidenceQuotaBytes)) throw new Error('SOCIAL_EVIDENCE_STORAGE_FULL')
+      }
+      const result = await client.query<SocialStoryReportRow>(`INSERT INTO social_story_reports (id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,reason,details,status,created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+        RETURNING id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,evidence_expired_at,reason,details,status,created_at,reviewed_at,reviewed_by`, [input.id, input.storyId, input.authorId, input.reporterId, input.kind, input.body, input.audience, input.storyCreatedAt, input.storyExpiresAt, input.mediaSha256 ?? null, input.evidenceStorageKey ?? null, input.evidenceMimeType ?? null, input.evidenceSizeBytes ?? null, input.evidenceDeleteAt ?? null, input.reason, input.details, input.status, input.createdAt])
+      return socialStoryReport(result.rows[0])
+    })
+  }
+  async createSocialStoryReportWithAudit(input: SocialStoryReport, event: AuditEvent) {
+    return this.withTransaction(async client => {
+      if (input.evidenceSizeBytes) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext('beatvault-social-story-evidence-quota'),0)")
+        const usedResult = await client.query<{ used_bytes: string }>('SELECT COALESCE(SUM(evidence_size_bytes),0)::text AS used_bytes FROM social_story_reports WHERE evidence_storage_key IS NOT NULL')
+        const usedBytes = BigInt(usedResult.rows[0]?.used_bytes || '0')
+        if (usedBytes + BigInt(input.evidenceSizeBytes) > BigInt(config.socialModerationEvidenceQuotaBytes)) throw new Error('SOCIAL_EVIDENCE_STORAGE_FULL')
+      }
+      const result = await client.query<SocialStoryReportRow>(`INSERT INTO social_story_reports (id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,reason,details,status,created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+        RETURNING id,story_id,author_id,reporter_id,story_kind,story_body,story_audience,story_created_at,story_expires_at,media_sha256,evidence_storage_key,evidence_mime_type,evidence_size_bytes,evidence_delete_at,evidence_expired_at,reason,details,status,created_at,reviewed_at,reviewed_by`, [input.id, input.storyId, input.authorId, input.reporterId, input.kind, input.body, input.audience, input.storyCreatedAt, input.storyExpiresAt, input.mediaSha256 ?? null, input.evidenceStorageKey ?? null, input.evidenceMimeType ?? null, input.evidenceSizeBytes ?? null, input.evidenceDeleteAt ?? null, input.reason, input.details, input.status, input.createdAt])
+      await client.query('INSERT INTO audit_events(id,timestamp,action,request_id,actor_id,target_id,success,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)', [event.id, event.timestamp, event.action, event.requestId, event.actorId ?? null, event.targetId ?? null, event.success, JSON.stringify(event.metadata)])
+      return socialStoryReport(result.rows[0])
+    })
   }
   async deleteSocialStoryReport(id: string, reporterId: string) {
     const result = await this.db.query('DELETE FROM social_story_reports WHERE id=$1 AND reporter_id=$2 RETURNING id', [id, reporterId])

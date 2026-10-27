@@ -12,8 +12,8 @@ pagos reales, suscripciones ni servicios externos.
 | 2. Carga de medios | JPEG/PNG/WebP/AVIF; recorte centrado explicado para portadas; selección y arrastre de lotes de audio con nombres independientes | Imagen realmente decodificable, sin metadata; límite de bytes/píxeles/tiempo; WAV descargado idéntico; agregar archivos no elimina el lote anterior ni repite una carga confirmada |
 | 3. Datos persistidos | Favoritos por cuenta y estado de revisión comercial independiente del historial de auditoría | Otro navegador recupera favoritos; importación conserva fuente local y no reclama claves sin dueño; aprobación sobrevive retención/reinicio y se invalida al cambiar ficha/evidencia |
 | 4. Catálogo coherente | Preview privado de One-shots para CM/admin y publicación independiente de habilitación comercial | Rechazo con motivo, corrección y publicación; invitado no accede al original; reviewer no aprueba su propio audio |
-| 5. Integración | Migraciones 030–034, pruebas, documentación y arranque local actualizado | Esquema limpio/actualización, QA PostgreSQL con restore y navegador; cuentas originales intactas; API local lista |
-| 6. Seguridad social | Bloqueos durables, reportes de Stories, evidencia privada con vencimiento y auditoría | QA PostgreSQL local hasta migración 034, permisos y carreras principales comprobados; auditoría independiente |
+| 5. Integración | Migraciones 030–036, pruebas, documentación y arranque local actualizado | Esquema limpio/actualización, QA PostgreSQL con restore y navegador; cuentas originales intactas; API local lista |
+| 6. Seguridad social | Bloqueos durables, reportes de Stories, evidencia privada con vencimiento y auditoría | QA PostgreSQL aislado hasta migración 036, permisos y carreras principales comprobados; pruebas focalizadas y análisis estático aprobados |
 | 7. Volumen de medios | Mover uploads locales a D: con ACL limitada y ruta configurable | Copia íntegra con SHA-256, originales preservados, API reiniciada y `/api/ready` confirma PostgreSQL |
 
 ## Contratos implementados
@@ -67,7 +67,10 @@ volver a seleccionar el archivo. Las preferencias de apariencia siguen siendo lo
 
 ## Verificación y situación actual
 
-Migraciones 030–035 aplicadas en la base local. Comprobación de preservación: las 9 cuentas
+Migraciones 030–035 aplicadas en la base principal local al cierre de la etapa anterior.
+La migración 036 conserva snapshots de posts denunciados al borrarlos y pasó QA
+PostgreSQL aislado en `beatvault_test_native`, incluyendo revisión de reportes tras
+borrar el post. Comprobación de preservación: las 9 cuentas
 originales mantienen sus identidades, hashes y roles; siguen 88 proyectos y 8 registros
 de catálogo. PostgreSQL real pasó integración, concurrencia, conservación de fuentes,
 aprobación comercial tras retención/reinicio y respaldo/restauración con tablas nuevas.
@@ -93,7 +96,9 @@ Respaldo posterior a la migración creado y registrado en
 
 La suite Playwright completa volvió a pasar 112/112 casos tras las migraciones sociales
 en PostgreSQL temporal. QA PostgreSQL local también pasó incluyendo respaldo/restauración,
-bloqueo/desbloqueo y privacidad social. La restauración completa de datos y medios a un
+bloqueo/desbloqueo y privacidad social. El QA posterior de seguridad aplicó y validó
+migración 036 en `beatvault_test_native`, comprobó snapshots tras borrado, privacidad,
+bloqueos, reportes, cuota de evidencia y auditoría transaccional. La restauración completa de datos y medios a un
 tercer destino físico sigue pendiente.
 
 Hardening posterior de historias de video: FFmpeg vuelve a codificar el archivo,

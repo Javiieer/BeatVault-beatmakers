@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -7,6 +8,29 @@ import { PostgresRepository, type SqlClient } from './postgres'
 import { LocalRepository } from './store'
 
 describe('social account relationships', () => {
+  it('enforces a shared Story moderation evidence budget in the JSON repository', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'beatvault-story-evidence-quota-'))
+    const previousDirectory = config.dataDirectory
+    const previousQuota = config.socialModerationEvidenceQuotaBytes
+    config.dataDirectory = directory
+    config.socialModerationEvidenceQuotaBytes = 10
+    try {
+      const repo = new LocalRepository()
+      const createdAt = '2026-10-27T12:00:00.000Z'
+      const makeReport = (size: number) => {
+        const id = randomUUID()
+        return { id, storyId: randomUUID(), authorId: 'author', reporterId: randomUUID(), kind: 'photo' as const, body: '', audience: 'public' as const, storyCreatedAt: createdAt, storyExpiresAt: new Date(Date.parse(createdAt) + 86_400_000).toISOString(), mediaSha256: 'a'.repeat(64), evidenceStorageKey: `moderation-evidence/stories/${id}`, evidenceMimeType: 'image/png' as const, evidenceSizeBytes: size, reason: 'copyright' as const, details: 'Review image', status: 'open' as const, createdAt }
+      }
+      await repo.createSocialStoryReport(makeReport(8))
+      await expect(repo.createSocialStoryReport(makeReport(3))).rejects.toThrow('SOCIAL_EVIDENCE_STORAGE_FULL')
+      expect(await repo.listSocialStoryReports()).toHaveLength(1)
+    } finally {
+      config.dataDirectory = previousDirectory
+      config.socialModerationEvidenceQuotaBytes = previousQuota
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('persists account-scoped follows and bookmarks idempotently in the JSON repository', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'beatvault-social-relations-'))
     const previousDirectory = config.dataDirectory

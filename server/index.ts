@@ -60,6 +60,7 @@ const socialFollowLimit = 500
 const socialBookmarkLimit = 1000
 const socialReportLimiter = new RateLimiter(10, 60000)
 const socialMediaConcurrency = new ConcurrencyLimiter(2)
+const socialStoryEvidenceConcurrency = new ConcurrencyLimiter(2)
 const socialMediaAccountConcurrency = new ConcurrencyLimiter(1)
 const runtime = createRepository(); const repo = runtime.repository; export const auth = new AuthService(repo); export const audit = new AuditLog(runtime.auditStore); const limiter = new RateLimiter(config); const creatorSearchLimiter = new RateLimiter(30, 60000)
 const publishNotifications = (items: NotificationRecord[]) => { for (const item of items) publishChatEvent(item.recipientId, { type: 'notification', notificationId: item.id }) }
@@ -610,8 +611,10 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     if (!media) return json(res, 404, { ok: false, error: { code: 'STORY_MEDIA_NOT_FOUND', message: 'Archivo no disponible.' }, requestId: id }, id, requestOrigin)
     res.writeHead(200, { 'Content-Type': media.mimeType, 'Content-Length': media.size, 'Content-Disposition': 'inline', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox", ...(requestOrigin ? { 'Access-Control-Allow-Origin': requestOrigin, 'Access-Control-Allow-Credentials': 'true' } : {}) })
     if (req.method === 'HEAD') return res.end()
-    createReadStream(media.path).pipe(res)
-    return
+    const stream = createReadStream(media.path)
+    stream.on('error', () => res.destroy())
+    res.once('close', () => stream.destroy())
+    return stream.pipe(res)
   }
   const socialStoryReportMatch = path?.match(/^\/api\/stories\/([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})\/reports$/i)
   if (socialStoryReportMatch && req.method === 'POST') {
@@ -624,16 +627,25 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     const reasons = ['spam', 'harassment', 'copyright', 'nudity', 'violence', 'other']
     if (!value || !reasons.includes(String(value.reason)) || typeof value.details !== 'string' || value.details.trim().length > 500) throw new ValidationError('report', 'Motivo o detalle del reporte inválido.')
     const reportId = randomUUID()
-    const evidence = await preserveStoryReportEvidence(reportId, story)
-    const report: SocialStoryReport = { id: reportId, storyId: story.id, authorId: story.authorId, reporterId: account.id, kind: story.kind, body: story.body, audience: story.audience, storyCreatedAt: story.createdAt, storyExpiresAt: story.expiresAt, ...(story.media ? { mediaSha256: story.media.sha256 } : {}), ...(evidence ? { evidenceStorageKey: evidence.storageKey, evidenceMimeType: evidence.mimeType, evidenceSizeBytes: evidence.sizeBytes } : {}), reason: value.reason as SocialStoryReport['reason'], details: value.details.trim(), status: 'open', createdAt: new Date().toISOString() }
-    let created: SocialStoryReport
+    const evidenceRelease = story.media ? socialStoryEvidenceConcurrency.acquire('global') : undefined
+    if (story.media && !evidenceRelease) return limited(res, id, requestOrigin)
+    let evidence: Awaited<ReturnType<typeof preserveStoryReportEvidence>> = undefined
+    let report: SocialStoryReport = { id: reportId, storyId: story.id, authorId: story.authorId, reporterId: account.id, kind: story.kind, body: story.body, audience: story.audience, storyCreatedAt: story.createdAt, storyExpiresAt: story.expiresAt, ...(story.media ? { mediaSha256: story.media.sha256 } : {}), reason: value.reason as SocialStoryReport['reason'], details: value.details.trim(), status: 'open', createdAt: new Date().toISOString() }
+    let created: SocialStoryReport | undefined
     try {
-      created = await repo.createSocialStoryReport(report)
-      await audit.recordAndWait('create', id, account.id, story.id, true, { resource: 'social-story-report', reportId: created.id, reason: created.reason })
+      evidence = await preserveStoryReportEvidence(reportId, story)
+      if (evidence) report = { ...report, evidenceStorageKey: evidence.storageKey, evidenceMimeType: evidence.mimeType, evidenceSizeBytes: evidence.sizeBytes }
+      const event = audit.createEvent('create', id, account.id, story.id, true, { resource: 'social-story-report', reportId: report.id, reason: report.reason })
+      created = await repo.createSocialStoryReportWithAudit(report, event)
+      await repo.drainSocialModerationAudit().catch(() => undefined)
+      audit.recordCommitted(event)
     } catch (error) {
-      if (evidence) await removeStoryReportEvidence(report)
+      const rollbackComplete = !created || await repo.deleteSocialStoryReport(created.id, account.id).catch(() => false)
+      if (evidence && rollbackComplete) await removeStoryReportEvidence(report).catch(() => undefined)
+      if (error instanceof Error && error.message === 'SOCIAL_EVIDENCE_STORAGE_FULL') return json(res, 507, { ok: false, error: { code: 'SOCIAL_EVIDENCE_STORAGE_FULL', message: 'El almacenamiento de evidencia de moderación está lleno temporalmente.' }, requestId: id }, id, requestOrigin)
       throw error
-    }
+    } finally { evidenceRelease?.() }
+    if (!created) throw new Error('SOCIAL_STORY_REPORT_CREATE_FAILED')
     return json(res, 201, { ok: true, data: { id: created.id, status: created.status }, requestId: id }, id, requestOrigin)
   }
   const socialStoryMatch = path?.match(/^\/api\/stories\/([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/i)
@@ -793,7 +805,12 @@ export const server = createServer(async (req, res) => { const id = req.headers[
   if (socialPostMatch && req.method === 'DELETE') {
     if (!account) return unauthorized(res, id, requestOrigin)
     if (!(await auth.verifyCsrf(session, req.headers['x-csrf-token']?.toString()))) return json(res, 403, { ok: false, error: { code: 'CSRF_REQUIRED', message: 'Token CSRF requerido.' }, requestId: id }, id, requestOrigin)
-    const deleted = await repo.deleteSocialPost(socialPostMatch[1], account.id)
+    let deleted: SocialPost | undefined
+    try { deleted = await repo.deleteSocialPost(socialPostMatch[1], account.id) }
+    catch (error) {
+      if (error instanceof Error && error.message === 'SOCIAL_POST_REPORT_PENDING') return json(res, 409, { ok: false, error: { code: 'SOCIAL_POST_REPORT_PENDING', message: 'La publicación con evidencia multimedia no se puede borrar mientras su reporte siga abierto.' }, requestId: id }, id, requestOrigin)
+      throw error
+    }
     if (!deleted) return json(res, 404, { ok: false, error: { code: 'POST_NOT_FOUND', message: 'Publicación no disponible.' }, requestId: id }, id, requestOrigin)
     await removeSocialPostMedia(deleted)
     await audit.recordAndWait('delete', id, account.id, deleted.id, true, { resource: 'social-post' })
@@ -809,7 +826,7 @@ export const server = createServer(async (req, res) => { const id = req.headers[
     const value = await body(req) as Record<string, unknown>
     const reasons = ['spam', 'harassment', 'copyright', 'nudity', 'violence', 'other']
     if (!value || !reasons.includes(String(value.reason)) || typeof value.details !== 'string' || value.details.trim().length > 500) throw new ValidationError('report', 'Motivo o detalle del reporte inválido.')
-    const report: SocialPostReport = { id: randomUUID(), postId: post.id, reporterId: account.id, reason: value.reason as SocialPostReport['reason'], details: value.details.trim(), status: 'open', createdAt: new Date().toISOString() }
+    const report: SocialPostReport = { id: randomUUID(), postId: post.id, reporterId: account.id, postSnapshot: { id: post.id, authorId: post.authorId, kind: post.kind, body: post.body, audience: post.audience, createdAt: post.createdAt, ...(post.media ? { mediaSha256: post.media.sha256 } : {}) }, reason: value.reason as SocialPostReport['reason'], details: value.details.trim(), status: 'open', createdAt: new Date().toISOString() }
     const created = await repo.createSocialPostReport(report)
     try { await audit.recordAndWait('create', id, account.id, post.id, true, { resource: 'social-post-report', reportId: created.id, reason: created.reason }) }
     catch (error) { await repo.deleteSocialPostReport(created.id, account.id); throw error }
@@ -834,7 +851,12 @@ export const server = createServer(async (req, res) => { const id = req.headers[
   if (path === '/api/social-moderation/reports' && req.method === 'GET') {
     if (!staffOnly(account, res, id, requestOrigin)) return
     const reports = await repo.listSocialPostReports('open')
-    const data = await Promise.all(reports.map(async report => { const post = await repo.findSocialPost(report.postId); return { ...report, post: post ? socialPostView(post, await repo.findProfile(post.authorId)) : undefined } }))
+    const data = await Promise.all(reports.map(async report => {
+      const post = await repo.findSocialPost(report.postId)
+      const snapshotPost: SocialPost | undefined = report.postSnapshot ? { ...report.postSnapshot, visibility: 'removed', updatedAt: report.postSnapshot.createdAt } : undefined
+      const reviewPost = post || snapshotPost
+      return { ...report, post: reviewPost ? socialPostView(reviewPost, await repo.findProfile(reviewPost.authorId)) : undefined }
+    }))
     return json(res, 200, { ok: true, data: { reports: data }, requestId: id }, id, requestOrigin)
   }
   const socialReportReviewMatch = path?.match(/^\/api\/social-moderation\/reports\/([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/i)
@@ -1609,13 +1631,18 @@ export const server = createServer(async (req, res) => { const id = req.headers[
      const contentId = validateCatalogId(socialMatch[1])
      const content = (await repo.listCatalog()).find(entry => entry.contentId === contentId)
      if (!content || (content.publicationStatus !== 'published' && content.creatorId !== account.id)) return json(res, 404, { ok: false, error: { code: 'CATALOG_NOT_FOUND', message: 'Beat no disponible.' }, requestId: id }, id, requestOrigin)
+     if (await socialAccountsBlocked(account.id, content.creatorId)) return json(res, 404, { ok: false, error: { code: 'CATALOG_NOT_FOUND', message: 'Beat no disponible.' }, requestId: id }, id, requestOrigin)
      const readSocial = async () => {
        const [comments, reactions] = await Promise.all([repo.listSocialComments(contentId), repo.listSocialReactions(contentId)])
        const enriched = await Promise.all(comments.map(async comment => {
+         if (await socialAccountsBlocked(account.id, comment.authorId)) return undefined
          const profile = await repo.findProfile(comment.authorId)
-         return { ...comment, authorName: comment.authorId === account.id || profile?.publicProfile ? profile?.displayName || 'Productor' : 'Productor' }
+         const authorVisible = comment.authorId === account.id || Boolean(profile && await canViewProfile(profile, account.id))
+         return { ...comment, authorId: authorVisible ? comment.authorId : 'private-creator', authorName: authorVisible ? profile?.displayName || 'Productor' : 'Productor' }
        }))
-       return { comments: enriched, reactionCount: reactions.length, reactedByMe: reactions.includes(account.id) }
+       let reactionCount = 0
+       for (const reactorId of reactions) if (!await socialAccountsBlocked(account.id, reactorId)) reactionCount += 1
+       return { comments: enriched.filter((comment): comment is NonNullable<typeof comment> => Boolean(comment)), reactionCount, reactedByMe: reactions.includes(account.id) }
      }
      if (req.method === 'GET' && !socialMatch[2]) return json(res, 200, { ok: true, data: await readSocial(), requestId: id }, id, requestOrigin)
      if (req.method === 'POST' && socialMatch[2] === 'comments') {

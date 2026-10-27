@@ -364,14 +364,16 @@ try {
   assert(packageSchema.rows[0]?.exists, 'Falta el historial de paquetes verificados de la migracion 014_verified_package_history.sql.')
   assert(schema.rows.some(table => table.name === 'social_account_follows' && table.exists) && schema.rows.some(table => table.name === 'social_post_bookmarks' && table.exists), 'Faltan las tablas de relaciones sociales de la migracion 028_social_follows_bookmarks.sql.')
   assert(schema.rows.some(table => table.name === 'social_stories' && table.exists), 'Falta la tabla de historias independientes de la migracion 029_social_stories.sql.')
-  const socialSafetyMigrations = await pool.query<{ version: string }>('SELECT version FROM beatvault_schema_migrations WHERE version = ANY($1::text[]) ORDER BY version', [['031_social_blocks_and_story_reports.sql', '032_story_report_evidence_times.sql', '033_social_safety_hardening.sql', '034_social_story_evidence_absolute_retention.sql']])
-  assert(socialSafetyMigrations.rows.length === 4, 'No están aplicadas y registradas las migraciones 031–034 de seguridad social.')
+  const socialSafetyMigrations = await pool.query<{ version: string }>('SELECT version FROM beatvault_schema_migrations WHERE version = ANY($1::text[]) ORDER BY version', [['031_social_blocks_and_story_reports.sql', '032_story_report_evidence_times.sql', '033_social_safety_hardening.sql', '034_social_story_evidence_absolute_retention.sql', '036_social_post_report_snapshots.sql']])
+  assert(socialSafetyMigrations.rows.length === 5, 'No están aplicadas y registradas todas las migraciones de seguridad social 031–034 y 036.')
   const marketplacePaymentMigration = await pool.query<{ version: string }>('SELECT version FROM beatvault_schema_migrations WHERE version=$1', ['035_mercadopago_marketplace.sql'])
   assert(marketplacePaymentMigration.rows.length === 1, 'No está aplicada y registrada la migración 035 de Mercado Pago.')
-  const safetySchema = await pool.query<{ blocks: boolean; reports: boolean; evidenceExpiredAt: boolean; followGuard: boolean }>(`SELECT to_regclass('public.social_account_blocks') IS NOT NULL AS blocks, to_regclass('public.social_story_reports') IS NOT NULL AS reports,
+  const safetySchema = await pool.query<{ blocks: boolean; reports: boolean; evidenceExpiredAt: boolean; followGuard: boolean; postSnapshot: boolean; postDeletePreservesReports: boolean }>(`SELECT to_regclass('public.social_account_blocks') IS NOT NULL AS blocks, to_regclass('public.social_story_reports') IS NOT NULL AS reports,
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='social_story_reports' AND column_name='evidence_expired_at') AS "evidenceExpiredAt",
-    EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='social_account_follows_block_guard' AND NOT tgisinternal) AS "followGuard"`)
-  assert(safetySchema.rows[0]?.blocks && safetySchema.rows[0]?.reports && safetySchema.rows[0]?.evidenceExpiredAt && safetySchema.rows[0]?.followGuard, 'El esquema social no tiene columnas/trigger de las migraciones 031–034.')
+    EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='social_account_follows_block_guard' AND NOT tgisinternal) AS "followGuard",
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='social_post_reports' AND column_name='post_snapshot') AS "postSnapshot",
+    EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.social_post_reports'::regclass AND conname='social_post_reports_post_id_fkey' AND confdeltype='n') AS "postDeletePreservesReports"`)
+  assert(safetySchema.rows[0]?.blocks && safetySchema.rows[0]?.reports && safetySchema.rows[0]?.evidenceExpiredAt && safetySchema.rows[0]?.followGuard && safetySchema.rows[0]?.postSnapshot && safetySchema.rows[0]?.postDeletePreservesReports, 'El esquema social no conserva el snapshot de posts denunciados ni todas las defensas 031–034/036.')
 
   const hash = await hashPassword(password)
   for (const [id, kind, role] of [[creatorId, 'creator', 'creator'], [adminId, 'admin', 'admin'], [outsiderId, 'outsider', 'creator'], [quotaId, 'quota', 'creator']]) {
@@ -646,6 +648,11 @@ try {
   assert(response.status === 200, 'Community Manager no pudo retirar una publicación reportada en PostgreSQL.')
   response = await request(manager, `/api/social-moderation/reports/${moderationReport.id}`, 'PATCH', { status: 'reviewed' })
   assert(response.status === 200 && (await request(outsider, `/api/posts/${moderationPostId}/social`)).status === 404, 'La moderación no ocultó el post o no registró la revisión del reporte.')
+  response = await request(creator, `/api/posts/${moderationPostId}`, 'DELETE')
+  assert(response.status === 200, 'El autor no pudo borrar el post después de la resolución de moderación.')
+  const retainedModerationReport = (await repo.listSocialPostReports()).find(item => item.id === moderationReport.id)
+  assert(retainedModerationReport?.postId === moderationPostId && retainedModerationReport.postSnapshot?.body === 'PostgreSQL reported moderation post', 'Borrar un post eliminó su reporte resuelto o el snapshot auditable en PostgreSQL.')
+  console.log('PASS: PostgreSQL conserva reportes y snapshots después del borrado del post por el autor.')
 
   response = await request(creator, '/api/friend-requests', 'POST', { targetId: outsiderId })
   assert(response.status === 201, 'No se pudo preparar la amistad temporal para probar bloqueos PostgreSQL.')

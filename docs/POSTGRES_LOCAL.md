@@ -93,6 +93,22 @@ needs a third disk (or another independent destination). The script refuses eith
 source disk, an active API on port 4174, and a missing upload folder. It does not copy
 credentials or remove older bundles. Choose and create the destination yourself:
 
+Before using real data, the copy/hash path can be rehearsed with synthetic files only:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/postgres-recovery-simulate.ps1
+```
+
+This creates uniquely named `source-volume` and `destination-volume` folders under
+the system temporary directory, copies a fake dump and two synthetic media files,
+copies that bundle into an isolated `restore-volume`, compares names/sizes/SHA-256 in
+both copies, rejects reparse points, checks that source fixtures remain unchanged, then
+removes only that GUID-checked temporary tree. It does not read the local PostgreSQL configuration,
+connect to PostgreSQL, touch C: or D: data, exercise `pg_dump`/`pg_restore`, test the
+production recovery script, or establish physical-disk independence. Both simulated
+volumes are folders on the same physical storage. It is a safe path/integrity smoke
+check, not a backup or restore rehearsal.
+
     # Stop the API terminal first; keep PostgreSQL running.
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/postgres-recovery.ps1 -Action backup -Path X:\BeatVaultBackups
 
