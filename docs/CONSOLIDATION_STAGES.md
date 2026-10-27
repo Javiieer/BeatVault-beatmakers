@@ -33,8 +33,10 @@ pagos reales, suscripciones ni servicios externos.
   comprueba roles, independencia y revisión vigente; la falta de evidencia no crea aprobación.
 - `GET /api/posts/:id` resuelve el destino de notificaciones con los mismos controles
   de audiencia que el feed; no convierte un enlace antiguo en acceso a un post privado.
-- Perfil y Marketplace comparten la operación de checkout: destino Stripe exacto,
-  idempotencia y descarte de respuestas tras navegar, cambiar cuenta o salir.
+- Perfil y Marketplace comparten la operación de compra de Beat: vendedor Mercado Pago
+  vinculado, moneda de la orden, idempotencia y descarte de respuestas tras navegar,
+  cambiar cuenta o salir. Las rutas activas usan Checkout Pro Split 1:1 de Mercado Pago;
+  Stripe queda en los datos históricos y no procesa nuevas compras.
 - Planes consulta la configuración comercial efectiva del servidor. Las comisiones
   de membresías son propuestas y no se aplican al checkout; no se simulan suscripciones
   ni promociones aplicadas.
@@ -65,7 +67,7 @@ volver a seleccionar el archivo. Las preferencias de apariencia siguen siendo lo
 
 ## Verificación y situación actual
 
-Migraciones 030–034 aplicadas en la base local. Comprobación de preservación: las 9 cuentas
+Migraciones 030–035 aplicadas en la base local. Comprobación de preservación: las 9 cuentas
 originales mantienen sus identidades, hashes y roles; siguen 88 proyectos y 8 registros
 de catálogo. PostgreSQL real pasó integración, concurrencia, conservación de fuentes,
 aprobación comercial tras retención/reinicio y respaldo/restauración con tablas nuevas.
@@ -105,7 +107,8 @@ aprobadas, en Chromium con PostgreSQL temporal aislado; véase
 
 ## Trabajo posterior separado
 
-Reconciliación de Stripe con proveedor real de pruebas y habilitación comercial,
-políticas definitivas de precios/licencias/impuestos, correo transaccional, respaldo
-fuera del disco, bloqueo/reporte y moderación de historias. Requieren sus propias
-pruebas y decisiones; no se presentan como funcionalidad terminada en este bloque.
+Validación con el proveedor Mercado Pago sandbox requiere credenciales, cuentas de
+prueba y una URL HTTPS temporal; pagos live siguen deshabilitados. También quedan
+pendientes políticas definitivas de precios/licencias/impuestos, correo transaccional,
+respaldo fuera del disco y cierre de operación social. No se presentan como completados
+por la verificación local.

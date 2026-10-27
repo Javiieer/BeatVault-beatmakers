@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import { parsePublicTunnelOrigin } from './public-tunnel'
 
 export type CookieSameSite = 'Lax' | 'Strict' | 'None'
 export type StorageBackend = 'json' | 'postgres'
@@ -66,6 +67,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServerConfig =
   if (mercadoPagoUsdMxnRate !== undefined && (!Number.isFinite(mercadoPagoUsdMxnRate) || mercadoPagoUsdMxnRate < 5 || mercadoPagoUsdMxnRate > 100 || !/^(?:[5-9]|[1-9]\d|100)(?:\.\d{1,6})?$/.test(mercadoPagoRateValue!))) throw new Error('BEATVAULT_MP_USD_MXN_RATE debe ser una tasa decimal entre 5 y 100 con hasta 6 decimales.')
   if (environment === 'production' && (mercadoPagoClientId || mercadoPagoClientSecret)) throw new Error('Mercado Pago Marketplace permanece en modo local/de pruebas y no puede habilitarse en producción.')
   const publicUrl = env.BEATVAULT_PUBLIC_URL || (environment === 'production' ? origins[0] : 'http://localhost:5188')
+  const devAuthTokens = environment !== 'production' && bool(env.BEATVAULT_DEV_AUTH_TOKENS, false)
   if (environment === 'production') {
     const httpsOrigins = origins.every(origin => {
       try { return new URL(origin).origin === origin && new URL(origin).protocol === 'https:' }
@@ -81,8 +83,14 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServerConfig =
     const parsed = new URL(publicUrl)
     if (parsed.origin !== publicUrl.replace(/\/$/, '') || (environment === 'production' && parsed.protocol !== 'https:')) throw new Error()
   } catch { throw new Error('BEATVAULT_PUBLIC_URL debe ser una URL de origen válida y usar HTTPS en producción.') }
-  const publicUrlParsed = new URL(publicUrl)
-  const mercadoPagoPublicCallbackReady = publicUrlParsed.protocol === 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(publicUrlParsed.hostname) && !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(publicUrlParsed.hostname)
+  const tunnelOrigin = parsePublicTunnelOrigin(publicUrl)
+  const mercadoPagoPublicCallbackReady = Boolean(tunnelOrigin)
+  if (tunnelOrigin) {
+    if (!secure) throw new Error('Un origen HTTPS público requiere BEATVAULT_COOKIE_SECURE=true.')
+    if (!origins.includes(tunnelOrigin.origin)) throw new Error('Agrega BEATVAULT_PUBLIC_URL a BEATVAULT_CORS_ORIGINS para usar el túnel.')
+    if (demoEnabled) throw new Error('Desactiva BEATVAULT_DEMO_ENABLED al exponer el entorno mediante un túnel público.')
+    if (devAuthTokens) throw new Error('Desactiva BEATVAULT_DEV_AUTH_TOKENS al exponer el entorno mediante un túnel público.')
+  }
   return {
     environment, host: env.BEATVAULT_HOST || '127.0.0.1', port: positive('BEATVAULT_PORT', env.BEATVAULT_PORT, 4174),
     corsOrigins: origins, trustProxyHeaders, cookie: { secure, sameSite: sameSite as CookieSameSite },
@@ -104,7 +112,7 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServerConfig =
     storageBackend,
     database: { url: databaseUrl, maxConnections: positive('BEATVAULT_DB_MAX_CONNECTIONS', env.BEATVAULT_DB_MAX_CONNECTIONS, 10), idleTimeoutMs: positive('BEATVAULT_DB_IDLE_TIMEOUT_MS', env.BEATVAULT_DB_IDLE_TIMEOUT_MS, 10000), connectionTimeoutMs: positive('BEATVAULT_DB_CONNECTION_TIMEOUT_MS', env.BEATVAULT_DB_CONNECTION_TIMEOUT_MS, 5000) },
     demo: { enabled: demoEnabled, email: (env.BEATVAULT_DEMO_EMAIL || 'demo@beatvault.local').trim().toLowerCase(), password },
-    devAuthTokens: environment !== 'production' && bool(env.BEATVAULT_DEV_AUTH_TOKENS, false),
+    devAuthTokens,
     mercadoPago: { clientId: mercadoPagoClientId, clientSecret: mercadoPagoClientSecret, webhookSecret: mercadoPagoWebhookSecret, tokenEncryptionKey: mercadoPagoTokenEncryptionKey, publicUrl: publicUrl.replace(/\/$/, ''), enabled: Boolean(mercadoPagoClientId && mercadoPagoClientSecret && mercadoPagoWebhookSecret && mercadoPagoTokenEncryptionKey && mercadoPagoPublicCallbackReady), paymentsEnabled: Boolean(mercadoPagoClientId && mercadoPagoClientSecret && mercadoPagoWebhookSecret && mercadoPagoTokenEncryptionKey && mercadoPagoMarketplaceFeeBps !== undefined && mercadoPagoUsdMxnRate !== undefined && mercadoPagoPublicCallbackReady), marketplaceFeeBps: mercadoPagoMarketplaceFeeBps, usdMxnRate: mercadoPagoUsdMxnRate }
   }
 }

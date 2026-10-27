@@ -37,7 +37,7 @@ export class AuthService {
     const now = Date.now()
     await this.accounts.deleteExpiredSessions(now)
     const account = await this.accounts.findAccountByEmail(email.trim().toLowerCase())
-    if (!account || !(await verifyPassword(password, account.passwordHash))) return undefined
+    if (!account || (!this.settings.demo.enabled && (account.id === 'local-demo' || account.email === this.settings.demo.email)) || !(await verifyPassword(password, account.passwordHash))) return undefined
     const token = randomBytes(32).toString('base64url')
     const csrfToken = randomBytes(32).toString('base64url')
     await this.accounts.createSession({ tokenHash: tokenHash(token), accountId: account.id, csrfTokenHash: tokenHash(csrfToken), expiresAt: now + this.settings.sessionTtlSeconds * 1000 })

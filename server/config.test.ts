@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isAllowedOrigin, loadConfig } from './config'
+import { publicTunnelViteOptions } from './public-tunnel'
 
 describe('server config', () => {
   it('uses safe local defaults', () => {
@@ -46,7 +47,7 @@ describe('server config', () => {
     expect(loadConfig({ BEATVAULT_TRUST_PROXY_HEADERS: 'false' }).trustProxyHeaders).toBe(false)
   })
   it('only enables Mercado Pago test payments after all settings are supplied', () => {
-    const credentials = { MERCADOPAGO_CLIENT_ID: '1234567890123456', MERCADOPAGO_CLIENT_SECRET: 'client-secret', MERCADOPAGO_WEBHOOK_SECRET: 'a'.repeat(32), BEATVAULT_MP_TOKEN_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=', BEATVAULT_PUBLIC_URL: 'https://payments.example.test' }
+    const credentials = { MERCADOPAGO_CLIENT_ID: '1234567890123456', MERCADOPAGO_CLIENT_SECRET: 'client-secret', MERCADOPAGO_WEBHOOK_SECRET: 'a'.repeat(32), BEATVAULT_MP_TOKEN_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=', BEATVAULT_PUBLIC_URL: 'https://payments.example.test', BEATVAULT_CORS_ORIGINS: 'http://127.0.0.1:5188,https://payments.example.test', BEATVAULT_COOKIE_SECURE: 'true', BEATVAULT_DEMO_ENABLED: 'false' }
     expect(loadConfig(credentials).mercadoPago).toMatchObject({ enabled: true, paymentsEnabled: false })
     expect(loadConfig({ ...credentials, BEATVAULT_MP_USD_MXN_RATE: '18.25', BEATVAULT_MP_MARKETPLACE_FEE_BPS: '500' }).mercadoPago).toMatchObject({ enabled: true, paymentsEnabled: true, usdMxnRate: 18.25, marketplaceFeeBps: 500 })
     expect(() => loadConfig({ MERCADOPAGO_CLIENT_ID: credentials.MERCADOPAGO_CLIENT_ID })).toThrow('Configura juntos')
@@ -56,6 +57,28 @@ describe('server config', () => {
     expect(() => loadConfig({ ...credentials, BEATVAULT_MP_MARKETPLACE_FEE_BPS: '10000' })).toThrow('MARKETPLACE_FEE_BPS')
     expect(loadConfig({ ...credentials, BEATVAULT_PUBLIC_URL: 'http://localhost:5188' }).mercadoPago.enabled).toBe(false)
     expect(() => loadConfig({ BEATVAULT_PUBLIC_URL: 'https://attacker.test/path' })).toThrow('URL de origen válida')
-    expect(() => loadConfig({ NODE_ENV: 'production', BEATVAULT_COOKIE_SECURE: 'true', BEATVAULT_CORS_ORIGINS: 'https://beatvault.example', BEATVAULT_STORAGE_BACKEND: 'postgres', DATABASE_URL: 'postgresql://beatvault:secret@db/beatvault', BEATVAULT_DEMO_ENABLED: 'false', ...credentials })).toThrow('no puede habilitarse en producción')
+    expect(() => loadConfig({ ...credentials, NODE_ENV: 'production', BEATVAULT_COOKIE_SECURE: 'true', BEATVAULT_CORS_ORIGINS: 'https://payments.example.test', BEATVAULT_STORAGE_BACKEND: 'postgres', DATABASE_URL: 'postgresql://beatvault:secret@db/beatvault', BEATVAULT_DEMO_ENABLED: 'false' })).toThrow('no puede habilitarse en producción')
+  })
+  it('requires a safe profile before exposing local development through an HTTPS tunnel', () => {
+    const tunnel = { BEATVAULT_PUBLIC_URL: 'https://payments.example.test', BEATVAULT_CORS_ORIGINS: 'https://payments.example.test', BEATVAULT_COOKIE_SECURE: 'true', BEATVAULT_DEMO_ENABLED: 'false' }
+    expect(loadConfig(tunnel).mercadoPago.enabled).toBe(false)
+    expect(() => loadConfig({ ...tunnel, BEATVAULT_COOKIE_SECURE: 'false' })).toThrow('COOKIE_SECURE=true')
+    expect(() => loadConfig({ ...tunnel, BEATVAULT_CORS_ORIGINS: 'http://127.0.0.1:5188' })).toThrow('BEATVAULT_CORS_ORIGINS')
+    expect(() => loadConfig({ ...tunnel, BEATVAULT_DEMO_ENABLED: 'true' })).toThrow('BEATVAULT_DEMO_ENABLED')
+    expect(() => loadConfig({ ...tunnel, BEATVAULT_DEV_AUTH_TOKENS: 'true' })).toThrow('BEATVAULT_DEV_AUTH_TOKENS')
+  })
+  it('allows only the exact configured HTTPS hostname and origin in Vite for a tunnel', () => {
+    expect(publicTunnelViteOptions('https://public-test.example')).toEqual({
+      allowedHosts: ['public-test.example'],
+      corsOrigins: ['http://localhost:5188', 'http://127.0.0.1:5188', 'https://public-test.example'],
+    })
+    expect(publicTunnelViteOptions('https://public-test.example/')).toEqual({
+      allowedHosts: ['public-test.example'],
+      corsOrigins: ['http://localhost:5188', 'http://127.0.0.1:5188', 'https://public-test.example'],
+    })
+    expect(publicTunnelViteOptions('http://public-test.example')).toBeUndefined()
+    expect(publicTunnelViteOptions('https://localhost:5188')).toBeUndefined()
+    expect(publicTunnelViteOptions('https://127.0.0.1')).toBeUndefined()
+    expect(publicTunnelViteOptions('https://public-test.example/path')).toBeUndefined()
   })
 })
