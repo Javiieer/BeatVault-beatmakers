@@ -450,7 +450,8 @@ describe('local API routes', () => {
     const artworkUpload = await fetch(`${origin}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { ...ownerHeaders, 'content-type': 'image/jpeg' }, body: artworkBody })
     expect(artworkUpload.status, await artworkUpload.clone().text()).toBe(201)
     const savedArtwork = (await artworkUpload.json() as { data: { sizeBytes: number; thumbnailAvailable: boolean; thumbnailSizeBytes: number } }).data
-    if (savedArtwork.thumbnailAvailable) expect(savedArtwork.thumbnailSizeBytes).toBeGreaterThan(0)
+    expect(savedArtwork.thumbnailAvailable).toBe(true)
+    expect(savedArtwork.thumbnailSizeBytes).toBeGreaterThan(0)
     expect((await fetch(`${origin}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { cookie: ownerHeaders.cookie, 'content-type': 'image/jpeg' }, body: artworkBody })).status).toBe(403)
     expect((await fetch(`${origin}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { cookie: `beatvault_session=${outsider!.token}`, 'x-csrf-token': outsider!.csrfToken, 'content-type': 'image/jpeg' }, body: artworkBody })).status).toBe(404)
     expect((await fetch(`${origin}/api/assets/${asset.id}/artwork`, { method: 'POST', headers: { ...ownerHeaders, 'content-type': 'image/jpeg' }, body: artworkBody })).status).toBe(201)

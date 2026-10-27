@@ -1,8 +1,8 @@
-import { spawn } from 'node:child_process'
 import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { inflateSync } from 'node:zlib'
+import sharp from 'sharp'
 import { config } from './config'
 import { normalizeImageUpload } from './image-upload'
 
@@ -174,29 +174,21 @@ export async function persistArtworkThumbnail(sourceStorageKey: string): Promise
   const destination = artworkPath(config.uploadDirectory, thumbnailStorageKey)
   const temporary = resolve(dirname(destination), `.tmp-artwork-thumbnail-${randomUUID()}.webp`)
   try {
-    const sourceSize = (await stat(source)).size
+    const sourceInfo = await stat(source)
+    if (!sourceInfo.isFile() || sourceInfo.size <= 0 || sourceInfo.size > maxArtworkBytes) return { decoded: false }
+    const sourceBytes = await readFile(source)
+    if (sourceBytes.length !== sourceInfo.size) return { decoded: false }
     await mkdir(dirname(destination), { recursive: true })
-    await new Promise<void>((resolvePromise, reject) => {
-      const child = spawn(config.ffmpegPath, [
-        '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', source,
-        '-vf', `scale=${artworkThumbnailSide}:${artworkThumbnailSide}:flags=lanczos`,
-        '-frames:v', '1', '-threads', '2', '-c:v', 'libwebp', '-quality', '78',
-        '-compression_level', '6', '-preset', 'picture', '-f', 'webp', temporary,
-      ], { shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] })
-      const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('ARTWORK_THUMBNAIL_TIMEOUT')) }, 30000)
-      child.once('error', error => { clearTimeout(timeout); reject(error) })
-      child.once('close', code => {
-        clearTimeout(timeout)
-        if (code === 0) resolvePromise()
-        else reject(new Error('ARTWORK_THUMBNAIL_FAILED'))
-      })
-    })
-    const bytes = await readFile(temporary)
+    const bytes = await sharp(sourceBytes, { limitInputPixels: maxArtworkPixels, failOn: 'warning', animated: false })
+      .timeout({ seconds: 15 })
+      .resize(artworkThumbnailSide, artworkThumbnailSide, { fit: 'cover', position: 'centre', withoutEnlargement: true })
+      .webp({ quality: 78, effort: 6 }).toBuffer()
     if (bytes.length < 16 || bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WEBP') throw new Error('ARTWORK_THUMBNAIL_INVALID')
-    if (bytes.length > artworkThumbnailMaxBytes || bytes.length >= sourceSize) {
+    if (bytes.length > artworkThumbnailMaxBytes || bytes.length >= sourceInfo.size) {
       await unlink(destination).catch(() => undefined)
       return { decoded: true }
     }
+    await writeFile(temporary, bytes, { flag: 'wx' })
     await unlink(destination).catch(() => undefined)
     await rename(temporary, destination)
     return { decoded: true, thumbnail: { thumbnailStorageKey, thumbnailSizeBytes: bytes.length } }
