@@ -61,7 +61,7 @@ captures are
 
 | Section | Route | Current state | Product decision |
 | --- | --- | --- | --- |
-| Home | `/home` | Partial | Keep; server-backed publishing, privacy, comments/reactions and creator relationships are implemented; native stories, live feed updates and scale testing remain |
+| Home | `/home` | Partial | Keep; server-backed posts and independent expiring stories, privacy, comments/reactions and creator relationships work; generic SSE prompts refresh; story reports/moderation, multi-instance events and scale testing remain |
 | Amigos | `/friends` | Partial | Keep; collaboration invitations are future work |
 | Mensajes | `/chat` | Partial | Keep; text-only one-to-one chat works for accepted friends |
 | Mis subidas | `/studio` | Partial | Keep; creator audio workflow is the core release path |
@@ -78,7 +78,7 @@ captures are
 | AI Lab | `/ai` | Placeholder | Defer until a validated creator workflow exists |
 | Releases | `/releases` | Placeholder | Defer |
 | Analytics | `/analytics` | Placeholder | Defer until consent-aware events exist |
-| Mi perfil | `/profile` | Partial | Keep; custom image uploads and public audio previews remain open |
+| Mi perfil | `/profile` | Partial | Keep; custom images support adjustable responsive framing; public audio previews remain open |
 | Ajustes | `/settings` | Partial | Keep; email verification and production email are open |
 | Recuperar contraseña | `/forgot-password` | Partial | Keep; transactional email delivery is open |
 | Cambiar contraseña olvidada | `/password-reset` | Partial | Keep; transactional email delivery is open |
@@ -100,9 +100,10 @@ captures are
   checks and retry authorization passed disposable-PostgreSQL integration checks.
 - Browser tests use temporary local data and synthetic fixtures. They are regression
   checks, not a penetration test, production load test, or security certification.
-- Payment, licensing and seller payout are not live. Native story records, live Home
-  feed updates, push notifications, chat attachments/groups and user block controls are
-  also outstanding; social report submission and staff moderation are implemented.
+- Payment, licensing and seller payout are not live. Story reports/staff moderation,
+  friends/private and multi-instance live Home events, push notifications, chat
+  attachments/groups and user block controls remain outstanding; post reporting and
+  moderation are implemented.
 
 ## Evidence
 
@@ -115,13 +116,14 @@ in its browser count. Re-run
 `npm run diagnose:full` to refresh the machine report; this document is a dated
 summary and must be updated when the product inventory or test coverage changes.
 
-## Home Follow-up: 2026-10-15
+## Home Follow-up: 2026-10-18
 
 Authenticated posts and media now publish through the API rather than relying on
 IndexedDB. A real two-account browser test verifies public delivery, private-post
 isolation, and comment/reaction persistence after reload. Follows and bookmarks also
-persist by account/post ID. The recent-stories rail projects published posts from the
-last 24 hours; it is not a separate expiring story service. Feed reads now have an
+persist by account/post ID. The original recent-stories rail projected posts from the
+last 24 hours; the Stories Follow-up below supersedes that behavior with separate records.
+Feed reads now have an
 IP-based process-local rate limit, strict post UUID validation and a bounded scan
 window. The latest focused Home/backend verification passed 66 tests across eight files;
 after the batch-limit hardening, the real two-account Playwright journey also passed.
@@ -131,6 +133,25 @@ JavaScript bundle is about 540 KB and three theme backgrounds are 2.1-2.8 MB; op
 these before a public pilot. Disposable PostgreSQL QA applied
 migrations 001-028 and passed follows/bookmarks isolation plus backup/restore;
 production-scale behavior and existing-volume migration remain to be validated.
+
+Connected Home sessions now receive a generic server-sent event for new public posts.
+The client shows a manual refresh prompt rather than replacing the feed; the signal
+carries no post content and refetches through the visibility-checked APIs. This is a
+single-process capability; friends/private and multi-instance delivery remain open.
+The full Vitest run passes 316 tests across 63 files, and a two-account Playwright test
+verifies the live prompt and refresh path.
+
+## Stories Follow-up: 2026-10-18
+
+Home now publishes independent text/photo/video story records, separate from the feed,
+with audience-checked reads, owner deletion, exact 24-hour expiry, a 20-active-story
+account cap and a shared 512 MiB social-media quota. Photos are normalized; videos are
+limited to MP4/H.264, 30 seconds and 1920x1080. Connected sessions receive a data-free
+SSE refresh signal; expired records/media are cleaned up periodically. Focused local
+tests pass 55 checks across eight files. Story reporting/staff moderation and a live
+PostgreSQL migration 029 rehearsal remain before public-pilot consideration. The local
+environment has no PostgreSQL QA URL configured, so that database migration has not
+been executed here.
 
 ## Next implementation
 

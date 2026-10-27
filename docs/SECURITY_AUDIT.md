@@ -3,9 +3,14 @@
 Date: 2026-10-14
 
 This is a defensive code/configuration review of the local BeatVault repository. It
-was not an external penetration test, a live Stripe test, or a production
+was not an external penetration test, a live payment test, or a production
 PostgreSQL deployment. Findings distinguish verified code defects from launch
 readiness gaps; a green test suite is not a security certification.
+
+**Provider update (2026-10-27):** The Stripe-specific status below is historical.
+Mercado Pago is now the sole active provider for new Marketplace orders, in test mode;
+its live integration has not been assessed by this dated audit. See
+`PAYMENT_PROVIDER_DECISION.md` and `MERCADOPAGO_LOCAL_TESTING.md`.
 
 ## Findings
 
@@ -70,9 +75,9 @@ signatures and MIME mismatch, not polyglots or malicious documents.
 
 Production email delivery for account verification and password recovery is not
 configured. Production admin provisioning is not yet supported by the bootstrap
-flow. Stripe live keys are rejected: Connect and checkout are test-mode slices,
-and a live payment/tax/refund/dispute operation has not been validated. Keep sales
-and public launch disabled until these workflows, legal terms, and a real
+flow. Mercado Pago live credentials are rejected: seller OAuth, checkout and
+reconciliation remain test-mode-only, and no live payment/tax/refund/dispute
+operation has been validated. Keep sales and public launch disabled until these workflows, legal terms, and a real
 PostgreSQL migration/restore rehearsal are complete.
 
 ### SEC-06: upload resource and image-validation controls
@@ -108,7 +113,7 @@ migration procedure.
 - Mutating authenticated routes require CSRF; CORS uses an explicit origin list.
 - Admin/community-manager authorization is enforced server-side; object access
   checks ownership, and buyer downloads require a paid order for that buyer.
-- JSON, multipart upload, media range and Stripe webhook bodies have bounds;
+- JSON, multipart upload, media range and webhook bodies have bounds;
   audio/evidence paths reject traversal; webhook signatures are verified and event
   IDs are persisted/deduplicated.
 - Audio/artwork uploads require CSRF, enforce a bounded per-account in-process

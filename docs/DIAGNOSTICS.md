@@ -63,4 +63,7 @@ Passing tests cover the assertions that exist, not every possible vulnerability.
 TODO/FIXME/HACK markers are source hints, not verified bugs. Module readiness comes
 from the maintained inventory. Known issues remain in `BUGS.md` and
 `SECURITY_FINDINGS.md`, including those outside the current automated coverage.
-Postgres tests currently use a mocked SQL client; this is not database integration QA.
+The default Vitest PostgreSQL adapter tests use a mocked SQL client. Real database
+integration runs separately with `npm.cmd run test:postgres:local`. Real browser/API
+journeys can run against a fresh PostgreSQL database with `npm.cmd run test:e2e:postgres`;
+some browser cases deliberately mock API responses and remain UI-only assertions.

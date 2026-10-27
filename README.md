@@ -2,15 +2,26 @@
 
 BeatVault is a creator audio-platform prototype with a React frontend and a local Node API.
 
+Windows local startup now uses native PostgreSQL 16.15 with the verified data import.
+See [local PostgreSQL operation and recovery](docs/POSTGRES_LOCAL.md). Current seller
+offers support MP3/WAV; stems are deferred.
+
+Latest consolidation and verification: [local stages](docs/CONSOLIDATION_STAGES.md).
+
 For the Oracle VPS deployment scaffold, prerequisites, first boot, backups and current
 go-live blockers, see [Oracle VPS deployment](docs/DEPLOY_ORACLE_VPS.md). The existing
 `docker-compose.yml` is for local PostgreSQL development only.
 
 Start with [the current handoff](docs/README.md) and [first-release scope](docs/RELEASE_SCOPE.md).
-The current navigation is Home, Amigos, Mensajes, Mis subidas, Library, Beats and
-Upload. Direct chat is available between accepted friends with persisted text messages
-and live local-server updates. The first-release priority remains the reliable creator
-audio workflow; Home posts are still browser-local.
+The next engineering work is ordered in [docs/PRIORITIES.md](docs/PRIORITIES.md).
+The current technical architecture and current gaps are in
+[docs/ARCHITECTURE_CURRENT.md](docs/ARCHITECTURE_CURRENT.md); the August discovery
+report remains as a historical baseline.
+The current navigation is Home, Amigos, Mensajes, Mis subidas, Marketplace, Upload
+and Plans. Marketplace unifies Explore, My library and My purchases; old Library and
+Beats links remain aliases. Direct chat is available between accepted friends with
+persisted text messages and live local-server updates. The first-release priority
+remains the reliable creator audio workflow. See [local Marketplace scope](docs/MARKETPLACE_LOCAL.md).
 
 Mis subidas replaces Studio project management. New submissions are limited to Beats
 and One-shots, with tags, bundled cover choices, draft recovery and archive/restore.
@@ -36,6 +47,9 @@ run `npm run test:security`. See [DIAGNOSTICS.md](docs/DIAGNOSTICS.md), the
 [site audit](docs/SITE_AUDIT.md), and the [QA bot guide](docs/QA_BOTS.md).
 
 ## Development
+
+For the restored Windows 11 workspace, see [Windows local setup](docs/WINDOWS_LOCAL.md)
+for the portable tools, two-terminal startup commands and pending optional runtimes.
 
 ```bash
 npm install
@@ -115,8 +129,10 @@ La autenticación local incluye verificación y recuperación sin proveedor de e
 ## Local Uploads and Backups
 
 Private user uploads live outside `public/` and outside Git. `BEATVAULT_UPLOAD_DIR`
-defaults to ignored `data/uploads`; deployment should use a private external storage
-directory. Demo fixtures under `assets/demo/` remain versioned for the interface and tests.
+defaults to ignored `data/uploads`; this Windows local setup overrides it to
+`D:\BeatVault\storage\uploads` through private local configuration. Deployment should
+use a private external storage directory. Demo fixtures under `assets/demo/` remain
+versioned for the interface and tests.
 
 Back up database and uploads separately:
 

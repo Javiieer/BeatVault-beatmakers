@@ -15,6 +15,9 @@ posts from the last 24 hours; it is not yet an independent story lifecycle. Auth
 interaction reads are batched and bounded. A two-account browser test covers public
 delivery, private isolation, and interaction persistence.
 
+The Home stories paragraph above is historical and superseded by migration 029 and the
+Stories Follow-up in `docs/ROADMAP.md` and `docs/SITE_AUDIT.md`.
+
 Creator profiles and metadata editing are implemented at /profile and /settings.
 Profiles default to private; public links exclude private drafts and authentication
 data. Own Home posts appear on the profile in this browser. Amigos supports opted-in

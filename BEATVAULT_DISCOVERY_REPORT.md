@@ -1,5 +1,13 @@
 # BEATVAULT DISCOVERY REPORT
 
+> **Documento histórico (2026-08-26).** Sus afirmaciones de frontend-only,
+> ausencia de backend/arquitectura y propuesta de MVP de proyectos describen el
+> descubrimiento inicial y ya no reflejan el repositorio actual. Para arquitectura
+> vigente, evolución y riesgos técnicos, consultar
+> [docs/ARCHITECTURE_CURRENT.md](docs/ARCHITECTURE_CURRENT.md) y
+> [docs/PRIORITIES.md](docs/PRIORITIES.md). Este informe se conserva como registro
+> de decisiones y alcance inicial.
+
 **Phase:** 0 - Discovery / Blueprint
 **Date:** 2026-08-26
 **Assessment scope:** Workspace inspection and initial product/technical boundary

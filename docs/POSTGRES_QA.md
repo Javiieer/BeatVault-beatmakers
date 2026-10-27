@@ -1,11 +1,35 @@
 # PostgreSQL QA
 
+Browser/API QA also supports native PostgreSQL: `npm.cmd run test:e2e:postgres` creates
+a unique `beatvault_test_e2e_*` database owned by the application role, migrates it,
+runs Playwright, and removes only that temporary database. The owner's database is
+never selected. For a focused run after loading `scripts/windows-env.ps1` and starting
+PostgreSQL, use `node --import tsx scripts/postgres-tasks.ts qa-browser tests/product-journey-audit.spec.ts`.
+The runner has a ten-minute global browser limit; a timeout/interruption is not a pass.
+
+## Windows native local workflow (2026-10-26)
+
+Load `. ./scripts/windows-env.ps1`, then `npm.cmd run test:postgres:local`.
+The launcher starts the native loopback cluster, applies checksummed migrations to
+`beatvault_test_native`, and supplies private admin credentials only to the QA process.
+Native `pg_dump`, `createdb`, `pg_restore` and `dropdb` run the same restore assertions
+as the Docker workflow below. The test cannot target `beatvault_local`.
+
+Current native result: PASS with all seven audio formats, auth/chat/SSE, stories,
+social permissions, moderation, quota concurrency, transactional notifications,
+backup/restore and source integrity/retention with a simultaneous order/delete race.
+Fresh 001-029 and existing 028 to 029 upgrade were also exercised. The owner's imported
+data was separately restored and compared exactly across 32 tables. See
+[local operation and evidence](POSTGRES_LOCAL.md).
+
 `npm run test:postgres` runs live integration checks against an isolated local
 PostgreSQL database. It refuses remote hosts and database names unless they match
 `beatvault_test_*` or `beatvault_audit_*`. The current schema includes migrations
-001-028; mounting `db/migrations` into a new Postgres container applies all of them
-in order. The QA harness checks that the notification table from migration 027 and
-the follow/bookmark tables from migration 028 exist,
+001-029; mounting `db/migrations` into a new Postgres container applies all of them
+in order. The QA harness checks that the notification table from migration 027, the
+follow/bookmark tables from migration 028, and independent story records from migration
+029 exist. It checks public story visibility, private-story isolation, exact 24-hour
+expiry, owner-only deletion and that stories do not appear in the feed,
 exercises seller intake through the HTTP API, uploads real PDF-signature rights
 evidence, verifies that another account cannot read it, persists Beat artwork before
 catalog creation, checks original/thumbnail quota accounting and creator/CM/staff
@@ -17,10 +41,12 @@ both decisions. Catalog Beats can be independently approved by either a CM or an
 admin; CM reviews use a private processed preview, and either approval publishes the
 Beat with only the processed preview exposed. It
 also checks that seller-intake approval does not publish a beat by itself,
-exercises Stripe Connect and webhook-event idempotency records, persists an
-order/payment-intent state, and checks session reuse across an API restart. This is
-repository-level persistence coverage:
-it does not call Stripe, perform Checkout, or prove refund/dispute webhooks end to end.
+exercises historical Stripe records, Mercado Pago migration 035, one-use OAuth state,
+seller-link persistence, preference reservation/idempotency, exact preference/payment
+linkage, webhook-event idempotency, terminal provider-state compare-and-set, persists
+an order state, and checks session reuse across an API restart. The synthetic HTTP flow
+also covers OAuth, Checkout, signed webhooks and refund holds. These local tests do not
+call Mercado Pago, perform a provider-hosted Checkout, or prove a real refund/dispute.
 
 Example with Docker Desktop on PowerShell, using a random host port and a separate
 container/anonymous volume:

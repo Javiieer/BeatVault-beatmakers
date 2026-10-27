@@ -2,15 +2,18 @@
 
 ## Current behavior
 
-- Creator uploads accept square JPG or PNG artwork from 640 to 10,000 pixels per
-  side, up to 10 MB and 16 megapixels. The server validates the declared MIME against
-  the file structure and rejects malformed images.
-- The original artwork is retained for future Beat detail views. Catalog, creator
+- Creator uploads accept static JPG, PNG, WebP and AVIF artwork, up to 10 MB,
+  16 megapixels and 64 MiB decoded pixels. Both sides must be at least 640 pixels.
+  Landscape/portrait images are center-cropped to a square of up to 4000 pixels,
+  as explained in the upload form. Signatures, MIME and full decoding are checked.
+- New images are normalized to JPEG/PNG with orientation applied and EXIF/XMP removed.
+  The stored master is this normalized image; source bytes are not retained for new
+  artwork. Existing artwork records remain unchanged. Catalog, creator
   upload and staff-review cards use a 640 px WebP derivative (up to 512 KB) when
   FFmpeg can decode the image and create one smaller than the original. A valid image
   whose derivative is larger falls back to the original; if the server cannot decode
   it, the upload is rejected rather than preserving an unchecked image.
-- Original and derivative bytes count toward the creator's configured storage limit.
+- Stored normalized master and derivative bytes count toward the creator's configured storage limit.
   Public catalog delivery exposes only artwork attached to published entries;
   unpublished artwork stays behind the existing owner/staff authorization checks.
 - Browser artwork is lazy-loaded where it appears in long card lists.

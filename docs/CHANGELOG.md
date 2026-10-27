@@ -1,5 +1,95 @@
 # Changelog
 
+## 2026-10-27 - Consolidación local de catálogo y medios
+
+- Favoritos por cuenta en PostgreSQL y migración conservadora de favoritos locales.
+- Aprobación comercial independiente del historial de auditoría (migración 030),
+  verificada tras retención y reinicio; moderación completa de One-shots.
+- Retorno al contenido tras login, borradores de perfil y destinos de notificaciones.
+- Imágenes JPEG/PNG/WebP/AVIF normalizadas, audio por lotes con arrastre, nombres
+  individuales y reintentos; los originales de audio conservan sus bytes.
+- Integración PostgreSQL y restauración pasaron. Navegador: 16 casos iniciales y
+  los 2 restantes tras corregir un selector de prueba. Detalle en CONSOLIDATION_STAGES.md.
+- Verificación final: build, lint y 422 pruebas unitarias en 80 archivos aprobados;
+  cuentas originales preservadas y respaldo posterior a la migración creado.
+
+## 2026-10-26 - Auditoría de recorridos y dirección de producto
+
+- Añadido PRODUCT_AUDIT_2026-10-26.md con matriz funcional, hallazgos, evidencia y
+  criterios de cierre. Prioridad: persistir aprobación comercial fuera del historial
+  de auditoría, mejorar continuidad de navegación y completar moderación de One-shots.
+- Corregida la explicación de privacidad y alcance de preferencias de notificaciones.
+  Actualizados inventario de módulos y documentación activa que conservaban tareas ya resueltas.
+- Añadida ejecución de Playwright con PostgreSQL temporal, rol de aplicación y
+  protección contra uso de la base del propietario o servidores remotos.
+- Ocho casos focalizados de navegador pasaron, incluido registro desde la interfaz y
+  recuperación del perfil desde un navegador nuevo. La suite completa inicial quedó
+  interrumpida tras 29 casos registrados; no se presenta como aprobada.
+- TypeScript, lint y build pasaron. Las cuentas originales conservaron IDs, roles y
+  hashes; no se modificaron los datos del propietario para ejecutar las pruebas.
+
+## 2026-10-26 - PostgreSQL nativo local y stems aplazados
+
+- PostgreSQL 16.15 nativo en loopback, credenciales privadas con SCRAM y rol de app
+  sin privilegios administrativos. El lanzador local selecciona la importación verificada.
+- Migraciones 001-029 con ledger/checksums; probados esquema limpio y actualización
+  028 a 029. QA real con `pg_dump`/`pg_restore`, permisos, medios, chat, historias,
+  notificaciones transaccionales y carreras de cuotas pasó.
+- Migradas nueve cuentas conservando hashes/roles, 88 proyectos y datos del catálogo
+  y sociales. Seis archivos con propietarios ausentes se preservaron en archivo privado.
+  Restauración de la copia real comparada exactamente en 32 tablas; JSON original intacto.
+- PostgreSQL serializa compra/borrado de la fuente y rechaza snapshots con hash inválido.
+- Stems retirados del formulario y rechazados en ofertas nuevas; compatibilidad de
+  lectura del historial conservada. MP3/WAV siguen siendo los formatos actuales.
+- Vite excluye herramientas, base de datos, backups y artefactos del servidor de archivos
+  y del watcher para proteger credenciales y evitar actividad de desarrollo innecesaria.
+
+## 2026-10-26 - Cierre de regresiones e integración local
+
+- Una lectura inicial atrasada de Home conserva las publicaciones propias recién
+  creadas y no recupera publicaciones borradas durante la lectura.
+- Las interacciones del catálogo se cargan por grupos pequeños y se reutilizan al
+  publicar estados, evitando repetir todas las consultas y saturar las conexiones.
+- Fotos/videos de posts e historias disponen de un presupuesto de subida de 120 s;
+  las consultas ordinarias mantienen su límite y los permisos/límites del servidor
+  siguen vigentes. Se prueba que la solicitud de medios también cancela al vencer.
+- Se añadió una integración HTTP completa de compra con proveedor simulado, firma
+  Stripe real, revisión por CM/admin, descarga WAV/MP3 y revocación por reembolso.
+- Las pruebas de configuración del vendedor apuntan ahora a Mis subidas.
+- Mi biblioteca valida favoritos públicos de forma independiente si falla la lista
+  general. Búsqueda limitada a 80 caracteres; Mis subidas separa carga/error/vacío.
+- Validación: 374 pruebas funcionales y 14 de seguridad pasaron. Navegador: 107/108
+  en la corrida completa; la espera de la prueba de respuesta perdida se corrigió y
+  sus dos casos pasaron después. MARKETPLACE_VERIFICATION.md conserva el detalle.
+
+## 2026-10-25 - Marketplace unificado y entrega por oferta
+
+- Una entrada Marketplace reúne Explore, My library y My purchases. Beats/Library
+  conservan sus enlaces como aliases; edición, borrado confirmado y herramientas del
+  vendedor quedan en Mis subidas.
+- Favoritos aislados por cuenta, resolución paginada de guardados, compras reales del
+  API, estados de error/reintento y fichas que leen publicaciones reales por ID.
+- Visitantes pueden explorar tiendas, abrir fichas y reproducir previews públicos;
+  guardar, consultar compras y comprar requieren sesión.
+- Los pedidos conservan original/hash y condiciones de la oferta. Descargas MP3/WAV
+  completas por formato, validación de comprador/pago/integridad y retención del
+  original vinculado. Stems y pedidos antiguos sin instantánea fallan de forma cerrada.
+- Confirmaciones de Checkout comprueban sesión, importe, moneda y datos de comprador;
+  se ignoran respuestas tardías tras cerrar sesión y se restringen URLs de descarga.
+- Se añadieron recorridos reales de escritorio/móvil y pruebas de permisos, formatos,
+  integridad, carreras de borrado, reembolso y campos/URLs maliciosos. Los resultados
+  exactos quedan en el diagnóstico y en MARKETPLACE_LOCAL.md.
+- PostgreSQL vivo, Stripe sandbox externo, stems reales y lanzamiento público siguen
+  fuera de la verificación local de esta actualización.
+
+## 2026-10-18 - Historias independientes en Home
+
+- Stories ahora son registros propios, separados de los posts, con texto/foto/video, privacidad Público/Amigos/Solo yo, borrado por el autor y vencimiento exacto a las 24 horas.
+- El backend limita a 20 historias activas por cuenta, comparte la cuota social de 512 MiB con posts y revalida audiencia al servir medios; fotos se normalizan y videos se limitan a MP4/H.264, 30 segundos y 1920x1080.
+- SSE no expone contenido y respeta audiencia: historias públicas avisan a sesiones elegibles, Amigos solo a conexiones aceptadas y Solo yo no emite eventos a terceros.
+- El compositor publica historias sin duplicarlas en Home/feed; se agregaron migración PostgreSQL 029, expiración/limpieza de archivos, cobertura móvil entre dos cuentas y se actualizaron ROADMAP/BUGS/ARCHITECTURE.
+- La suite completa local pasa 327 tests en 65 archivos. El ensayo con PostgreSQL real de la migración 029 y el flujo de reportes/moderación de historias quedan pendientes.
+
 # 2026-10-11 - Capacidad visible en Paquetes
 
 - Paquetes convierte cada cuota en estimaciones de beats WAV y one-shots, muestra el uso real con barra de progreso y comparte las mismas constantes con el simulador.

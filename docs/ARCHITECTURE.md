@@ -1,5 +1,10 @@
 # Architecture
 
+> This file contains dated phase notes and some historical implementation snapshots.
+> The maintained architecture, current evidence and open risks are in
+> [ARCHITECTURE_CURRENT.md](ARCHITECTURE_CURRENT.md). Keep new changes aligned with
+> that document and [PRIORITIES.md](PRIORITIES.md).
+
 ## Current boundary (2026-10-09)
 
 ### Creator profiles (2026-10-09)
@@ -22,18 +27,25 @@ public; accepted friends can read eligible friend posts but currently cannot ope
 that private profile or its custom images. This is a known privacy/UX inconsistency
 for a future access-matrix change.
 
-### Home posts and friends (2026-10-15)
+### Home posts and friends (2026-10-18)
 
-Authenticated Home and CreatorProfile now use server-backed text/photo/video posts
-through JSON and PostgreSQL repositories (migration 025); comments and reactions use
-migration 026, and follows/bookmarks use migration 028. Posts publish immediately.
-Public posts require an opted-in public
-profile, friends-only posts require an accepted friendship, and private posts are
-owner-only; media access is rechecked on each request. Existing IndexedDB posts remain
-device-local and are not automatically imported. The 24-hour stories rail groups
-recent published posts; it is not a separate story record or expiry service. Labeled
-seed examples exist only in the local development guest preview; authenticated feeds and
-production bundles exclude them. Shorts remains a separate demo/local flow. Friends uses authenticated API routes (`GET /api/creators`,
+Authenticated Home and CreatorProfile use server-backed text/photo/video posts through
+JSON and PostgreSQL repositories (migration 025); comments and reactions use migration
+026, and follows/bookmarks use migration 028. Posts publish immediately. Public posts
+require an opted-in public profile, friends-only posts require an accepted friendship,
+and private posts are owner-only; media access is rechecked on each request. Existing
+IndexedDB posts remain device-local and are not automatically imported. Stories are
+independent records in `social_stories` (migration 029), not feed posts: status/photo/
+video stories have an exact 24-hour server expiry, owner deletion, public/friends/private
+audiences, a limit of 20 active stories per account, and a shared 512 MiB social-media
+quota with posts. Photos are normalized and limited to 20 MB; MP4/H.264 story videos
+are limited to 100 MB, 30 seconds and 1920x1080. Authenticated story and media reads
+recheck audience visibility; media is private/no-store. A periodic cleanup removes
+expired records and media, and connected Home sessions receive a data-free SSE signal
+to refresh stories. Story reporting/staff moderation and multi-instance event delivery
+are not implemented. Labeled seed examples exist only in the local development guest
+preview; authenticated feeds and production bundles exclude them. Shorts remains a
+separate demo/local flow. Friends uses authenticated API routes (`GET /api/creators`,
 `GET /api/friends`, `POST/DELETE /api/friend-requests`,
 `POST /api/friend-requests/:id/accept`, and `DELETE /api/friends/:id`). Creator search
 and friend lists return an allowlisted profile DTO without email or credentials.
@@ -44,10 +56,12 @@ follows/bookmarks. Public feed reads filter to `published` in the PostgreSQL que
 the partial feed index can be used; owner profile and moderation reads retain their
 needed visibility scope. Feed scans and IP limits remain process-local. Interaction
 snapshots load in authenticated batches of up to 30 posts; work is charged by post ID
-(120 per account per minute) and returns at most 20 comments per post. Live Home feed
-refresh, shared multi-instance rate limits and an existing-volume migration rehearsal
-remain open. Two-account browser and clean disposable PostgreSQL backup/restore checks
-cover public/private posts and social relationships.
+(120 per account per minute) and returns at most 20 comments per post. Authenticated
+`GET /api/feed/events` streams a generic event for new public posts; no post content is
+sent, and Home refetches through the visibility-checked API only after user action.
+Delivery is process-local; friends/private events, shared multi-instance rate limits
+and an existing-volume migration rehearsal remain open. Two-account browser and clean
+disposable PostgreSQL backup/restore checks cover public/private posts and relationships.
 
 ### Direct chat (2026-10-10)
 
